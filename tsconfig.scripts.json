@@ -1,0 +1,27 @@
+{
+  /*
+   * 运维脚本（`scripts/*.mjs`）的类型检查配置。
+   *
+   * 为什么单独一个文件而不是并进 `tsconfig.json`：两边的**模块环境完全不同** ——
+   * 产品代码跑在浏览器扩展里（DOM + `vite/client`），脚本跑在 Node 里
+   * （`node:*` 内建 + `@types/ws`）。混在一个 project 里会让「哪些全局可用」
+   * 变得含糊，而 `scripts/` 里正好是真正碰系统资源的那部分代码。
+   */
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    /*
+     * ⚠ 必须重新声明 `paths`：`extends` 里**相对的 `paths` 按「基文件所在目录」
+     *   解析**，直接从 `tsconfig.json` 继承过来的 `~/*` → `./src/*` 会以
+     *   本文件（根目录）为基准重新解析 —— 目前脚本不 import 别名所以看不出问题，
+     *   但显式写出来能避免「以后加一个 `~/…` import 就莫名其妙解析失败」。
+     */
+    "paths": {
+      "~/*": ["./src/*"]
+    },
+    "types": ["node"],
+    "allowJs": true,
+    "checkJs": true,
+    "noEmit": true
+  },
+  "include": ["scripts/**/*.mjs"]
+}

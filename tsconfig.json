@@ -4,9 +4,19 @@
     "target": "es2016",
     "jsx": "preserve",
     "lib": ["DOM", "ESNext"],
-    "baseUrl": ".",
     "module": "ESNext",
     "moduleResolution": "Bundler",
+    /*
+     * ⚠ 这里**刻意不写 `baseUrl`**。
+     *
+     * `baseUrl` 已被 TS 弃用（6.0 起报 warning，7.0 起直接报错），而它在这里
+     * 从头到尾都是多余的：`paths` 的取值**本来就相对 tsconfig.json 所在目录解析**
+     * （TS 4.4+ 起），`baseUrl: "."` 只是让人以为在「指定根目录」。
+     *
+     * 删掉它的收益不只是消警告：`tsconfig.scripts.json` 会 `extends` 本文件，
+     * 而**相对的 `paths` 在 extends 里是按「基文件所在目录」解析的** ——
+     * 有了 `baseUrl` 反而会让两层配置的解析基准变得难以推理。
+     */
     "paths": {
       "~/*": ["./src/*"]
     },
@@ -14,9 +24,26 @@
     "types": [
       "vite/client"
     ],
+    /*
+     * `allowImportingTsExtensions` 是**必需的**，不是模板残留 ——
+     * 代码里有 6 处 `.mts` 后缀 import（`from '../scripts/utils.mts'`、
+     * 各 `vite.config.*.mts` 之间的互相引用等）。最初搜 `.ts` 时漏了 `.mts`，
+     * 差点把它当成无用配置删掉。
+     */
     "allowImportingTsExtensions": true,
     "strict": true,
     "noUnusedLocals": true,
+    /*
+     * `noEmit` 有两个理由，都不是「为了消报错」：
+     *
+     * 1. **它是 `allowImportingTsExtensions` 的前提**：TS 只在「不产出 JS」时才允许
+     *    import 带 `.ts` / `.mts` 后缀（产出时不知道该把后缀重写成什么）。少了它
+     *    就报「仅当设置了 'noEmit'、'emitDeclarationOnly' 或
+     *    'rewriteRelativeImportExtensions' 其中之一时才能使用」。
+     * 2. **符合事实**：本项目全程用 Vite / esno 构建，tsc 的角色只有类型检查，
+     *    不该产出 JS 到源码目录。
+     */
+    "noEmit": true,
     "esModuleInterop": true,
     "forceConsistentCasingInFileNames": true,
     "skipLibCheck": true

@@ -1,0 +1,243 @@
+/**
+ * 集中文案（i18n 钩子，`decisions/open-questions.md` Q12）。
+ *
+ * 设计文档要求「所有 UI 文案集中在 `src/logic/strings.ts`，不在 `.vue` 里硬编码
+ * 中文字符串」。MVP 只交付 `zh-CN`，但**调用方式**已经是 i18n-ready：
+ * 将来接 vue-i18n 或自研时**只换 `t()` 的实现，不动调用方**。
+ *
+ * ⚠ 键名用**英文点分**（`popup.tab.important`）而不是中文键：
+ *   中文键在改动文案时会被一起改掉，于是「文案调整」变成「键重命名」——
+ *   而漏改一个调用点的表现是界面上直接显示出键名本身。
+ */
+
+export interface StringTable {
+  [key: string]: string | StringTable
+}
+
+const zhCN: StringTable = {
+  app: {
+    name: 'mail-peon',
+    minimalSuffix: '极简模式',
+  },
+
+  common: {
+    save: '保存',
+    cancel: '取消',
+    delete: '删除',
+    edit: '编辑',
+    add: '新增',
+    close: '关闭',
+    confirm: '确定',
+    loading: '加载中…',
+    empty: '暂无数据',
+    copy: '复制',
+    copied: '已复制 ✓',
+    copyFailed: '复制失败',
+    test: '测试',
+    enabled: '启用',
+    disabled: '停用',
+    unknownSender: '(未知发件人)',
+    noSubject: '(无主题)',
+    justNow: '刚刚',
+    minutesAgo: '{n} 分钟前',
+    hoursAgo: '{n} 小时前',
+    daysAgo: '{n} 天前',
+  },
+
+  popup: {
+    tabImportant: '重要',
+    tabAll: '全部',
+    tabCode: '验证码',
+    tabAd: '营销',
+    emptyImportant: '还没有重要邮件',
+    emptyAll: '还没有收到邮件',
+    emptyCode: '还没有收到验证码',
+    emptyAd: '还没有营销邮件',
+    openOptions: '打开设置',
+    openSidepanel: '打开完整面板',
+    codeHistory: '验证码记录',
+    codeEmpty: '还没有收到验证码',
+  },
+
+  mail: {
+    code: '验证码',
+    summary: '摘要',
+    markRead: '标记已读',
+    markUnread: '标记未读',
+    dismiss: '不再显示',
+    pending: 'AI 处理中…',
+    degraded: '降级',
+    degradedTip: 'AI 处理失败，以上是邮件基础信息',
+    minimalCaptured: '该邮件为极简模式捕获，无摘要',
+  },
+
+  toast: {
+    codeLabel: '验证码',
+    copied: '已复制 ✓',
+    copyFailed: '自动复制失败',
+    notCopied: '未自动复制',
+    clickToCopy: '点击复制',
+  },
+
+  options: {
+    title: 'mail-peon · 设置',
+    navGeneral: '通用',
+    navAccounts: '账号',
+    navRules: '提示词',
+    navAi: 'AI 配置',
+    navBlocked: '屏蔽列表',
+    navAbout: '关于',
+    minimalOnlyNote: '极简模式下只显示这一页；切到完整功能后其它子页才出现。',
+  },
+
+  general: {
+    mode: '模式',
+    modeMinimal: '极简模式（仅验证码）',
+    modeFull: '完整功能（AI 总结 + 屏蔽 + …）',
+    autoCopyCode: '验证码自动复制',
+    excludeAds: '排除广告 / 营销邮件',
+    excludeAdsHint: '被判为广告的邮件仍会被 AI 处理，可在弹窗「营销」分区查看。',
+    blockedEnabled: '启用排除邮箱',
+    notifyOnNew: 'Badge 提示新邮件',
+    popupDefaultTab: '弹窗默认 Tab',
+    retention: '邮件保留数量',
+    retentionUnlimited: '无限',
+    retentionUnit: '条',
+    usage: '存储用量',
+    usageText: '{count} 条 / {limit} 上限，约 {size}',
+    usageUnlimitedText: '{count} 条，约 {size}',
+    syncNow: '立即同步增量',
+    syncing: '同步中…',
+    syncDone: '同步完成：拉取 {fetched} 封，屏蔽 {blocked} 封，失败 {failed} 封',
+    syncFirstTime: '首次同步只记录同步位置，不会拉取历史邮件',
+    clearMails: '清空邮件列表',
+    exportSettings: '导出设置',
+    importSettings: '导入设置',
+    clearAll: '清空所有数据',
+    privacyTitle: '隐私声明',
+    privacyBody: '邮箱凭据当前以明文存储在本机浏览器中，不会上传到任何服务器。请勿在公共电脑使用本扩展。',
+    aiKeyMissing: '验证码提取需要先配置 AI Key',
+    aiKeyMissingAction: '去配置',
+    accountCount: '账号 · {n} 个',
+    codeCount: '验证码记录：{n} 条',
+    confirmClearMails: '确定要清空所有已保存的邮件吗？此操作不可撤销。',
+    confirmClearAll: '确定要清空所有数据吗？账号、规则、设置、邮件将全部删除，此操作不可撤销。',
+  },
+
+  accounts: {
+    add: '+ 新增账号',
+    empty: '还没有添加邮箱账号',
+    label: '备注名',
+    labelPlaceholder: '工作邮箱',
+    provider: '协议',
+    test: '测试连接',
+    testing: '测试中…',
+    testOk: '测试通过',
+    resetCursor: '重置同步位置',
+    resetCursorDone: '已重置；下次心跳从最新邮件开始',
+    lastSync: '上次同步',
+    never: '从未同步',
+    editTitle: '编辑账号',
+    addTitle: '新增账号',
+    deleteConfirm: '删除账号后，该账号已保存的邮件也会一并删除。确定继续吗？',
+    enableLabel: '启用（参与后台同步）',
+  },
+
+  rules: {
+    add: '+ 新增规则',
+    empty: '还没有自定义规则；所有邮件会使用内置默认规则',
+    defaultRule: '默认规则（内置）',
+    defaultRuleHint: '没有任何自定义规则命中时使用；按主题给出基础 system prompt。',
+    name: '规则名',
+    namePlaceholder: 'GitHub 通知',
+    matchers: '匹配（每行一条）',
+    matchersHint: '含 @ 视为邮箱精确匹配（如 me@a.com），否则按域名匹配（如 github.com）',
+    prompt: '提示词',
+    promptPlaceholder: '这是来自我自部署代码系统的通知：\n- 如果包含 ERROR / Failed，urgency=high',
+    promptHint: '提示词会追加在基础 system prompt 之后，不能修改输出 JSON 结构。',
+    moveUp: '上移',
+    moveDown: '下移',
+    alwaysCopyCode: '本规则强制自动复制验证码',
+    alwaysSkipAd: '本规则始终视为非广告',
+  },
+
+  ai: {
+    platform: '平台',
+    baseUrl: 'Base URL',
+    apiKey: 'API Key',
+    model: 'Model',
+    thinking: '启用思考模式',
+    thinkingHint: 'DeepSeek 等平台默认已关闭；开启会消耗大量 token 且可能导致输出为空。',
+    outputLanguage: '输出语言',
+    outputLanguageBrowser: '跟随浏览器（推荐）',
+    outputLanguageEmail: '跟随邮件',
+    test: '测试连通',
+    testing: '测试中…',
+    testOk: '连接成功',
+    baseUrlPlaceholder: '留空则使用平台默认：{url}',
+    modelPlaceholder: '留空则使用平台默认：{model}',
+    notConfigured: '尚未配置',
+  },
+
+  blocked: {
+    enabled: '启用排除',
+    account: '当前账号',
+    addPlaceholder: 'noreply@spam.com 或 tracker.com',
+    add: '新增屏蔽',
+    kindEmail: '邮箱',
+    kindDomain: '域名',
+    batch: '批量粘贴',
+    batchPlaceholder: '每行一项；含 @ 视为邮箱，否则视为域名\nnoreply@spam.com\ntracker.com',
+    batchApply: '导入',
+    empty: '屏蔽列表为空',
+    hint: '命中的邮件会被完全跳过：不入库、不调 AI、不弹通知。仅对本账号生效。',
+  },
+
+  about: {
+    title: '关于 mail-peon',
+    intro: '在你的浏览器里放一个常驻的「邮件 + AI 助理」：重要的邮件立刻知道，验证码自动复制，剩下的全是噪音。',
+    modeTitle: '两种运行模式',
+    modeMinimalDesc: '极简模式只在看到含验证码的邮件时自动复制并弹提示，其它邮件直接丢弃。',
+    modeFullDesc: '完整模式提供 AI 总结、广告屏蔽、提示词规则与排除邮箱。',
+    storageTitle: '数据存在哪',
+    storageDesc: '账号、规则、邮件全部存在本机 IndexedDB，不会上传到任何服务器。',
+    aiTitle: '邮件正文会发给谁',
+    aiDesc: '只在调用 AI 时把「主题 + 正文片段」发到你配置的 AI 平台；极简模式下正文根本不存储。',
+    shortcutsTitle: '其它入口',
+    shortcutsDesc: '点击工具栏图标打开弹窗；侧边栏（Chrome 侧栏 / Firefox 侧栏）提供完整列表。',
+  },
+}
+
+/** 当前语言表（MVP 只有 zh-CN） */
+const current = zhCN
+
+function lookup(table: StringTable, path: string[]): string | undefined {
+  let node: string | StringTable | undefined = table
+  for (const segment of path) {
+    if (typeof node !== 'object' || node === null)
+      return undefined
+    node = node[segment]
+  }
+  return typeof node === 'string' ? node : undefined
+}
+
+/**
+ * 取文案并做变量替换。
+ *
+ * 变量语法是 `{name}`（而不是模板字符串）：文案表是**数据**，
+ * 用模板字符串的话，取文案这件事就变成了「执行一段代码」，
+ * 将来接 vue-i18n 时也没法直接复用。
+ *
+ * 查不到时**返回键名本身**：界面上出现 `general.usageText` 一眼就知道是漏了文案，
+ * 而返回空字符串会让人以为是渲染问题。
+ */
+export function t(key: string, vars?: Record<string, unknown>): string {
+  const value = lookup(current, key.split('.')) ?? key
+  if (!vars)
+    return value
+
+  return value.replace(/\{(\w+)\}/g, (match, name: string) => {
+    const replacement = vars[name]
+    return replacement === undefined || replacement === null ? match : String(replacement)
+  })
+}

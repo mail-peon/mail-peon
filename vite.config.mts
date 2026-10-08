@@ -112,5 +112,15 @@ export default defineConfig(({ command }) => ({
   test: {
     globals: true,
     environment: 'jsdom',
+    // 单测的全局准备：装 fake-indexeddb、桩 chrome.storage、每个用例前清库。
+    // 见 `src/tests/setup.ts` 的说明（import 顺序是这里的关键）。
+    setupFiles: [r('src/tests/setup.ts')],
+    /*
+     * ⚠ 路径是 '**\/*.spec.ts' 而不是 'src/**\/*.spec.ts'：Vite 的 `root` 已经是
+     *   `src`（见本文件顶部），所以 `src/**` 会被解析成 `src/src/**` —— 结果是一个
+     *   测试都找不到，而报错是「No test files found」这种看起来像配置没错的提示。
+     */
+    include: ['**/*.spec.ts'],
+    exclude: ['**/node_modules/**', '**/dist/**'],
   },
 }))

@@ -43,6 +43,9 @@
 | 文件 | 说明 |
 | --- | --- |
 | [open-questions.md](./decisions/open-questions.md) | 待决策项（IMAP vs OAuth 等） |
+| [adr-0005-imap-needs-relay.md](./decisions/adr-0005-imap-needs-relay.md) | **IMAP 在 MV3 里必须经 WebSocket↔TCP 中继**（推翻 Q1 的「IMAP+密码直接可用」） |
+| [relay-deployment.md](./decisions/relay-deployment.md) | **中继的部署方案**：用户级自启 + Rust 单安装器（安装/卸载两个选项）；为什么「零额外安装」做不到 |
+| [imap-testing.md](./decisions/imap-testing.md) | **IMAP 验收指南（QQ 邮箱）**：QQ 侧授权码怎么拿、扩展怎么填、六条验收清单、故障定位表 |
 
 ---
 
@@ -67,7 +70,52 @@
 
 ## 当前状态
 
-- 仓库基于 [`antfu/vitesse-webext`](https://github.com/antfu/vitesse-webext) 模板，已能正常 `pnpm dev`。
-- 已完成：模板本身的 Popup / Options / Sidepanel / Background 骨架。
-- 未开始：所有与邮箱 + AI 相关的业务代码。
-- 本目录下的文档先于代码落地，每完成一项功能勾掉对应里程碑。
+> 最近更新：M1 + M2 功能代码落地，M3 / M4 的 UI 与交互也已接上。
+
+- 仓库基于 [`antfu/vitesse-webext`](https://github.com/antfu/vitesse-webext) 模板。
+- **已完成（有单测覆盖）**
+  - 存储层：IndexedDB 五仓库 + 初始化门闸 + 滚动淘汰（`pnpm test` 210 个用例）
+  - `MailProvider` 适配器 + 注册表（按目录 glob，加 provider 不改注册表）
+  - 邮箱同步编排：首次只记游标、UID 增量、UIDVALIDITY 变化处理、per-account 排除邮箱
+  - Gmail provider（OAuth + REST，**装上就能收真邮件**）
+  - IMAP provider + 自研协议客户端 + WebSocket↔TCP 中继（`pnpm relay`）
+  - AI 层：4 家平台（OpenAI / DeepSeek / Anthropic / 自定义）+ zod 校验 + 降级
+  - 极简 / 完整两套流水线（预筛、验证码提取与自动复制、规则匹配、广告判定）
+  - 页面顶部 toast（closed shadow DOM）+ icon badge
+  - Popup / Sidepanel / Options（6 个子页）两套布局
+- **约定**
+  - 验证门槛：`pnpm lint && pnpm typecheck && pnpm test && pnpm build` 全绿
+  - 每完成一项功能，回来勾掉 `03-roadmap.md` 里对应的验收项
+
+### 当前卡在哪（下一步做什么）
+
+**中继已修好，等真邮箱验收**（步骤 1、2 完成）。落地顺序见
+[`decisions/relay-deployment.md § 5`](./decisions/relay-deployment.md)：
+
+| # | 步骤 | 状态 |
+| --- | --- | --- |
+| 1 | 修 Node 中继的 `tls`（原先连不上 993） | ✅ |
+| 2 | 修背压 / `ALLOWED_HOSTS` 通配 / **关闭帧崩溃** | ✅ |
+| 3 | 用真邮箱（QQ 邮箱）验收协议 → [`imap-testing.md`](./decisions/imap-testing.md) | ⬜ **当前阶段** |
+| 4 | 照抄成 Rust（有参照实现后是机械工作） | ⬜ |
+| 5 | 安装器 + 服务注册 + 三平台打包 | ⬜ |
+| 6 | 代码签名 / notarize | ⬜ |
+
+自测中继本身（不需要真邮箱）：`pnpm relay:test` → 9 条断言应全绿。
+
+> **Gmail 那条路不受影响**：纯 HTTPS REST，现在就能用。
+> 想先跑通产品流程，用 Gmail 即可绕过中继。
+
+### 与文档不一致的地方（已在 ADR 里记录）
+
+1. **IMAP 需要中继**（[adr-0005](./decisions/adr-0005-imap-needs-relay.md)）。
+   `chrome.sockets.tcp` 只属于已废弃的 Chrome Apps，扩展拿不到裸 TCP，
+   而 `imapflow` / `emailjs-imap-client` 绑死 Node 的 `net` —— 所以自研了一个只覆盖
+   必需命令的 IMAP 客户端，把传输抽成 `MailSocket`，中继实现随仓库提供。
+2. **增量游标不叫 `lastSeenUid`**，而是 `MailAccount.cursor`（provider 自定形状）。
+   因为 Gmail 的游标是 `historyId: string`，把 IMAP 的 UID 写死进编排层会让
+   加第二个 provider 必须改 `syncAccount`。
+3. **MIME 解析用 `postal-mime` 而不是 `mailparser`**：后者依赖 Node 的
+   `stream` / `Buffer` / `iconv-lite`，打进 SW 要拖一堆 polyfill。
+4. Gmail 走 `format=raw` 拿完整原文，于是 IMAP 与 Gmail 共用**同一个**
+   「原始 RFC822 → Mail」解析器。
