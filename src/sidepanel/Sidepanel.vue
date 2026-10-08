@@ -1,10 +1,12 @@
 <script setup lang="ts">
 import type { Mail, PopupTab } from '~/logic/types'
 import { computed, ref } from 'vue'
+import ConfirmDialog from '~/components/ConfirmDialog.vue'
 import EmptyState from '~/components/EmptyState.vue'
 import MailListItem from '~/components/MailListItem.vue'
 import { useMails, useSettings } from '~/logic/bridge'
 import { t } from '~/logic/strings'
+import { useTrashConfirm } from '~/logic/trash-confirm'
 import {
   countByTab,
   displayCount,
@@ -27,8 +29,23 @@ import {
  *      展开两封就到底了。
  */
 
-const { mails, loading, copyCode, setRead, dismiss, trash } = useMails(300)
+const { mails, loading, justCopied, copyCode, setRead, dismiss, trash } = useMails(300)
 const { app, reload } = useSettings()
+
+/**
+ * 删除确认（与 Popup 共用同一套交互）。
+ *
+ * ⚠ 必须**解构**：Vue 的模板自动解包只对 setup 直接暴露的 ref 生效，
+ *   不会递归进普通对象。写成 `tc.pending` 会拿到 ref 对象本身（恒为真值）
+ *   ⇒ 弹窗一打开就铺满界面且没有内容。详见 `popup/Popup.vue` 里的同处说明。
+ */
+const {
+  pending: trashPending,
+  dialog: trashDialog,
+  ask: askTrashConfirm,
+  cancel: cancelTrashConfirm,
+  confirm: confirmTrashConfirm,
+} = useTrashConfirm(trash)
 
 const activeTab = ref<PopupTab>('important')
 
@@ -71,9 +88,10 @@ function openOptions() {
             v-for="mail in codeMails"
             :key="mail.id"
             :mail="mail"
+            :just-copied="justCopied.has(mail.id)"
             minimal
             @copy="(item: Mail) => copyCode(item)"
-            @trash="(item: Mail) => trash(item)"
+            @trash="(item: Mail) => askTrashConfirm(item)"
             @open="(item: Mail) => { if (!item.read) setRead(item, true) }"
           />
         </template>
@@ -107,15 +125,27 @@ function openOptions() {
             v-for="mail in visibleMails"
             :key="mail.id"
             :mail="mail"
+            :just-copied="justCopied.has(mail.id)"
             @copy="(item: Mail) => copyCode(item)"
             @read="(item: Mail, read: boolean) => setRead(item, read)"
             @dismiss="(item: Mail) => dismiss(item)"
-            @trash="(item: Mail) => trash(item)"
+            @trash="(item: Mail) => askTrashConfirm(item)"
             @open="(item: Mail) => { if (!item.read) setRead(item, true) }"
           />
         </template>
       </div>
     </template>
+
+    <!-- 删除确认（与 Popup 共用同一套交互）—— 变量来自 `useTrashConfirm` 的解构，见脚本里的说明 -->
+    <ConfirmDialog
+      :open="trashPending !== null"
+      :title="trashDialog.title"
+      :message="trashDialog.message"
+      :confirm-text="t('mail.trash')"
+      danger
+      @confirm="confirmTrashConfirm"
+      @cancel="cancelTrashConfirm"
+    />
   </main>
 </template>
 

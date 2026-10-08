@@ -460,22 +460,31 @@ onMessage('trash:empty', async () => {
 })
 
 /**
- * UI 上的「复制验证码」按钮。
+ * 「复制验证码」的**回退通道**。
  *
- * ⚠ 由 background **代转**给内容脚本，而不是让弹窗自己写剪贴板：
+ * ⚠ 正常情况下**不会走到这里** —— 弹窗 / 侧边栏自己就是 focused 文档，
+ *   它们直接调 `navigator.clipboard.writeText`（几乎必然成功）。
+ *   只有在那边写失败时（失焦、权限被策略禁用、某些 Linux 桌面）
+ *   UI 才把活派过来，让内容脚本再试一次。
  *
- *   1. 弹窗自己调 `navigator.clipboard.writeText` 会在**弹窗关闭的瞬间**被打断
- *      （用户点完复制、随手点走，写入就丢了），而内容脚本跑在页面里、不受影响；
- *   2. 三级降级逻辑（SW → 内容脚本 → toast 按钮）只需要维护一份
- *      （`background/clipboard.ts`）。
+ * ⚠ 这里**不写 `copyStatus`**。
+ *   用户手动点一下复制**不是持久状态** —— 界面上的「√ 复制成功」是纯前端的
+ *   瞬时反馈（几秒后自己消失），不该被记进库。
+ *   写库会带来一个具体的坏后果：`copyStatus` 变成 `'copied'` 之后
+ *   广播 + `reload()` 会把它读回来，而前端那个「几秒后复原」的定时器
+ *   改的是已经被换掉的对象 —— 界面上的成功提示就**永远清不掉**（真机现象）。
+ *
+ *   `copyStatus` 只由**自动复制**那条流水线写（`pipeline.ts` 的
+ *   `shouldAutoCopyCode` 分支），语义是「收到验证码时后台帮用户复制过了」。
+ *
+ * ⚠ 只广播 `mail:updated` 是为了让**别开着的界面**也刷新 ——
+ *   例如弹窗开着复制了，侧边栏也该看到同一封的正文变化。但因为它不再改库，
+ *   这次广播其实只会触发一次无变化的重读；留着是为了行为一致。
  */
 onMessage('mail:copy-code', async ({ data }) => {
   const ok = await copyViaContentScript(data.code)
-  if (ok && data.mailId) {
-    // 复制成功要把 copyStatus 落库，否则 badge 与列表状态对不上
-    await recordManualCopy(data.mailId, true)
+  if (ok && data.mailId)
     broadcastToExtension('mail:updated', { mailId: data.mailId })
-  }
   return { ok }
 })
 

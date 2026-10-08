@@ -1,10 +1,12 @@
 <script setup lang="ts">
 import type { Mail, PopupTab } from '~/logic/types'
 import { computed, ref, watch } from 'vue'
+import ConfirmDialog from '~/components/ConfirmDialog.vue'
 import EmptyState from '~/components/EmptyState.vue'
 import MailListItem from '~/components/MailListItem.vue'
 import { useMails, useSettings } from '~/logic/bridge'
 import { t } from '~/logic/strings'
+import { useTrashConfirm } from '~/logic/trash-confirm'
 import {
   countByTab,
   displayCount,
@@ -23,7 +25,7 @@ import {
  *   两套模式的**信息架构**不同（极简只有一列验证码；完整有四个分区 + 摘要 + 展开），
  *   混在一个模板里会让两边都变得难改 —— 而它们本来是独立的两个产品面。
  */
-const { mails, loading, copyCode, setRead, dismiss, trash, markAllRead } = useMails(200)
+const { mails, loading, justCopied, copyCode, setRead, dismiss, trash, markAllRead } = useMails(200)
 const { app, ai, reload: reloadSettings } = useSettings()
 
 const activeTab = ref<PopupTab>('important')
@@ -106,17 +108,36 @@ function onDismiss(mail: Mail) {
 }
 
 /**
- * 把邮件移入回收站（卡片右上角的垃圾桶）。
+ * 删除确认（卡片右上角的垃圾桶）。
  *
- * ⚠ 这里**不加二次确认**。理由：
- *   - 这个操作**可撤销** —— 邮件在「设置 · 回收站」里能一键恢复；
- *   - 加确认会让「清理验证码」这个高频动作变成两次点击。用户删验证码
- *     通常是「用完了，清掉」，而不是「我要销毁证据」。
+ * ⚠ 要**确认一次**。虽然这个操作可撤销，但用户未必知道去哪儿恢复 ——
+ *   确认弹窗正是把「可在『设置 · 回收站』里恢复」这句话说出来的地方。
+ *   （只弹「确定吗」不说后果，等于白添一次点击。）
  *
- *   真正需要确认的是**彻底删除**（在回收站页里），那一个确实不可撤销。
+ *   「标记已读」那种可逆且无后果的动作就不确认 —— 弹窗只会让人烦。
+ *
+ * ⚠⚠ 这里**必须解构**，不能写成 `const tc = useTrashConfirm(trash)` 然后用
+ *     `tc.pending` / `tc.dialog` —— Vue 的模板自动解包**只对 setup 直接暴露的
+ *     ref 生效**，不会递归进一个普通对象。那样写的话：
+ *
+ *       - `tc.pending` 拿到的是 **ref 对象本身**，而对象恒为真值
+ *         ⇒ `:open` 永远为真 ⇒ **弹窗一打开就铺满整个界面**；
+ *       - `tc.dialog` 同样是 ref 对象 ⇒ `.title` 是 `undefined`
+ *         ⇒ 于是它看起来是个**没有内容的空弹窗**。
+ *
+ *     真机上就是这样被发现的（「popup 一打开就自带一个弹窗，没有内容」）。
+ *     解构出来之后它们是 setup 的顶层绑定，Vue 才会自动解包。
  */
+const {
+  pending: trashPending,
+  dialog: trashDialog,
+  ask: askTrashConfirm,
+  cancel: cancelTrashConfirm,
+  confirm: confirmTrashConfirm,
+} = useTrashConfirm(trash)
+
 function onTrash(mail: Mail) {
-  void trash(mail)
+  askTrashConfirm(mail)
 }
 
 function onOpen(mail: Mail) {
@@ -163,6 +184,7 @@ function onOpen(mail: Mail) {
             v-for="mail in codeMails"
             :key="mail.id"
             :mail="mail"
+            :just-copied="justCopied.has(mail.id)"
             minimal
             @copy="onCopy"
             @trash="onTrash"
@@ -205,6 +227,7 @@ function onOpen(mail: Mail) {
             v-for="mail in visibleMails"
             :key="mail.id"
             :mail="mail"
+            :just-copied="justCopied.has(mail.id)"
             @copy="onCopy"
             @read="onRead"
             @dismiss="onDismiss"
@@ -220,6 +243,17 @@ function onOpen(mail: Mail) {
         </button>
       </footer>
     </template>
+
+    <!-- 删除确认（两种模式共用）—— 变量必须来自 `useTrashConfirm` 的**解构**，见脚本里的说明 -->
+    <ConfirmDialog
+      :open="trashPending !== null"
+      :title="trashDialog.title"
+      :message="trashDialog.message"
+      :confirm-text="t('mail.trash')"
+      danger
+      @confirm="confirmTrashConfirm"
+      @cancel="cancelTrashConfirm"
+    />
   </main>
 </template>
 

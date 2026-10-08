@@ -1,6 +1,8 @@
 import type { Mail } from '~/logic/types'
 import { mount } from '@vue/test-utils'
 import { beforeAll, describe, expect, it, vi } from 'vitest'
+import { ref } from 'vue'
+import MailListItem from '~/components/MailListItem.vue'
 
 /**
  * Popup 的渲染测试。
@@ -41,15 +43,38 @@ const mocks = vi.hoisted(() => ({
   mails: { value: [] as Mail[] },
   app: { value: { minimalMode: true, excludeAds: true, popupDefaultTab: 'important' } },
   ai: { value: { apiKey: 'test-key' } },
+  /**
+   * `justCopied` 必须是真的 Vue `ref`（理由见下面 `useMails` 的 mock）。
+   *
+   * ⚠ `vi.hoisted` 的回调在 import 之前执行，所以这里**不能**直接用 `ref`
+   *   （那时 `vue` 还没加载）。改成在 `beforeAll` 里补上 —— 但 mock 工厂
+   *   是**惰性**调用的（每次 `useMails()` 才跑），所以到那时 `mocks.justCopied`
+   *   已经被赋成真 ref 了。
+   */
+  justCopied: null as unknown as { value: Set<string> },
 }))
 
 vi.mock('~/logic/bridge', () => ({
   useMails: () => ({
     mails: mocks.mails,
     loading: { value: false },
+    /*
+     * 「刚刚复制过」的集合 —— **纯前端瞬时状态**，不落库。
+     * 默认空集合：绝大多数的渲染用例关心的是「没复制过」那一态。
+     * 它的行为（点完变绿、几秒后复原）在下面单独测。
+     *
+     * ⚠ 必须是**真的 `ref`**，不能写成 `{ value: new Set() }`。
+     *   `useMails` 的返回值被 Popup 解构，而解构出来的 `justCopied` 会被
+     *   当成 setup 的顶层绑定交给模板解包 —— Vue 只对**真的 ref** 解包。
+     *   假对象不会，于是模板里拿到的是 `{ value: Set }`，
+     *   调用 `.has()` 直接报「has is not a function」。
+     *   （这个测试本身就是被这条规则咬过才这么写的。）
+     */
+    justCopied: mocks.justCopied,
     copyCode: vi.fn(async () => true),
     setRead: vi.fn(async () => {}),
     dismiss: vi.fn(async () => {}),
+    trash: vi.fn(async () => true),
     markAllRead: vi.fn(async () => {}),
   }),
   useSettings: () => ({
@@ -61,6 +86,12 @@ vi.mock('~/logic/bridge', () => ({
 
 let Popup: import('vue').Component
 beforeAll(async () => {
+  /*
+   * ⚠ `vi.hoisted` 在 import 之前跑，那时 `vue` 还没加载，所以只能在**这里**
+   *   建那个真的 ref。`useMails` 的 mock 工厂是惰性调用的（每次组件 setup 才跑），
+   *   到那时这个赋值早就完成了。
+   */
+  mocks.justCopied = ref(new Set<string>())
   Popup = (await import('~/popup/Popup.vue')).default
 })
 
@@ -83,13 +114,43 @@ function codeMail(patch: Partial<Mail> = {}): Mail {
       validForSeconds: 300,
       urgency: 'high',
     },
-    copyStatus: 'copied',
+    /*
+     * ⚠ 默认用 `'none'`（还没复制过）而不是 `'copied'`。
+     *
+     *   这是邮件的**初始状态**，也是绝大多数用例想验的那个状态。
+     *   默认成 `'copied'` 的话，「复制按钮」在几乎每个用例里都不渲染，
+     *   而模板里 `v-if="copyStatus !== 'copied'"` 判断错了也看不出来
+     *   （测试会以为「按钮不存在」是正常的）。
+     */
+    copyStatus: 'none',
     read: false,
     ...patch,
   }
 }
 
 describe('极简模式渲染', () => {
+  /*
+   * ⚠ 这一条防的是「打开弹窗就自带一个空弹窗」。
+   *
+   *   删除确认弹窗（`ConfirmDialog`）只在 `pending !== null` 时渲染。
+   *   如果 `open` 的绑定写错（例如直接写 `pending`、或者被模板解包成了 ref 对象，
+   *   而**任何对象都是真值**），它就会一打开就铺满整个弹窗 —— 而且因为
+   *   `pending` 是 null、文案算出来是空串，它看起来就是个**没有内容的空框**。
+   *
+   *   所以这里断言的是「一开始根本没有那个遮罩层」。
+   */
+  it('初始不渲染删除确认弹窗', () => {
+    mocks.app.value = { minimalMode: true, excludeAds: true, popupDefaultTab: 'important' }
+    mocks.mails.value = [codeMail()]
+
+    const wrapper = mount(Popup)
+
+    expect(wrapper.find('.overlay').exists()).toBe(false)
+    expect(wrapper.find('.dialog').exists()).toBe(false)
+
+    wrapper.unmount()
+  })
+
   it('有验证码邮件时渲染出列表项', async () => {
     mocks.app.value = { minimalMode: true, excludeAds: true, popupDefaultTab: 'important' }
     mocks.mails.value = [codeMail()]
@@ -149,6 +210,57 @@ describe('极简模式渲染', () => {
     const filled = mount(Popup)
     expect(filled.text()).toContain('34949')
     filled.unmount()
+  })
+
+  it('验证码旁边是文字「复制」按钮（不是方块按钮）', () => {
+    mocks.app.value = { minimalMode: true, excludeAds: true, popupDefaultTab: 'important' }
+    mocks.mails.value = [codeMail()]
+
+    const wrapper = mount(Popup)
+
+    // 未复制时：文字按钮
+    const copyButton = wrapper.find('.copy')
+    expect(copyButton.exists()).toBe(true)
+    expect(copyButton.text()).toBe('复制')
+    // 刻意不是 `.btn-mini`（带边框的方块）—— 它读起来应是验证码那一行的延续
+    expect(copyButton.classes()).not.toContain('btn-mini')
+
+    wrapper.unmount()
+  })
+
+  it('copyStatus 为 copied 时显示绿色「√ 复制成功」', () => {
+    /*
+     * ⚠ 判据是组件的 `justCopied` **prop**（前端瞬时状态），
+     *   不是 `mail.copyStatus`（持久字段）。
+     *
+     *   这里直接挂 `MailListItem` 而不是 Popup：那个 prop 由 Popup 从
+     *   `useMails().justCopied` 算出来传下去，而在这个测试里它是 mock 的。
+     *   直接给 prop 能精确验「成功态长什么样」，不掺 mock 的细节。
+     */
+    const mail = codeMail({ copyStatus: 'none' })
+    const wrapper = mount(MailListItem, { props: { mail, justCopied: true } })
+
+    expect(wrapper.find('.copy-done').exists()).toBe(true)
+    expect(wrapper.find('.copy-done').text()).toContain('复制成功')
+    // 成功后按钮本身要让位（否则两个东西同时出现，宽度也会抖）
+    expect(wrapper.find('.copy').exists()).toBe(false)
+
+    wrapper.unmount()
+  })
+
+  /*
+   * ⚠ 这一条守的是**回归**：判据一旦退回 `mail.copyStatus`，
+   *   「几秒后复原」就失效了 —— 因为那个字段落库之后会被 `reload()` 读回来。
+   *   所以「持久字段是 copied、但不是刚复制」时必须显示普通的「复制」。
+   */
+  it('持久 copyStatus 为 copied 时不显示成功态（那是自动复制的记录）', () => {
+    const mail = codeMail({ copyStatus: 'copied' })
+    const wrapper = mount(MailListItem, { props: { mail, justCopied: false } })
+
+    expect(wrapper.find('.copy').exists()).toBe(true)
+    expect(wrapper.find('.copy-done').exists()).toBe(false)
+
+    wrapper.unmount()
   })
 
   it('含有效期时渲染倒计时', async () => {

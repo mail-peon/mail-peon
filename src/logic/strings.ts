@@ -72,7 +72,16 @@ const zhCN: StringTable = {
     summary: '摘要',
     markRead: '标记已读',
     markUnread: '标记未读',
-    dismiss: '不再显示',
+    /** 卡片上那个文字按钮 */
+    copy: '复制',
+    /**
+     * 复制成功的提示。
+     *
+     * ⚠ 带 `√` 而不是只变绿：色觉障碍用户看不出「绿了」，
+     *   而符号 + 文字是两重信号。文案也要写出**结果**（复制成功），
+     *   不只是状态（已复制）—— 前者回答了「成功了没有」。
+     */
+    copyDone: '√ 复制成功',
     /** 卡片右上角那个垃圾桶按钮的提示文案（用户看到的是「删除」，底层是移入回收站） */
     trash: '删除',
     pending: 'AI 处理中…',
@@ -107,9 +116,17 @@ const zhCN: StringTable = {
     autoDelete: '失效验证码自动删除',
     autoDeleteHint: '开启后，验证码邮件过了失效时间再等 30 秒，就自动移到这里。留 30 秒是为了盖住失效时刻的推算误差（避免误删其实还有效的验证码）。',
     emptyAction: '清空回收站',
-    emptyConfirmAgain: '再点一次，彻底删除',
     emptyDone: '已彻底删除 {n} 封',
     emptyAlready: '回收站已经是空的',
+    /* 确认弹窗（三处删除共用） */
+    confirmEmptyTitle: '清空回收站？',
+    confirmEmptyMessage: '将彻底删除回收站里的 {n} 封邮件，此操作无法撤销。',
+    confirmDeleteTitle: '彻底删除这封邮件？',
+    confirmDeleteMessage: '「{subject}」将被永久移除，此操作无法撤销。',
+    confirmTrashTitle: '删除这封邮件？',
+    confirmTrashMessage: '「{subject}」将被删除，可在「设置 · 回收站」里恢复。',
+    opFailed: '操作失败',
+    trashDone: '已移入回收站',
     loading: '加载中…',
     emptyList: '回收站是空的',
     emptyListHint: '在弹窗里把鼠标移到邮件右上角的时间上，会出现一个删除按钮。',

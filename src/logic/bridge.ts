@@ -2,6 +2,8 @@ import type { Ref } from 'vue'
 import type { AiSettings, AppSettings, Mail } from '~/logic/types'
 import { onMounted, onUnmounted, ref } from 'vue'
 import { onMessage, sendMessage } from 'webext-bridge/popup'
+import { useCopyFeedback } from '~/logic/copy-feedback'
+
 /**
  * 扩展页面（Popup / Options / Sidepanel）共用的数据访问层。
  *
@@ -268,18 +270,69 @@ export function useMails(limit = 200) {
       console.warn(`[mail-peon] mail:list 往返慢：${result.mails.length} 条用了 ${elapsed}ms`)
   }
 
+  /**
+   * 「刚刚复制成功」的瞬时反馈（**纯前端，不落库**）。
+   *
+   * 实现与踩过的坑都在 `logic/copy-feedback.ts` 里；这里只是接上它。
+   * 单独一个模块是为了能**直接用假定时器测**「几秒后复原」那个行为 ——
+   * 它埋在 `useMails`（要连 store 与消息通道）里的话根本测不动，
+   * 而真机上坏掉的恰恰就是它。
+   */
+  const { justCopied, markCopied: markJustCopied } = useCopyFeedback()
+
+  /**
+   * 复制验证码。
+   *
+   * ## ⚠ 为什么在**这里**写剪贴板，而不是让 background 代劳
+   *
+   * `navigator.clipboard.writeText` 要求调用它的**文档处于 focused 状态**。
+   *
+   *   - background（MV3 Service Worker）**没有文档** —— 它那次调用经常直接抛
+   *     `NotAllowedError`，所以才有了「降级给 content script」那一套；
+   *   - 而 **Popup / Sidepanel 自己就是 focused 文档** —— 由用户点一下触发，
+   *     这是剪贴板 API 最理想的调用场景，几乎必然成功。
+   *
+   * 早期实现把这一步交给 background 的 `copyViaContentScript`，它打的是
+   * **当前激活 tab 的 content script** —— 而用户点弹窗里的复制按钮时，
+   * 激活页往往就是扩展自己的页面（`chrome-extension://…`），
+   * 那里**没有 content script**。于是消息石沉大海，超时后返回 `ok: false`：
+   * 用户看到的正是「复制按钮无效」。
+   *
+   * ## ⚠ 全程不落库
+   *
+   * 手动复制**不写任何持久状态**（理由见 `justCopied` 的说明）。
+   * 剪贴板里那句 `writeText` 本身就是结果，写进去了就成功了 ——
+   * 不需要再让后台记一笔。
+   *
+   * ⚠ 写失败时才回退给 background（`mail:copy-code`）：它还有 content script
+   *   那一级，比直接放弃多一次机会。那条路才会落库为 `'failed'`。
+   *
+   * ⚠ 这是「点击复制」这条路；**自动复制**（收到验证码时）仍然走 background
+   *   那套三级降级，那条路没有 focused 文档可用。
+   *
+   * @param mail 邮件
+   * @returns 是否复制成功
+   */
   async function copyCode(mail: Mail) {
     const code = mail.code ?? mail.ai?.code
     if (!code)
       return false
-    const result = await send<{ ok: boolean }>('mail:copy-code', { mailId: mail.id, code }, { ok: false })
-    if (result.ok) {
-      // 本地先改状态：等广播回来再刷新会让按钮延迟半秒才变「已复制」
-      const target = mails.value.find(item => item.id === mail.id)
-      if (target)
-        target.copyStatus = 'copied'
+
+    let ok = false
+    try {
+      await navigator.clipboard.writeText(code)
+      ok = true
     }
-    return result.ok
+    catch (error) {
+      console.warn('[mail-peon] 页面内写剪贴板失败，回退给 background', error)
+      const result = await send<{ ok: boolean }>('mail:copy-code', { mailId: mail.id, code }, { ok: false })
+      ok = result.ok
+    }
+
+    if (ok)
+      markJustCopied(mail.id)
+
+    return ok
   }
 
   async function setRead(mail: Mail, read: boolean) {
@@ -329,7 +382,7 @@ export function useMails(limit = 200) {
     mailUpdateListeners.delete(reload)
   })
 
-  return { mails, loading, reload, copyCode, setRead, dismiss, trash, markAllRead }
+  return { mails, loading, justCopied, reload, copyCode, setRead, dismiss, trash, markAllRead }
 }
 
 // ---------------------------------------------------------------------------

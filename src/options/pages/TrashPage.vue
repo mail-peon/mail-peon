@@ -1,7 +1,8 @@
 <script setup lang="ts">
 import type { Mail } from '~/logic/types'
-import { computed, onUnmounted, ref } from 'vue'
+import { computed, ref } from 'vue'
 import { formatSender } from '~/adapters/mail/parser'
+import ConfirmDialog from '~/components/ConfirmDialog.vue'
 import { useSettings, useTrash } from '~/logic/bridge'
 import { formatTimestamp } from '~/logic/notification/format-time'
 import { t } from '~/logic/strings'
@@ -27,54 +28,129 @@ import { t } from '~/logic/strings'
  */
 
 const { app, setApp } = useSettings()
-const { mails, loading, restore, deleteForever, empty } = useTrash()
+const { mails, loading, restore, deleteForever, empty, trash } = useTrash()
+
+const hasMails = computed(() => mails.value.length > 0)
 
 /** 操作结果提示（成功/失败都用同一行，避免布局跳动） */
 const notice = ref('')
 const busy = ref(false)
 
 /**
- * 「清空回收站」的二次确认状态。
+ * 待确认的动作。
  *
- * ⚠ 用**两步按钮**而不是 `confirm()`。理由：
+ * ⚠ 三处删除（单条彻底删除、单条移入回收站、清空回收站）**都**要确认，
+ *   但它们的文案与后果不同，所以这里存「用户想做什么」而不是一个布尔量 ——
+ *   一个 `confirming: boolean` 表达不了「确认哪一条」。
  *
- *   1. 原生 `confirm()` 是同步阻塞的，而这里在 Options 页里 ——
- *      阻塞会让整个页面卡住（Vue 的更新也排在它后面）；
- *   2. 两步按钮**可以看到自己点的是什么**（按钮文字变成「再点一次」），
- *      而 `confirm()` 弹窗里的「确定」是个没有信息的词；
- *   3. 它有天然的逃生口：不点、或者等一会儿，状态自己复位 ——
- *      不需要「取消」按钮。
- *
- * 这是全项目唯一一个**不可撤销的批量操作**，所以值得比别处更谨慎。
+ * ⚠ 弹窗的确认按钮回调里**不能再 await 弹窗**：它是纯 UI，
+ *   只回答「点了哪个按钮」。真正的动作在 `runPending()` 里做。
  */
-const confirmingEmpty = ref(false)
-let confirmTimer: ReturnType<typeof setTimeout> | null = null
+type PendingAction
+  = | { kind: 'delete-forever', mail: Mail }
+    | { kind: 'trash', mail: Mail }
+    | { kind: 'empty' }
 
-/** 复位二次确认状态（离开、超时、或真的执行了） */
-function resetConfirm() {
-  confirmingEmpty.value = false
-  if (confirmTimer) {
-    clearTimeout(confirmTimer)
-    confirmTimer = null
+const pending = ref<PendingAction | null>(null)
+
+/** 弹窗文案与按钮文案随动作变化 */
+const dialog = computed(() => {
+  const action = pending.value
+  if (!action)
+    return { title: '', message: '', confirmText: '' }
+
+  if (action.kind === 'empty') {
+    const count = mails.value.length
+    return {
+      title: t('trash.confirmEmptyTitle'),
+      message: t('trash.confirmEmptyMessage', { n: count }),
+      confirmText: t('trash.emptyAction'),
+    }
+  }
+
+  const subject = action.mail.subject || t('common.noSubject')
+  if (action.kind === 'delete-forever') {
+    return {
+      title: t('trash.confirmDeleteTitle'),
+      message: t('trash.confirmDeleteMessage', { subject }),
+      confirmText: t('trash.deleteForever'),
+    }
+  }
+
+  return {
+    title: t('trash.confirmTrashTitle'),
+    message: t('trash.confirmTrashMessage', { subject }),
+    confirmText: t('mail.trash'),
+  }
+})
+
+/** 用户点了确认 —— 执行那个动作 */
+async function runPending() {
+  const action = pending.value
+  pending.value = null
+  if (!action)
+    return
+
+  busy.value = true
+  notice.value = ''
+  try {
+    if (action.kind === 'empty') {
+      notice.value = t('trash.emptyDone', { n: await empty() })
+      return
+    }
+
+    if (action.kind === 'delete-forever') {
+      notice.value = (await deleteForever(action.mail)) ? t('trash.deleteDone') : t('trash.opFailed')
+      return
+    }
+
+    notice.value = (await trash(action.mail)) ? t('trash.trashDone') : t('trash.opFailed')
+  }
+  finally {
+    busy.value = false
   }
 }
 
-/**
- * 进入「再点一次」状态。
- *
- * ⚠ 6 秒后自动复位：一个一直停在「再点一次」的红色按钮，
- *   用户过一会儿回来点它就会**误删** —— 那时他早忘了自己在确认什么。
- */
-function armConfirm() {
-  confirmingEmpty.value = true
-  if (confirmTimer)
-    clearTimeout(confirmTimer)
-  confirmTimer = setTimeout(resetConfirm, 6000)
+function cancelPending() {
+  pending.value = null
 }
 
-onUnmounted(resetConfirm)
+/** 恢复不需要确认：它是**非破坏性**的，而且一键就能撤销 */
+async function onRestore(mail: Mail) {
+  busy.value = true
+  notice.value = ''
+  try {
+    notice.value = (await restore(mail)) ? t('trash.restoreDone') : t('trash.opFailed')
+  }
+  finally {
+    busy.value = false
+  }
+}
 
-const hasMails = computed(() => mails.value.length > 0)
+/** 单条彻底删除 —— 不可撤销，要确认 */
+function onDeleteForever(mail: Mail) {
+  pending.value = { kind: 'delete-forever', mail }
+}
+
+/**
+ * 单条移入回收站。
+ *
+ * ⚠ 回收站页里为什么还有「删除」？因为这一页显示的是**已删除**的邮件，
+ *   而用户在这里也可能改主意想让它彻底离开主列表（而不是恢复到列表里）。
+ *   它与「彻底删除」的区别正是本页的核心语义，所以两个按钮都要有。
+ */
+function onTrash(mail: Mail) {
+  pending.value = { kind: 'trash', mail }
+}
+
+/** 清空回收站 —— 不可撤销的批量操作，要确认 */
+function onEmpty() {
+  if (!hasMails.value) {
+    notice.value = t('trash.emptyAlready')
+    return
+  }
+  pending.value = { kind: 'empty' }
+}
 
 /**
  * 邮件在表格里的「发件人」。
@@ -95,62 +171,6 @@ function senderOf(mail: Mail): string {
  */
 function trashedAtOf(mail: Mail): string {
   return mail.trashedAt ? formatTimestamp(mail.trashedAt) : '—'
-}
-
-async function onRestore(mail: Mail) {
-  busy.value = true
-  notice.value = ''
-  try {
-    const ok = await restore(mail)
-    notice.value = ok ? t('trash.restoreDone') : '恢复失败'
-  }
-  finally {
-    busy.value = false
-  }
-}
-
-async function onDeleteForever(mail: Mail) {
-  busy.value = true
-  notice.value = ''
-  try {
-    const ok = await deleteForever(mail)
-    notice.value = ok ? t('trash.deleteDone') : '删除失败'
-  }
-  finally {
-    busy.value = false
-  }
-}
-
-/**
- * 清空回收站（两步确认）。
- *
- * ⚠ 确认做在**这里**（UI 层）而不是 `useTrash.empty()` 里：
- *   那是全项目唯一一个不可撤销的批量操作，必须由用户明确点两次。
- *   做进数据层的话任何调用方都会「自动确认」，等于没有确认。
- */
-async function onEmpty() {
-  if (!hasMails.value) {
-    notice.value = t('trash.emptyAlready')
-    return
-  }
-
-  // 第一次点：只是把按钮切成「再点一次」，什么都不删
-  if (!confirmingEmpty.value) {
-    notice.value = ''
-    armConfirm()
-    return
-  }
-
-  resetConfirm()
-  busy.value = true
-  notice.value = ''
-  try {
-    const count = await empty()
-    notice.value = t('trash.emptyDone', { n: count })
-  }
-  finally {
-    busy.value = false
-  }
 }
 </script>
 
@@ -189,7 +209,7 @@ async function onEmpty() {
         :disabled="busy || !hasMails"
         @click="onEmpty"
       >
-        {{ confirmingEmpty ? t('trash.emptyConfirmAgain') : t('trash.emptyAction') }}
+        {{ t('trash.emptyAction') }}
       </button>
     </div>
 
@@ -247,6 +267,9 @@ async function onEmpty() {
               <button class="mp-btn btn-mini" type="button" :disabled="busy" @click="onRestore(mail)">
                 {{ t('trash.restore') }}
               </button>
+              <button class="mp-btn btn-mini" type="button" :disabled="busy" @click="onTrash(mail)">
+                {{ t('mail.trash') }}
+              </button>
               <button class="mp-btn mp-btn-danger btn-mini" type="button" :disabled="busy" @click="onDeleteForever(mail)">
                 {{ t('trash.deleteForever') }}
               </button>
@@ -255,6 +278,23 @@ async function onEmpty() {
         </tbody>
       </table>
     </div>
+
+    <!--
+      确认弹窗（**三处删除共用**一个实例）。
+
+      ⚠ 用一个实例 + `pending` 状态，而不是每行渲染一个弹窗：
+         回收站可能有几百行，每行一个 `v-if` 弹窗会让 DOM 白白多出一个数量级的
+         节点（虽然都不显示，但 Vue 仍要为它们建 vnode）。
+    -->
+    <ConfirmDialog
+      :open="pending !== null"
+      :title="dialog.title"
+      :message="dialog.message"
+      :confirm-text="dialog.confirmText"
+      danger
+      @confirm="runPending"
+      @cancel="cancelPending"
+    />
   </section>
 </template>
 
