@@ -199,7 +199,10 @@ export default {
 ## 4. Mailbox 编排（`src/adapters/mail/mailbox.ts`）
 
 ```
-chrome.alarms (每 5 分钟)
+触发者（三者走同一条路）
+  • 中继推送「有新邮件」
+  • 兜底定时器（chrome.alarms，10 分钟）
+  • 用户点「立即同步增量」
         │
         ▼
 syncAccount(account, appSettings)
@@ -285,11 +288,11 @@ async function syncAccount(account, settings) {
   const validity = await connection.getUidValidity()
 
   if (account.uidValidity && account.uidValidity !== validity) {
-    // UIDVALIDITY 变了：清零游标，下次心跳只记 UIDNEXT 不拉邮件；用户去邮箱自己看
+    // UIDVALIDITY 变了：清零游标，下次同步只记 UIDNEXT 不拉邮件；用户去邮箱自己看
     console.warn(`[mail-peon] 账号 ${account.label} 的 UIDVALIDITY 变了（${account.uidValidity} → ${validity}），已清零 lastSeenUid`)
     account.uidValidity = validity
     account.lastSeenUid = null
-    account.lastError = '邮箱 UIDVALIDITY 变化；下次心跳将从最新邮件开始（不再保留历史）'
+    account.lastError = '邮箱 UIDVALIDITY 变化；下次同步将从最新邮件开始（不再保留历史）'
     await put('accounts', account, account.id)
   }
   // ...正常同步
@@ -364,18 +367,26 @@ export async function readRecentMails(limit: number): Promise<Mail[]> {
 
 ---
 
-## 9. 心跳实现
+## 9. 触发收信的三种方式
+
+三者**共用同一条** `runSyncCycle` 路径 —— 分成多条的话，差别会表现为
+「手动能拉到、自动拉不到」，而这种 bug 在真机上极难排查（两边看起来都「成功」了）。
+
+| 触发者 | 时机 | 作用 |
+| --- | --- | --- |
+| **中继推送** | 新邮件到达时（中继常驻 `IDLE`） | 主要手段。见 [`../design/sync-flow.md`](../design/sync-flow.md) |
 
 ```ts
 // src/background/main.ts
-chrome.alarms.create('mail-peon:sync', { periodInMinutes: 5 })
+// 兜底定时器：推送失效时的保险丝（中继没起 / 连接没恢复）
+chrome.alarms.create('mail-peon:sync', { periodInMinutes: 10 })
 
 chrome.alarms.onAlarm.addListener(async (alarm) => {
   if (alarm.name !== 'mail-peon:sync')
     return
   await ensureStoreReady()
-  const accounts = await listAllAccounts()
-  for (const acc of accounts.filter(a => a.enabled)) {
+  const accounts = await listEnabledAccounts()
+  for (const acc of accounts) {
     try {
       await syncAccount(acc)
     }
@@ -386,7 +397,12 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
 })
 ```
 
-> **为什么用 alarms**：MV3 Service Worker 会被休眠，`setInterval` 不靠谱。`alarms` 是 Chrome 提供的最小间隔（开发期 1 分钟，生产期受限于 `periodInMinutes >= 1`）。
+> **为什么兜底也要用 alarms**：MV3 Service Worker 空闲约 30 秒被回收，
+> `setInterval` 不靠谱。`alarms` 是 Chrome 提供的定时机制（最小间隔由 Chrome 限制，
+> 约 30 秒 / 1 分钟）。
+>
+> **为什么周期给到 10 分钟**：正常情况推送会立刻触发，这个定时器每次都拉 0 封 ——
+> 给短了只是白白打扰邮箱。它的职责是「保证最终一定会收到」，不是「保证及时」。
 
 ---
 
@@ -394,7 +410,7 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
 
 | 错误 | 现象 | 处理 |
 | --- | --- | --- |
-| 账号 / 密码错 | `LOGIN Failed` | 写 `account.lastError`；下次心跳跳过（直到用户重测） |
+| 账号 / 密码错 | `LOGIN Failed` | 写 `account.lastError`；下次同步跳过（直到用户重测） |
 | TLS 失败 | `ECONNRESET` | 同上 |
 | 解析某封失败 | `simpleParser` throw | 跳过该封，继续处理其余 |
 | 网络抖动 | `ETIMEDOUT` | 单封失败不写 lastError；3 次连续失败才写 |
@@ -405,7 +421,7 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
 ## 11. 验收清单
 
 - [ ] 新增 IMAP 账号 → "测试通过"
-- [ ] 心跳每 5 分钟触发一次（devtools 看 alarm 列表）
+- [ ] 中继推送 → 插件几秒内拉到新邮件（不依赖定时器）
 - [ ] 拉取的邮件能在 Popup 显示（至少 20 封）
 - [ ] `lastError` 正确写入并展示在 Options
 - [ ] 重启浏览器后 accounts / mails 都还在（IndexedDB 持久化 OK）

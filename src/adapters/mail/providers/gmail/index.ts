@@ -137,21 +137,11 @@ async function buildConnection(account: MailAccount, onRefreshed: TokenSink): Pr
       }
     },
 
-    /** Gmail 没有 UIDVALIDITY 那种「代次」概念；historyId 的失效由 404 表达 */
-    async getMailboxTag(): Promise<string | number | null> {
-      return previousHistoryTag(account)
-    },
-
     async logout(): Promise<void> {
       // Gmail API 是无状态 REST：没有会话要关。token 留在账号配置里，
       // 由用户显式「取消授权」时才清（那是 Options 的动作，不是这里）。
     },
   }
-}
-
-function previousHistoryTag(account: MailAccount): string | null {
-  const { historyId } = readCursor(account.cursor ?? null)
-  return historyId
 }
 
 export function create(): MailProvider {

@@ -265,7 +265,7 @@ UI 上"PENDING"徽章用于"AI 还没回"的情况。
 ## 9. 验收清单
 
 - [ ] Options 配置 AI Key → "测试连通"成功
-- [ ] 心跳拉到新邮件 → Popup 出现"PENDING" → 几秒后变成 summary
+- [ ] 拉到新邮件 → Popup 出现"PENDING" → 几秒后变成 summary
 - [ ] 新邮件到达 → icon 右上角 badge 数字 +1
 - [ ] 点击 icon → Popup 打开，能看到该邮件；badge 归零
 - [ ] 广告邮件 → 不增加 badge

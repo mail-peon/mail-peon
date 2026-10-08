@@ -22,14 +22,30 @@ export interface SyncCycleDeps {
 export async function runSyncCycle(deps: SyncCycleDeps): Promise<SyncSummary[]> {
   const accounts = await listEnabledAccounts()
 
-  if (!accounts.length)
+  if (!accounts.length) {
+    console.warn('[mail-peon] 同步结束：没有启用的账号')
     return []
+  }
 
   const results = await syncAllAccounts(accounts, deps.pipeline, { hooksFor: deps.hooksFor })
 
   // badge 在整轮结束后算一次，而不是每封邮件算一次：
   // `badgeCount` 要遍历邮件表，50 封邮件就是 50 次全表扫描
   await refreshBadge()
+
+  /*
+   * ⚠ 这一行的作用是「分清两种 0」：
+   *
+   *   - `拉取 0 封` + 这条日志 → 真的没有新邮件（游标已是最新）；
+   *   - 拉到了 N 封、但界面上什么都没有 → 问题在**处理链路**
+   *     （预筛 / AI / 入库），而不是抓取。后面几条日志就是为这种情况准备的。
+   *
+   *   没有它的话，「中继日志显示抓到了邮件、界面却是空的」这件事
+   *   在插件侧完全没有线索。
+   */
+  console.warn(
+    `[mail-peon] 同步结束：${results.map(r => `${r.accountId} 拉取 ${r.fetched} 封（屏蔽 ${r.blocked}，失败 ${r.failed}）`).join('；') || '无结果'}`,
+  )
 
   return results.map((result, index) => ({
     accountId: result.accountId,

@@ -28,7 +28,13 @@ describe('schema', () => {
     // 这两个值改了等于丢用户数据（见 schema.ts 头部第 1 条）。写死断言是为了让
     // 「不小心改动」在 CI 里就失败，而不是等用户升级后发现库空了
     expect(DB_NAME).toBe('mail-peon')
-    expect(DB_VERSION).toBe(1)
+    /*
+     * ⚠ v2 = 加回收站索引（`mails.by-trashedAt`）。
+     *
+     *   改动版本号必须在 `upgrade()` 里追加分支**并且**同步这一行 ——
+     *   这条断言的用途正是逼着人停下来想一次「老用户的库要怎么升上来」。
+     */
+    expect(DB_VERSION).toBe(2)
   })
 
   it('五个仓库的形状与设计文档一致', () => {
@@ -45,7 +51,7 @@ describe('schema', () => {
 
     expect(byName.accounts.indexes.map(index => index.name)).toEqual(['by-email', 'by-enabled'])
     expect(byName.rules.indexes.map(index => index.name)).toEqual(['by-enabled', 'by-priority'])
-    expect(byName.mails.indexes.map(index => index.name)).toEqual(['by-accountId', 'by-receivedAt'])
+    expect(byName.mails.indexes.map(index => index.name)).toEqual(['by-accountId', 'by-receivedAt', 'by-trashedAt'])
   })
 })
 
@@ -57,7 +63,7 @@ describe('openDb', () => {
     expect(Array.from(db.objectStoreNames).sort()).toEqual(['accounts', 'mails', 'meta', 'rules', 'settings'])
 
     const tx = db.transaction('mails', 'readonly')
-    expect(Array.from(tx.objectStore('mails').indexNames).sort()).toEqual(['by-accountId', 'by-receivedAt'])
+    expect(Array.from(tx.objectStore('mails').indexNames).sort()).toEqual(['by-accountId', 'by-receivedAt', 'by-trashedAt'])
   })
 
   it('重复调用返回同一个连接（单例）', async () => {

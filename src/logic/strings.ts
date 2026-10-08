@@ -61,10 +61,20 @@ const zhCN: StringTable = {
 
   mail: {
     code: '验证码',
+    /**
+     * 倒计时两侧的状态词。
+     *
+     * 「有效」而不是「剩余」：右侧是**状态**，左侧才是数字。两个词分开读得通
+     * （`5:00` + `有效`），合起来也读得通（`5:00 有效`）。
+     */
+    codeValid: '有效',
+    codeExpired: '失效',
     summary: '摘要',
     markRead: '标记已读',
     markUnread: '标记未读',
     dismiss: '不再显示',
+    /** 卡片右上角那个垃圾桶按钮的提示文案（用户看到的是「删除」，底层是移入回收站） */
+    trash: '删除',
     pending: 'AI 处理中…',
     degraded: '降级',
     degradedTip: 'AI 处理失败，以上是邮件基础信息',
@@ -86,8 +96,32 @@ const zhCN: StringTable = {
     navRules: '提示词',
     navAi: 'AI 配置',
     navBlocked: '屏蔽列表',
+    navTrash: '回收站',
     navAbout: '关于',
-    minimalOnlyNote: '极简模式下只显示这一页；切到完整功能后其它子页才出现。',
+    minimalOnlyNote: '极简模式只做验证码提取；「通用」里的广告排除、Badge 等选项对极简模式无意义，已隐藏。「账号」与「AI 配置」仍然可用——它们是极简模式能工作的前提。',
+  },
+
+  trash: {
+    title: '回收站',
+    intro: '这里放的是已删除的邮件。邮件本身还在，所以可以恢复；点「彻底删除」才会真的从记录里移除，那时无法撤销。',
+    autoDelete: '失效验证码自动删除',
+    autoDeleteHint: '开启后，验证码邮件过了失效时间再等 30 秒，就自动移到这里。留 30 秒是为了盖住失效时刻的推算误差（避免误删其实还有效的验证码）。',
+    emptyAction: '清空回收站',
+    emptyConfirmAgain: '再点一次，彻底删除',
+    emptyDone: '已彻底删除 {n} 封',
+    emptyAlready: '回收站已经是空的',
+    loading: '加载中…',
+    emptyList: '回收站是空的',
+    emptyListHint: '在弹窗里把鼠标移到邮件右上角的时间上，会出现一个删除按钮。',
+    colFrom: '发件人',
+    colSubject: '主题',
+    colCode: '验证码',
+    colTrashedAt: '删除时间',
+    colActions: '操作',
+    restore: '恢复',
+    deleteForever: '彻底删除',
+    restoreDone: '已恢复',
+    deleteDone: '已彻底删除',
   },
 
   general: {
@@ -117,7 +151,7 @@ const zhCN: StringTable = {
     privacyTitle: '隐私声明',
     privacyBody: '邮箱凭据当前以明文存储在本机浏览器中，不会上传到任何服务器。请勿在公共电脑使用本扩展。',
     aiKeyMissing: '验证码提取需要先配置 AI Key',
-    aiKeyMissingAction: '去配置',
+    aiKeyMissingAction: '去 AI 配置',
     accountCount: '账号 · {n} 个',
     codeCount: '验证码记录：{n} 条',
     confirmClearMails: '确定要清空所有已保存的邮件吗？此操作不可撤销。',

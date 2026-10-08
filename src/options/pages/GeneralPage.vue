@@ -1,7 +1,7 @@
 <script setup lang="ts">
-import type { AppSettings, MailRetention, PopupTab, StorageUsage, SyncSummary } from '~/logic/types'
-import { computed, onMounted, ref } from 'vue'
-import { send, useAccounts, useSettings } from '~/logic/bridge'
+import type { AppSettings, MailRetention, PopupTab, StorageUsage } from '~/logic/types'
+import { computed, onMounted, onUnmounted, ref } from 'vue'
+import { onDataChanged, onSyncDone, send, useAccounts, useSettings } from '~/logic/bridge'
 import { t } from '~/logic/strings'
 import { MAIL_RETENTION_OPTIONS } from '~/logic/types'
 
@@ -14,11 +14,117 @@ import { MAIL_RETENTION_OPTIONS } from '~/logic/types'
  */
 
 const { app, ai, setApp, reload } = useSettings()
-const { accounts, syncNow, reload: reloadAccounts } = useAccounts()
+const { accounts, syncNow, syncStatus, reload: reloadAccounts } = useAccounts()
 
 const busy = ref(false)
 const message = ref('')
 const error = ref('')
+
+/**
+ * 把一轮同步的结果呈现出来（成功与失败都走这里）。
+ *
+ * ⚠ 抽成函数是因为它有**两个**调用方（广播与轮询兜底），而两边必须给出
+ *   完全一致的结果 —— 分成两份实现的话，差别会表现为「有时显示拉取 N 封、
+ *   有时什么都不显示」，这种不一致极难排查。
+ *
+ * @param result 后台给出的一轮同步结果
+ */
+function applySyncResult(result: { ok: boolean, results: SyncSummary[], error?: string }) {
+  busy.value = false
+  message.value = ''
+  error.value = ''
+
+  if (!result.ok) {
+    // 失败如实说。不要用「没有启用的账号」这种猜测 —— 那是另一个原因，
+    // 会把用户引去反复检查一个本来就正常的账号页
+    error.value = `同步失败：${result.error ?? '未知原因'}`
+    void reloadUsage()
+    return
+  }
+
+  const summaries = result.results
+  if (!summaries.length) {
+    error.value = '没有启用的账号；请先在「账号」页添加（并确认「启用（参与后台同步）」是勾上的）'
+    return
+  }
+
+  /*
+   * 首次同步单独说清楚：用户看到「拉取 0 封」会以为坏了，而实际上这正是
+   * 设计文档要求的「首次只记同步位置，不拉历史」。
+   */
+  const firstSync = summaries.filter(item => item.firstSync)
+  const fetched = summaries.reduce((sum, item) => sum + item.fetched, 0)
+  const blocked = summaries.reduce((sum, item) => sum + item.blocked, 0)
+  const failed = summaries.reduce((sum, item) => sum + item.failed, 0)
+
+  const parts: string[] = []
+  if (firstSync.length)
+    parts.push(`${firstSync.map(item => item.label).join('、')}：${t('general.syncFirstTime')}`)
+  if (fetched || blocked || failed)
+    parts.push(t('general.syncDone', { fetched, blocked, failed }))
+
+  const warnings = summaries.filter(item => item.warning)
+  if (warnings.length)
+    parts.push(...warnings.map(item => `⚠️ ${item.label}：${item.warning}`))
+
+  message.value = parts.join('\n') || t('general.syncDone', { fetched: 0, blocked: 0, failed: 0 })
+  void reloadUsage()
+  void reloadAccounts()
+}
+
+/**
+ * 轮询兜底：等后台给出「比本次点击更晚完成」的结果。
+ *
+ * ⚠ 为什么必须有它 —— 广播**不能**当成唯一通路：
+ *
+ *   `sync:done` 的送达依赖 background 侧 `connMap` 里有没有对应端点，而它只在
+ *   对方握手完成后才有条目。于是「页面在 background 重载之前就连上了」
+ *   「同一 context 有多个连接」「端点名对不上」这三种情况都会让消息**静默消失**。
+ *   真机上就这样卡过：点同步 → `busy = true` → 消息没到 → 永远转圈，
+ *   而且**没有任何错误**可查（中继日志显示同步根本就是成功的）。
+ *
+ *   所以点击之后一边等广播、一边按间隔问 `accounts:sync-status`；
+ *   谁先拿到算谁的（`applySyncResult` 里会先判断 `busy`）。
+ *
+ * @param startedAt 本次点击的时刻
+ * @returns 清理函数（组件卸载时必须调用，否则会一直轮询下去）
+ */
+function startSyncWatchdog(startedAt: number): () => void {
+  const POLL_INTERVAL_MS = 1500
+  /** 上限 6 分钟：比「一轮同步最长可能多久」宽松，同时保证不会无限轮询 */
+  const DEADLINE_MS = 6 * 60 * 1000
+
+  const timer = window.setInterval(async () => {
+    // 广播先到了 —— 停掉轮询
+    if (!busy.value) {
+      stop()
+      return
+    }
+
+    if (Date.now() - startedAt > DEADLINE_MS) {
+      stop()
+      busy.value = false
+      error.value = '同步超过 6 分钟仍未返回。请检查中继是否在运行，然后重试。'
+      return
+    }
+
+    const result = await syncStatus()
+    // `finishedAt` 必须晚于本次点击 —— 否则是**上一轮**的结果，
+    // 拿它来结束本次会让界面显示过期的数字
+    if (result && (result.finishedAt ?? 0) >= startedAt) {
+      stop()
+      applySyncResult(result)
+    }
+  }, POLL_INTERVAL_MS)
+
+  function stop() {
+    window.clearInterval(timer)
+  }
+
+  return stop
+}
+
+let stopWatchdog: (() => void) | null = null
 
 const minimalMode = computed(() => app.value?.minimalMode ?? true)
 const retention = computed(() => (minimalMode.value ? 50 : (app.value?.mailRetention ?? 100)))
@@ -33,9 +139,50 @@ const POPUP_TABS: Array<{ value: PopupTab, label: string }> = [
   { value: 'ad', label: '营销' },
 ]
 
+/**
+ * ⚠ 这一页用 `v-show` 挂在 Options 里（见 `Options.vue`），所以它**在打开设置页时
+ *   就挂载了**，`onMounted` 那次读账号时用户还没添加任何账号。之后切到「账号」页
+ *   新建、再切回来，组件不会重新挂载 —— 没有下面这个订阅，这页会一直显示
+ *   「账号 · 0 个」，而「立即同步增量」也会说「没有启用的账号」。
+ *
+ *   （真机上就是这么表现过一次：账号页有账号、测试连接通过，通用页坚持说没有。）
+ */
+let stopDataListener: (() => void) | null = null
+let stopSyncListener: (() => void) | null = null
+
 onMounted(async () => {
   await reload()
   await Promise.all([reloadAccounts(), reloadUsage()])
+
+  stopDataListener = onDataChanged(() => {
+    void reloadAccounts()
+    void reloadUsage()
+  })
+
+  /*
+   * ⚠ 同步结果走**广播**而不是 `syncNow()` 的返回值。
+   *
+   *   MV3 的 worker 在没有事件 30 秒后被回收，而挂着一条未完成的 `sendMessage`
+   *   不算事件 —— 「等同步跑完再返回」在同步超过 30 秒时必然失败，UI 会永远停在
+   *   「同步中」（真机上就这样卡过一次，一轮跑了 32 秒）。
+   */
+  stopSyncListener = onSyncDone((result) => {
+    // 广播可能重复到达（后台与轮询各给一次），只认第一次
+    if (!busy.value)
+      return
+    stopWatchdog?.()
+    stopWatchdog = null
+    applySyncResult(result)
+  })
+})
+
+onUnmounted(() => {
+  stopDataListener?.()
+  stopDataListener = null
+  stopSyncListener?.()
+  stopSyncListener = null
+  stopWatchdog?.()
+  stopWatchdog = null
 })
 
 async function reloadUsage() {
@@ -73,44 +220,40 @@ const usageText = computed(() => {
   return t('general.usageText', { count, limit: retention.value, size })
 })
 
-/** 点「立即同步增量」 */
+/**
+ * 点「立即同步增量」。
+ *
+ * ⚠ 这里**不等结果**：只负责转成「进行中」，结果由上面的 `onSyncDone` 订阅填。
+ *
+ *   一个真实的坑（真机上卡过）：MV3 的 worker 在**没有事件** 30 秒后被回收，
+ *   而一条**正在进行中**的 `sendMessage` **不算事件**。所以「点一下 → 等它跑完
+ *   → 拿返回值」这个写法在同步超过 30 秒时必然失败 —— worker 被杀，
+ *   promise 永远不 settle，界面停在「同步中」不动（用户的邮箱 3 万多封，
+ *   一轮同步正好跑了 32 秒）。
+ */
 async function onSyncNow() {
   busy.value = true
   message.value = ''
   error.value = ''
-  try {
-    const result = await syncNow()
-    const summaries: SyncSummary[] = result?.results ?? []
 
-    if (!summaries.length) {
-      message.value = '没有启用的账号；请先在「账号」页添加'
-      return
-    }
+  const result = await syncNow()
 
-    /*
-     * 首次同步单独说清楚：用户看到「拉取 0 封」会以为坏了，而实际上这正是
-     * 设计文档要求的「首次只记同步位置，不拉历史」。
-     */
-    const firstSync = summaries.filter(item => item.firstSync)
-    const fetched = summaries.reduce((sum, item) => sum + item.fetched, 0)
-    const blocked = summaries.reduce((sum, item) => sum + item.blocked, 0)
-    const failed = summaries.reduce((sum, item) => sum + item.failed, 0)
-
-    const parts: string[] = []
-    if (firstSync.length)
-      parts.push(`${firstSync.map(item => item.label).join('、')}：${t('general.syncFirstTime')}`)
-    if (fetched || blocked || failed)
-      parts.push(t('general.syncDone', { fetched, blocked, failed }))
-    const warnings = summaries.filter(item => item.warning)
-    if (warnings.length)
-      parts.push(...warnings.map(item => `⚠️ ${item.label}：${item.warning}`))
-
-    message.value = parts.join('\n') || t('general.syncDone', { fetched: 0, blocked: 0, failed: 0 })
-    await Promise.all([reloadUsage(), reloadAccounts()])
-  }
-  finally {
+  if (!result?.started) {
+    // 连「开始」都没成功 —— 这时才需要自己收尾（正常路径由广播/轮询收尾）
     busy.value = false
+    error.value = '无法启动同步：与后台通信失败，请重试'
+    return
   }
+
+  /*
+   * ⚠ 这里**必须**开看门狗，而不是只等 `sync:done` 广播。
+   *
+   *   广播的送达依赖 background 侧 `connMap`，任何一环没接上它就静默消失 ——
+   *   那时 `busy` 会永远停在 true，用户看到「同步中」不动，而且没有任何错误可查
+   *   （真机上就这样卡过，而中继日志显示同步根本是成功的）。
+   */
+  stopWatchdog?.()
+  stopWatchdog = startSyncWatchdog(result.startedAt)
 }
 
 /**
@@ -290,7 +433,6 @@ async function onImportFile(event: Event) {
         {{ t('options.minimalOnlyNote') }}
       </p>
     </div>
-
     <!-- ============ 极简模式的通用页 ============ -->
     <template v-if="minimalMode">
       <div class="mp-card">

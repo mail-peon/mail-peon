@@ -1,6 +1,6 @@
 {
   /*
-   * 运维脚本（`scripts/*.mjs`）的类型检查配置。
+   * 运维脚本（`scripts/*.ts`）的类型检查配置。
    *
    * 为什么单独一个文件而不是并进 `tsconfig.json`：两边的**模块环境完全不同** ——
    * 产品代码跑在浏览器扩展里（DOM + `vite/client`），脚本跑在 Node 里
@@ -10,18 +10,37 @@
   "extends": "./tsconfig.json",
   "compilerOptions": {
     /*
+     * ⚠ 这两个必须覆盖基配置的值（`target: es2016` / `module: ESNext`）。
+     *
+     *   中继用了**顶层 await**（启动服务后还要决定是否起交互控制台），
+     *   而基配置的 target 低于 es2017 时 TS 会报
+     *   「Top-level 'await' expressions are only allowed when the 'module' option is set to
+     *   es2022/esnext/... and the 'target' option is set to es2017 or higher」。
+     *
+     *   提到 es2022 不是「为了让报错消失」：脚本跑在 Node 24 上（见 README 的环境要求），
+     *   es2022 + 顶层 await 是它**本来就支持**的东西。产品代码留在 es2016
+     *   是因为要兼容浏览器，脚本没有这个约束。
+     */
+    "target": "es2022",
+    "module": "esnext",
+    /*
      * ⚠ 必须重新声明 `paths`：`extends` 里**相对的 `paths` 按「基文件所在目录」
      *   解析**，直接从 `tsconfig.json` 继承过来的 `~/*` → `./src/*` 会以
-     *   本文件（根目录）为基准重新解析 —— 目前脚本不 import 别名所以看不出问题，
-     *   但显式写出来能避免「以后加一个 `~/…` import 就莫名其妙解析失败」。
+     *   本文件（根目录）为基准重新解析。
+     *
+     *   中继 import 了 `~/adapters/mail/...`（它复用扩展的 IMAP 客户端与类型），
+     *   所以这一条**不能删** —— 删了会立刻解析失败。
      */
     "paths": {
       "~/*": ["./src/*"]
     },
     "types": ["node"],
-    "allowJs": true,
-    "checkJs": true,
+    /*
+     * ⚠ 不再需要 `allowJs` / `checkJs`：脚本已经全部是 `.ts`，类型由注解和推断给出。
+     *   留着它们会让 `include` 里的 `.ts` 被当成 JS 处理（`checkJs` 只影响 `.js`），
+     *   是纯粹的误导。
+     */
     "noEmit": true
   },
-  "include": ["scripts/**/*.mjs"]
+  "include": ["scripts/**/*.ts", "scripts/**/*.mts"]
 }

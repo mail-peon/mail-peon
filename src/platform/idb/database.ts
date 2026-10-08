@@ -297,6 +297,54 @@ export function getAllEntries<T>(store: StoreName, ctx?: TxContext): Promise<Arr
 }
 
 /**
+ * 按**索引**读音值对（回收站列表用）。
+ *
+ * ⚠ 存在的理由：`getAllEntries` 走的是主键游标，按索引排序就读不了。
+ *   而回收站要「按删除时间倒序」，索引游标是唯一顺手的办法。
+ *
+ * ⚠ 索引**不收录字段缺失的记录** —— 这正好是要的语义：
+ *   `by-trashedAt` 只返回「在回收站里」的邮件，不需要再过滤一遍。
+ *
+ * @param store 仓库名
+ * @param index 索引名
+ * @param options 遍历选项
+ * @param options.direction 遍历方向（`next` 升序 / `prev` 降序）
+ * @param options.limit 最多读几条
+ * @param ctx 事务上下文
+ */
+export function getAllFromIndex<T>(
+  store: StoreName,
+  index: string,
+  options: { direction?: IDBCursorDirection, limit?: number } = {},
+  ctx?: TxContext,
+): Promise<Array<{ key: IDBValidKey, value: T }>> {
+  const entries: Array<{ key: IDBValidKey, value: T }> = []
+  return iterate<T>(store, {
+    index,
+    direction: options.direction,
+    limit: options.limit,
+  }, (value, key) => {
+    entries.push({ key, value })
+  }, ctx).then(() => entries)
+}
+
+/**
+ * 读一个索引上的全部**主键**（清空回收站用）。
+ *
+ * 只要主键而不是值 —— 删除不需要把记录读进内存，
+ * 回收站有几百条时这个差别很明显。
+ *
+ * @param store 仓库名
+ * @param index 索引名
+ * @param ctx 事务上下文
+ */
+export function getIndexKeys(store: StoreName, index: string, ctx?: TxContext): Promise<IDBValidKey[]> {
+  return withStore(store, 'readonly', (os) => {
+    return requestToPromise<IDBValidKey[]>(os.index(index).getAllKeys())
+  }, ctx)
+}
+
+/**
  * 在一个事务里做多步操作（迁移、清空、淘汰）。
  *
  * ⚠ 传进 `fn` 的每个操作都要把 `ctx` 带上，否则它们会各自新开事务 ——

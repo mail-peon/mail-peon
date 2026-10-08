@@ -39,17 +39,56 @@
 
 > **不用 `chrome.notifications`**——新邮件只用 `chrome.action.setBadgeText` 提示；其它"刚做完一件事"的反馈（验证码复制）走页面顶部 toast（content script 渲染）。
 
+<details>
+<summary>中继在拓扑中的位置</summary>
+
+```
+   Background SW ──── WebSocket（本机）────┐
+                                          │
+                              ┌───────────▼──────────┐
+                              │  中继（本机 Node 进程） │
+                              │  • 常驻 IMAP IDLE     │
+                              │  • 字节透传           │
+                              └───────────┬──────────┘
+                                          │ TLS 993
+                              ┌───────────▼──────────┐
+                              │    邮件服务器          │
+                              └──────────────────────┘
+```
+
+</details>
+
+### 1.1 为什么需要一个本机中继
+
+浏览器扩展**没有裸 TCP**（MV3 只有 `fetch` / `WebSocket`；`chrome.sockets.tcp` 属于已废弃的 Chrome Apps），
+而 IMAP 长在 TCP 上。所以浏览器要收发 IMAP，中间必须有人把 WebSocket 的字节搬进 TCP —— 这个角色就是**中继**。
+
+中继同时承担另一件事：**持有常驻的 IMAP `IDLE` 连接**，新邮件一到就推给插件。
+
+| 为什么长连接不能放在插件里 | |
+| --- | --- |
+| MV3 Service Worker 空闲约 30 秒被回收 | `setInterval` 与常驻连接都保不住 |
+| 中继是普通 Node 进程 | 可以长时间挂着 `IDLE` —— 这正是「实时」的前提 |
+
+> 中继**不需要额外信任**：它为了跟邮件服务器通 TLS，本来就要终止握手、看到明文
+> （包括邮箱密码）。所以让它持有长连接不扩大信任面。
+> 详细论证见 [`decisions/adr-0005-imap-needs-relay.md`](./decisions/adr-0005-imap-needs-relay.md)。
+
 ### 角色分工
 
 | 上下文 | 职责 |
 | --- | --- |
-| **Background SW** | 心跳。轮询邮箱、解析邮件、调用 AI、写存储、更新 Badge、推送 Toast |
+| **Background SW** | 接中继推送后抓增量、解析邮件、调用 AI、写存储、更新 Badge、推送 Toast |
+| **中继** | 常驻 IMAP `IDLE`（发现新邮件）+ 字节透传（供插件抓取）。**不解析邮件内容** |
 | **Popup** | 用户点了工具栏图标 → 看「最近重要邮件列表」+ AI 摘要 |
 | **Sidepanel** | 展开后的完整视图（分 Tab：全部 / 重要 / 验证码 / 营销） |
 | **Options** | 设置页（账号 / 提示词 / 排除 / AI 配置） |
 | **Content Script** | **M2 起启用**：渲染顶部 toast（shadow DOM 隔离）+ 在页面 focus 上下文执行复制 |
 
 > **规则：AI 调用、邮件解析、HTTP 全部放 Background。Popup/Options 只渲染 + 收发消息。Content Script 仅承担"在用户当前页面反馈"的责任（toast 渲染 + clipboard.writeText 重试）。**
+>
+> **规则：中继只看得到「有几封邮件」，看不到主题与正文。** 它需要解析的 IMAP 仅限于
+> `LOGIN` / `SELECT` / `IDLE` 的响应行。中继越笨，它出问题时的破坏面越小。
 
 ---
 
@@ -62,7 +101,7 @@ src/
 ├── manifest.ts                    ✅ MV3 manifest 生成器
 │
 ├── background/                    ✅ Background SW 入口（main.ts）
-│   ├── main.ts                    ✅ 模板示例；将改造为"邮箱心跳"
+│   ├── main.ts                    ✅ 收信主循环（接中继推送 / 兜底定时器 / 消息处理）
 │   └── contentScriptHMR.ts        ✅ 开发期注入
 │
 ├── popup/                         ✅ Popup 入口
@@ -219,7 +258,7 @@ src/
 | --- | --- |
 | `tabs` | 查激活 tab（toast 投递） |
 | `activeTab` | 当前 tab 短时访问 |
-| `alarms` | 周期性轮询新邮件（替代 setInterval，避免 SW 休眠） |
+| `alarms` | 兜底定时抓取（推送失效时的保险丝） |
 | `sidePanel` | Chrome 侧边栏（MVP 可选） |
 | `storage` | **仅用于一次性迁移**（从 chrome.storage.local 迁到 IndexedDB，迁移完成后摘除） |
 
@@ -252,8 +291,11 @@ src/
 
 ## 6. 生命周期关键点
 
-- **MV3 Service Worker 会休眠**：长连接（IMAP socket）会被砍。所有"持续连接"方案不实用 → **采用「alarms 周期性轮询」+「单次连接抓增量」**。
-- **冷启动**：监听 `runtime.onInstalled` / `runtime.onStartup`，恢复心跳。
+- **MV3 Service Worker 会休眠**（空闲约 30 秒被回收）：所以**不把长连接放在插件里**。
+  常驻 IMAP `IDLE` 由中继持有（§ 1.1），插件只在被推醒时做「单次连接抓增量」。
+- **插件保留一个低频 `alarms` 兜底**：推送依赖「中继在跑 + 连接活着」，两个前提都可能
+  不成立（中继没起、睡眠后连接没恢复）。它是保险丝，不是主要手段。
+- **冷启动**：监听 `runtime.onInstalled` / `runtime.onStartup`，恢复中继 watch 连接与兜底定时器。
 - **onMessage**：Background 收消息时若 SW 刚启动，要先 `await dataReady`（基于 `useWebExtensionStorage` 的 `dataReady`）再做处理。
 
 ---

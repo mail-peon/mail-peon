@@ -28,6 +28,18 @@ export const aiOutputSchema = z.object({
    * 这里先宽松地收下，再由下面的 `cleanCode()` 决定要不要留。
    */
   code: z.union([z.string(), z.null()]).optional().catch(null),
+  /*
+   * `validForSeconds`：验证码有效期（**秒**）。
+   *
+   * 用 `z.coerce.number()` 而不是 `z.number()`：模型经常把数字写成字符串
+   * （`"300"`），甚至写成带单位的 `"5 分钟"`。前者可以直接救回来；
+   * 后者要靠下面的 `cleanValidForSeconds()` 从文本里抠 —— 但**抠不到就丢成
+   * `null`，绝不猜**。
+   *
+   * 上限 24 小时：超过这个数基本是把「订单 7 天内发货」之类的时长当成了
+   * 验证码有效期。宁可判为「没有明确有效期」，也不要显示一个荒谬的倒计时。
+   */
+  validForSeconds: z.union([z.number(), z.string(), z.null()]).optional().catch(null),
   urgency: z.enum(['low', 'normal', 'high']).catch('normal'),
 })
 
@@ -90,6 +102,108 @@ export function cleanCode(value: string | null | undefined): string | null {
   return withDigit ?? null
 }
 
+/** 验证码有效期的上下限（秒） */
+export const MIN_VALID_FOR_SECONDS = 10
+export const MAX_VALID_FOR_SECONDS = 24 * 60 * 60
+
+/**
+ * 校验 + 归一 AI 给出的 `validForSeconds`。
+ *
+ * ## ⚠ 边界：这不是「用代码去找时间」
+ *
+ * **有效期只能由 AI 从正文里读出来。** 这个函数**不碰邮件正文** ——
+ * 它处理的输入是 AI 输出的那个字段值，职责只有两件：
+ *
+ *   1. **换算单位**（`"5 分钟"` → `300`）—— 提示词已经要求纯秒数，
+ *      但模型经常把原文的单位一起带上。这是格式归一，不是「找信息」。
+ *   2. **挡住明显错的**（`0`、负数、`7 天`、`14:30`）—— 见下面的判据。
+ *
+ * ## 为什么不许用正则去正文里扫「\d+ 分钟」
+ *
+ *   - 邮件里会出现「订单 5 分钟内发货」「优惠券 30 天有效」「上架 2 小时」——
+ *     正则分不清哪个才是**验证码的**有效期，而 AI 读得懂上下文；
+ *   - 猜错的代价是不对称的：显示一个错的倒计时会让用户错过真的验证码，
+ *     不显示只是少了个便利。
+ *
+ * 一句话：**读信息是 AI 的事，格式与合理性是我们的事。**
+ *
+ * ⚠ 歧义时一律丢成 `null`，绝不猜。
+ *
+ * @param value AI 输出的原始值
+ * @returns 有效秒数；无法确定时 `null`（= 这封邮件没有明确有效期，UI 不展示倒计时）
+ */
+export function cleanValidForSeconds(value: unknown): number | null {
+  if (value === null || value === undefined)
+    return null
+
+  if (typeof value === 'number') {
+    return Number.isFinite(value) ? clampSeconds(value) : null
+  }
+
+  if (typeof value !== 'string')
+    return null
+
+  const trimmed = value.trim().toLowerCase()
+  if (!trimmed)
+    return null
+
+  if (['null', 'none', 'nil', 'n/a', 'na', '无', '没有', 'unknown', 'false', 'undefined'].includes(trimmed))
+    return null
+
+  /*
+   * 形态 1：纯数字，或数字 + **秒**（`300` / `"300"` / `300s` / `300 seconds` / `300 秒`）。
+   *
+   * ⚠ 后缀必须严格限定在「秒」这一族，不能放宽成「任意非数字后缀」：
+   *
+   *   - 写成 `[a-z秒]*` 时，`5 分钟` 也能匹配 —— 后缀吃掉 `分`，数字取到 `5`，
+   *     于是「5 分钟」被当成 **5 秒**，再被下限判掉返回 `null`；
+   *   - 就算写成 `[a-z]+`（不收中文），`5 min` 仍会命中，同样是「5 秒」的错。
+   *
+   *   而 `m` / `h` 开头的后缀**一定**是分钟或小时（英文里没有以 m/h 开头的
+   *   「秒」单位），所以用 `(?!m|h)` 把它们排除，交给下面的形态 2 处理。
+   *   两条规则不重叠，也就不会互相抢。
+   */
+  const pureNumber = /^(\d+(?:\.\d+)?)\s*(?:(?!m|h)[a-z]+|秒)?$/.exec(trimmed)
+  if (pureNumber)
+    return clampSeconds(Number.parseFloat(pureNumber[1]))
+
+  /*
+   * 形态 2：`5 分钟` / `5min` / `5 minutes` / `2 小时` / `2h` —— 带时间单位的自然语言。
+   *
+   * ⚠ **中文单位必须排在拉丁模式之前**。
+   *   正则的析取是**从左到右**试的，而 `[hm][a-z]*` 里的 `*` 允许零个字符 ——
+   *   所以 `5 分钟` 会先被 `[hm]` 吃掉那个 `m`，然后 `[a-z]*` 匹配空，
+   *   接着 `$` 发现后面还剩「分钟」→ 整体失败 → 落到 `return null`。
+   *   症状是「带中文单位的有效期全部识别不出」，而纯粹的英文单位却正常。
+   *   （实测踩过：`'5 分钟'` 返回 `null`。）
+   *
+   * ⚠ 单位用 `[hm]` 开头分流，而不是枚举 `min|mins|minute|...`：
+   *   这里的**唯一**判断是「分钟还是小时」（决定倍率），而两族单位的首字母不重叠
+   *   （`m*` 全是分钟，`h*` 全是小时）。枚举写法又长又会被 lint 判为「单字符析取」。
+   */
+  const withUnit = /^(\d+(?:\.\d+)?)\s*(分钟|分|小时|时|[hm][a-z]*)$/.exec(trimmed)
+  if (withUnit) {
+    const amount = Number.parseFloat(withUnit[1])
+    const marker = withUnit[2]
+    const isHour = marker.startsWith('h') || marker === '小时' || marker === '时'
+    return clampSeconds(amount * (isHour ? 3600 : 60))
+  }
+
+  return null
+}
+
+/**
+ * 夹到合理区间。超出 `[MIN, MAX]` 的一律判为「没读到有效信息」。
+ *
+ * 上限的理由：把「7 天内发货」当成验证码有效期，界面上会出现一个 7 天的
+ * 倒计时 —— 那比不显示更糟。下限同理（1 秒的有效期没有意义，多半是解析错了）。
+ */
+function clampSeconds(seconds: number): number | null {
+  if (!Number.isFinite(seconds) || seconds < MIN_VALID_FOR_SECONDS || seconds > MAX_VALID_FOR_SECONDS)
+    return null
+  return Math.round(seconds)
+}
+
 /** 把 zod 的输出装配成 `AiOutput` */
 export function toAiOutput(parsed: AiOutputSchema): AiOutput {
   return {
@@ -97,6 +211,7 @@ export function toAiOutput(parsed: AiOutputSchema): AiOutput {
     summary: parsed.summary.trim(),
     isAd: parsed.isAd,
     code: cleanCode(parsed.code),
+    validForSeconds: cleanValidForSeconds(parsed.validForSeconds),
     urgency: parsed.urgency,
   }
 }

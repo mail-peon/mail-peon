@@ -23,7 +23,7 @@ export const DB_NAME = 'mail-peon'
  *
  * 每次改动结构都要 +1，并在 `upgrade()` 里追加对应分支。
  */
-export const DB_VERSION = 1
+export const DB_VERSION = 2
 
 export type StoreName = 'accounts' | 'rules' | 'mails' | 'settings' | 'meta'
 
@@ -66,6 +66,17 @@ export const STORES: readonly StoreSchema[] = [
       { name: 'by-accountId', keyPath: 'accountId' },
       // receivedAt 是数字时间戳，升序索引的游标即时间序
       { name: 'by-receivedAt', keyPath: 'receivedAt' },
+      /*
+       * 回收站（v2 新增）。
+       *
+       * `trashedAt` 只在**进回收站之后**才有值。IndexedDB 的索引**不收录
+       * 字段缺失的记录** —— 所以这个索引天然只包含「在回收站里」的邮件，
+       * 拿它的游标倒序遍历就是「回收站列表，最近删的在最前」。
+       *
+       * ⚠ 这正是用**时间戳**而不是布尔量的收益：布尔量要么建不出「只有 true」
+       *   的索引（IndexedDB 不支持部分索引），要么得全表扫再过滤。
+       */
+      { name: 'by-trashedAt', keyPath: 'trashedAt' },
     ],
   },
   {
@@ -101,7 +112,24 @@ export function upgrade(db: IDBDatabase, oldVersion: number, tx: IDBTransaction)
     }
   }
 
-  // 以后新增版本时在这里追加，例如：
-  // if (oldVersion < 2) { tx.objectStore('mails').createIndex('by-read', 'read') }
-  void tx
+  /*
+   * v2：回收站。
+   *
+   * ⚠⚠ 必须是 `else if`，**不是**独立的 `if (oldVersion < 2)`。
+   *
+   *   全新安装时 `oldVersion === 0`，上面那个分支已经把 `STORES` 里的索引
+   *   **全都建好了**（`STORES` 是「当前结构的唯一真相」，里面已经含 `by-trashedAt`）。
+   *   此时再执行一次 `createIndex('by-trashedAt', …)` 会抛 `ConstraintError`
+   *   （索引已存在），而 `onupgradeneeded` 里的异常会让**整个升级事务 abort** ——
+   *   表现是 `AbortError`，**库根本打不开**，而且错误信息完全不提索引重名。
+   *   （实测踩过：全套 store 测试挂掉 27 条。）
+   *
+   *   所以老库才需要补建索引；新库已经由第一个分支建好了。
+   */
+  else if (oldVersion < 2) {
+    const mails = tx.objectStore('mails')
+    // 防御：万一某个中间版本已经建过（例如从更早的开发版升上来），别重复建
+    if (!mails.indexNames.contains('by-trashedAt'))
+      mails.createIndex('by-trashedAt', 'trashedAt')
+  }
 }

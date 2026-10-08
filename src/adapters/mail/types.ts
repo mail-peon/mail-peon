@@ -17,7 +17,20 @@ export type { SyncCursor }
  *   编排层只负责透传与持久化。
  */
 
-/** 一次同步最多处理多少封新邮件（防止首次误配后一口气拉爆） */
+/**
+ * 一轮同步最多**拉取**多少封新邮件。
+ *
+ * ⚠ 这个数字与「一轮最多**处理**多少封」是两件事，别混：
+ *   - 这里是**拉取**上限。它是为了不让一次 `UID FETCH` 传输过多正文 ——
+ *     IMAP 客户端的单条命令有超时（30s），一批几千封必然撞爆。
+ *   - 拉到的每一封都会走完 pipeline（解析 + AI + 入库），**不会**被丢弃。
+ *
+ * 50 是实测出来的保守值：一轮 50 封 × 平均几十 KB 正文，远在 30 秒命令超时内。
+ *
+ * ⚠ 积压会**多轮消化**，而不是被跳过：provider 每轮只推进到本批最大 UID，
+ *   下一轮心跳从那里继续（见 `providers/imap/index.ts` 的 `fetchSince`）。
+ *   3 万封的邮箱、5 分钟一次心跳，理论上积压几轮就能追平。
+ */
 export const MAX_MESSAGES_PER_SYNC = 50
 
 /**
@@ -110,10 +123,19 @@ export interface MailConnection {
    * 那种情况下不能落一个假游标，否则下次会把整箱历史当增量拉下来。
    */
   getInitialCursor: () => Promise<SyncCursor>
-  /** 后续同步：拉 `cursor` 之后的新邮件 */
+  /**
+   * 后续同步：拉 `cursor` 之后的新邮件。
+   *
+   * ⚠ 实现方**必须**把「拉的这一批」与「游标推进到哪」当成一件事来设计：
+   *
+   *   - `nextCursor` 只能推进到**本批确实处理过的最大的那个位置**，
+   *     绝不能直接跳到「服务器最新」—— 那会让本批之外的新邮件永久不被拉取
+   *     （IMAP provider 踩过：积压几千封时只有最新的 50 封被处理，其余静默丢失）。
+   *   - 积压应当**多轮消化**，每轮取最旧的一批并推进到那批末尾。
+   *
+   * 这条注释放在接口上而不是某个实现里，因为它是**契约**，不是实现细节。
+   */
   fetchSince: (cursor: SyncCursor) => Promise<FetchResult>
-  /** 当前邮箱的稳定标识（IMAP 的 UIDVALIDITY）—— 变化即意味着游标失效 */
-  getMailboxTag?: () => Promise<string | number | null>
   logout: () => Promise<void>
 }
 

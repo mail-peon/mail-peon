@@ -160,9 +160,23 @@ async function processRawMails(
       continue
     }
 
+    /*
+     * ⚠ 逐封记一行「进来了」。
+     *
+     *   有了它，「拉取 3 封」与「界面上 0 条」之间就不再是黑盒 ——
+     *   可以立刻分清是「一封都没进处理链路」还是「进来了但被丢掉 / 没入库」。
+     *   不带正文，只带主题（诊断用，不涉隐私）。
+     */
+    console.warn(
+      `[mail-peon] 处理邮件：${mail.subject || '(无主题)'}`
+      + `｜正文 ${mail.bodyText?.length ?? 0} 字`
+      + `｜模式 ${app.minimalMode ? '极简' : '完整'}`,
+    )
+
     // 排除邮箱 / 屏蔽列表：只对完整模式生效（极简模式没有这个概念）
     if (!app.minimalMode && app.blockedEnabled && isBlocked(mail, account.blockedList)) {
       stats.blocked++
+      console.warn(`[mail-peon] 被屏蔽列表拦下：${mail.subject}`)
       continue
     }
 

@@ -1,6 +1,6 @@
 import type { RetentionLimit } from '~/logic/types'
 import type { TxContext } from '~/platform/idb/database'
-import { count, del, iterate } from '~/platform/idb/database'
+import { del, iterate } from '~/platform/idb/database'
 
 /**
  * 邮件滚动淘汰。
@@ -21,39 +21,75 @@ import { count, del, iterate } from '~/platform/idb/database'
 export const RETENTION_INDEX = 'by-receivedAt'
 
 /**
- * 删掉最旧的 `overflow` 封，返回实际删掉的条数。
+ * 回收站里的邮件**不参与滚动淘汰**。
  *
- * ⚠ 必须跑在调用方的 readwrite 事务里（通过 `ctx`）。淘汰要先 `count` 再删，
- *   拆成两个事务的话，两个上下文并发写时会各自数出「还没超限」而双双留下条目 ——
- *   前者突破上限，后者多删。
+ * ⚠ 这一点很重要，不是遗漏：
  *
- * 关于 `del` 不 await：`iterate` 的回调是**同步**的，而 `del` 在拿到 `ctx` 时是
- * 同步把 `os.delete()` 发出去的 —— 请求落在同一个事务里就够了，事务何时提交由
- * `runTx` 统一等。反过来，回调里若去 await 别的东西，事务会在微任务排空时提前提交
- * （见 `platform/idb/database.ts` 头部第 1 条规矩）。
+ *   - 回收站的存在意义就是「用户以为删了、其实还能找回来」。
+ *     如果滚动淘汰会把回收站里的东西顺手删掉，那它就不是回收站，而是
+ *     一个「过一会儿自己清空」的假回收站 —— 用户根本来不及反悔。
+ *   - 所以回收站只能由**用户显式动作**清空（`emptyTrash` / 单条彻底删除），
+ *     或者由「失效验证码自动删除」推进去，绝不会被保留数量挤掉。
+ *
+ * 代价是回收站会一直占着空间。这是**有意**的：占用是可见的（回收站页有计数），
+ * 而「东西悄悄没了」是不可见的。前者用户能处理，后者不能。
  */
 export async function pruneMails(ctx: TxContext, retention: RetentionLimit): Promise<number> {
   if (retention === 'unlimited')
     return 0
 
-  const total = await count('mails', ctx)
-  const overflow = total - retention
+  /*
+   * ⚠ 计数要把回收站**排除掉**，否则「保留 100 封」会被回收站里的邮件虚占名额 ——
+   *   用户看到主列表只剩 60 封，而回收站里躺着 40 封，却不知道两者有关系。
+   *   这里逐条数而不是 `count('mails')`：后者是整表条数。
+   */
+  let live = 0
+  await iterate<unknown>('mails', {}, (value) => {
+    const mail = value as { trashedAt?: unknown } | null
+    if (mail && typeof mail === 'object' && mail.trashedAt === undefined)
+      live++
+  }, ctx)
+
+  const overflow = live - retention
   if (overflow <= 0)
     return 0
 
   let removed = 0
+  let skippedTrashed = 0
+
+  /*
+   * ⚠ 这里**不能**给 `limit: overflow`。
+   *
+   *   游标要跳过回收站里的条目，而跳过是不计入删除数的 ——
+   *   如果按 overflow 提前停，最旧的几封恰好在回收站里时就会「删不够」，
+   *   于是调用方以为还超限、下一轮又跑一遍。
+   *   代价是最坏情况多遍历一些条目，换来「一次就删到位」。
+   */
   await iterate<unknown>(
     'mails',
-    { index: RETENTION_INDEX, direction: 'next', limit: overflow },
-    (_value, key) => {
+    { index: RETENTION_INDEX, direction: 'next' },
+    (value, key) => {
+      if (removed >= overflow)
+        return
+
+      const mail = value as { trashedAt?: unknown } | null
+      if (mail && typeof mail === 'object' && mail.trashedAt !== undefined) {
+        skippedTrashed++
+        return
+      }
+
       void del('mails', key, ctx)
       removed++
     },
     ctx,
   )
 
-  if (removed > 0)
-    console.warn(`[mail-peon] 邮件超过 ${retention} 封，已丢弃最旧的 ${removed} 封`)
+  if (removed > 0) {
+    console.warn(
+      `[mail-peon] 邮件超过 ${retention} 封，已丢弃最旧的 ${removed} 封`
+      + `${skippedTrashed ? `（跳过回收站里的 ${skippedTrashed} 封）` : ''}`,
+    )
+  }
 
   return removed
 }

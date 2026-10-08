@@ -8,21 +8,29 @@ import AiPage from './pages/AiPage.vue'
 import BlockedPage from './pages/BlockedPage.vue'
 import GeneralPage from './pages/GeneralPage.vue'
 import RulesPage from './pages/RulesPage.vue'
+import TrashPage from './pages/TrashPage.vue'
 
 /**
  * Options（标签页打开）—— 路由根据 `minimalMode` 切两套
  * （`design/ui-flows.md § 4.1` / `§ 4.1b`）。
  *
- * ⚠ 极简模式下**整个侧边导航都不显示**，而不是「显示但禁用」：
- *   极简模式的产品承诺是「只做一件事」，给用户看到一个灰掉的「提示词」入口
- *   等于在告诉他「你买的版本少了点东西」。隐藏比禁用更符合这个定位。
+ * ⚠ **与设计文档的一处偏差**（文档原写「极简模式只显示『通用』一页」，已改文档）：
+ *
+ *   极简模式的产品定位是「**功能**只有验证码提取」，但**配置**是它的前提 ——
+ *   没有「账号」页就加不了邮箱，没有「AI 配置」就提取不了验证码，
+ *   也就是说照原文实现出来的极简模式**根本没法用**。原文只考虑到「少展示功能」，
+ *   漏了「配置项 ≠ 功能」这条区分。
+ *
+ *   所以极简模式保留 4 页：通用 / 账号 / AI 配置 / 关于；
+ *   只隐藏**属于完整模式功能**的三页：提示词 / 屏蔽列表（以及通用页里的
+ *   广告排除、保留数量等开关）。
  *
  * 用自己的一行 `activePage` 而不是引 vue-router：只有 6 个页面、没有深层链接、
  * 没有 history 需求 —— 而 vue-router 会往产物里加 20KB 并且要求 history API
  * （在 `chrome-extension://` 下要额外配 `createWebHashHistory`）。
  */
 
-type PageId = 'general' | 'accounts' | 'rules' | 'ai' | 'blocked' | 'about'
+type PageId = 'general' | 'accounts' | 'rules' | 'ai' | 'blocked' | 'trash' | 'about'
 
 const { app, ai, reload } = useSettings()
 const activePage = ref<PageId>('general')
@@ -35,17 +43,30 @@ const NAV: Array<{ id: PageId, key: string }> = [
   { id: 'rules', key: 'options.navRules' },
   { id: 'ai', key: 'options.navAi' },
   { id: 'blocked', key: 'options.navBlocked' },
+  { id: 'trash', key: 'options.navTrash' },
   { id: 'about', key: 'options.navAbout' },
 ]
 
-/** 极简模式只显示「通用」；完整模式显示全部 */
-const visibleNav = computed(() => (minimalMode.value ? NAV.slice(0, 1) : NAV))
+/**
+ * 极简模式隐藏的页面：它们对应的是**完整模式的功能**，不是配置前提。
+ *
+ * ⚠ 「回收站」**不在这里** —— 它在两种模式下都显示。理由：
+ *   「失效验证码自动删除」默认开着，而它会把邮件移进回收站；
+ *   极简模式下藏掉回收站，用户就找不到那些自动消失的验证码了，
+ *   而那正是最需要回收站的时候。
+ *   提示词 / 屏蔽列表是**功能**，回收站是**数据出口**，两者不是一类。
+ */
+const FULL_MODE_ONLY: readonly PageId[] = ['rules', 'blocked'] as const
+
+const visibleNav = computed(() =>
+  minimalMode.value ? NAV.filter(item => !FULL_MODE_ONLY.includes(item.id)) : NAV,
+)
 
 /**
  * 切到极简模式时把停留在隐藏页面的路由拉回「通用」。
  *
- * 不做这件事的话，用户在「AI 配置」页把模式切到极简 → 导航消失了、但主区还停在
- * AI 配置页上 —— 页面看起来像是「导航栏丢了」。
+ * 不做这件事的话，用户在「提示词」页把模式切到极简 → 导航里那一项消失了、
+ * 但主区还停在提示词页上 —— 页面看起来像是「导航栏丢了」。
  */
 function ensureVisiblePage() {
   if (!visibleNav.value.some(item => item.id === activePage.value))
@@ -73,15 +94,19 @@ defineExpose({ reload })
 </script>
 
 <template>
-  <div class="options" :class="{ 'is-minimal': minimalMode }">
+  <div class="options">
     <header class="topbar">
       <span class="title">{{ t('options.title') }}</span>
       <span v-if="minimalMode" class="mode-tag">{{ t('app.minimalSuffix') }}</span>
     </header>
 
     <div class="body">
-      <!-- 极简模式：没有侧边导航（ui-flows.md § 4.1b） -->
-      <aside v-if="!minimalMode" class="sidebar">
+      <!--
+        侧边导航在两种模式下**都显示**（见文件头：极简模式保留「账号 / AI 配置」等
+        配置页，它们是极简模式能用的前提）。两种模式的差别只是 visibleNav 里少了
+        「提示词」与「屏蔽列表」。
+      -->
+      <aside class="sidebar">
         <button
           v-for="item in visibleNav"
           :key="item.id"
@@ -101,13 +126,14 @@ defineExpose({ reload })
 
         <template v-else>
           <GeneralPage v-show="activePage === 'general'" />
-          <template v-if="!minimalMode">
-            <AccountsPage v-if="activePage === 'accounts'" />
-            <RulesPage v-else-if="activePage === 'rules'" />
-            <AiPage v-else-if="activePage === 'ai'" :settings="ai" />
-            <BlockedPage v-else-if="activePage === 'blocked'" />
-            <AboutPage v-else-if="activePage === 'about'" />
-          </template>
+          <AccountsPage v-if="activePage === 'accounts'" />
+          <AiPage v-else-if="activePage === 'ai'" :settings="ai" />
+          <!-- 回收站在两种模式下都显示（见 FULL_MODE_ONLY 的说明） -->
+          <TrashPage v-else-if="activePage === 'trash'" />
+          <AboutPage v-else-if="activePage === 'about'" />
+          <!-- 下面两页只在完整模式出现，与 visibleNav 的过滤保持一致 -->
+          <RulesPage v-else-if="activePage === 'rules' && !minimalMode" />
+          <BlockedPage v-else-if="activePage === 'blocked' && !minimalMode" />
         </template>
       </main>
     </div>
@@ -187,13 +213,6 @@ defineExpose({ reload })
   min-width: 0;
   overflow-y: auto;
   padding: 20px 24px 48px;
-}
-
-/* 极简模式：内容居中、限宽 —— 一页表单铺满整个屏幕会显得很空 */
-.is-minimal .content {
-  max-width: 560px;
-  margin: 0 auto;
-  width: 100%;
 }
 
 .loading {

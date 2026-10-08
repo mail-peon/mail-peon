@@ -457,7 +457,40 @@ export function normalizeMail(raw: unknown, fallbackKey?: string): Mail | null {
     copyStatus,
     read: bool(value.read, false),
     dismissed: value.dismissed === undefined ? undefined : bool(value.dismissed, false),
+    /*
+     * 回收站标记（v2）。
+     *
+     * ⚠ 必须是**正数**才认：`0` / 负数 / `NaN` 会让它落进 `by-trashedAt` 索引的
+     *   诡异位置（`0` 排在最前），而且 UI 上会显示「1970 年删除的邮件」。
+     *   归一成 `undefined` 就等于「不在这封邮件的回收站里」。
+     *
+     *   存量记录本来就没有这个字段 —— 归一到 `undefined` 正是要的语义（不在回收站）。
+     */
+    trashedAt: (() => {
+      const at = num(value.trashedAt, Number.NaN)
+      return Number.isFinite(at) && at > 0 ? at : undefined
+    })(),
     code: typeof value.code === 'string' && value.code ? value.code : null,
+    /*
+     * 验证码失效时刻。
+     *
+     * ⚠ 必须是**正数**：`0` / 负数 / `NaN` 会让倒计时立刻显示「失效」，
+     *   而那与「没有有效期信息」在 UI 上是两回事（后者根本不展示倒计时）。
+     *   归一成 `undefined` 就等于「这封邮件没写有效期」。
+     */
+    codeExpiresAt: (() => {
+      const expiresAt = num(value.codeExpiresAt, Number.NaN)
+      return Number.isFinite(expiresAt) && expiresAt > 0 ? expiresAt : undefined
+    })(),
+    /*
+     * 进度条的分母。与 `codeExpiresAt` 同样要求是正数 ——
+     * `0` 会让进度条除零后渲染成 0% 宽，界面上表现为「条子是空的」，
+     * 那与「没有这个字段（不展示倒计时）」是两回事。
+     */
+    codeValidForSeconds: (() => {
+      const seconds = num(value.codeValidForSeconds, Number.NaN)
+      return Number.isFinite(seconds) && seconds > 0 ? seconds : undefined
+    })(),
     messageId: optionalStr(value.messageId),
     listUnsubscribe: optionalStr(value.listUnsubscribe),
     ruleId: optionalStr(value.ruleId),
@@ -481,6 +514,16 @@ function normalizeAiOutput(raw: unknown): AiOutput | undefined {
     summary: str(raw.summary),
     isAd: bool(raw.isAd, false),
     code,
+    /*
+     * ⚠ 有效期必须是**正数**才算数：存量数据里可能出现 0 或负数
+     *   （早期版本、或模型输出的垃圾），而 `0` 会让倒计时立刻显示「失效」——
+     *   那比不显示更让用户困惑。归成 `null` 就等于「这封邮件没写有效期」，
+     *   UI 也就不展示倒计时。
+     */
+    validForSeconds: (() => {
+      const seconds = num(raw.validForSeconds, Number.NaN)
+      return Number.isFinite(seconds) && seconds > 0 ? seconds : null
+    })(),
     urgency,
     degraded: raw.degraded === undefined ? undefined : bool(raw.degraded, false),
     error: optionalStr(raw.error),
@@ -516,6 +559,11 @@ export function normalizeAppSettings(raw: unknown): AppSettings {
       : 'important',
     mailRetention: normalizeRetention(merged.mailRetention, defaults.mailRetention),
     mailRetentionDays: Math.max(0, num(merged.mailRetentionDays, 0)),
+    /*
+     * 存量设置里没有这个字段 → `mergeDefaults` 会补上默认值（`true`）。
+     * 这里再兜一道 `bool` 是为了防住「用户手改过导出文件」那种情况。
+     */
+    autoDeleteExpiredCode: bool(merged.autoDeleteExpiredCode, defaults.autoDeleteExpiredCode),
     schemaVersion: num(merged.schemaVersion, 1),
   }
 }

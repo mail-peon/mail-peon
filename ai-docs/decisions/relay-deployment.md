@@ -141,7 +141,7 @@
 | 6 | 代码签名 / notarize | ⬜ |
 
 > 第 4 步之前 Node 版**不要删**：它是协议正确性的参照实现，
-> 且 `scripts/imap-relay.test.mjs` 的端到端用例要继续跑。
+> 且 `scripts/imap-relay.test.ts` 的端到端用例要继续跑。
 
 ### 第 1、2 步实际改了什么（供第 4 步 Rust 重写时对照）
 
@@ -161,15 +161,15 @@
 
 ### 中继脚本也被类型检查覆盖了
 
-`scripts/imap-relay.mjs` 之前不在任何 tsconfig 里，ESLint 的 TS 解析器拿不到类型
+`scripts/imap-relay.ts` 之前不在任何 tsconfig 里，ESLint 的 TS 解析器拿不到类型
 信息，`unused-imports/no-unused-vars` 于是把每个 `const` 都误报成「只用作类型」——
 当时的处理是在文件顶上写 `eslint-disable`，**那是盖问题而不是解决问题**。
 
 现在：
 
-- 新增 `tsconfig.scripts.json`（`allowJs` + `checkJs` + `types: ["node"]`）
+- 新增 `tsconfig.scripts.json`（`types: ["node"]`，`include` 覆盖 `scripts/**/*.ts`）
 - `pnpm typecheck` = `tsc --noEmit && tsc -p tsconfig.scripts.json` —— **脚本和产品代码同一道门禁**
-- 加了 `@types/ws`，并给关键位置补了 JSDoc 类型
+- 加了 `@types/ws`
 - 删掉了全部 `eslint-disable`
 
 补类型的过程中**真的抓出两个 bug**（都是运行期才会炸的）：
@@ -178,6 +178,62 @@
 | --- | --- |
 | `tls.createServer({ key, cert })` 的调用签名不匹配 | 参数被当成「路径字符串」重载，测试里的 TLS 回声服务器起不来 |
 | `Buffer.from(wsData)` 对 `RawData` 的重载不兼容 | ts 直接拒绝；运行期遇到 `ArrayBuffer` 分片形态时会构造出错误内容 |
+
+### 中继脚本已全部改成 TypeScript（`.mjs` → `.ts`）
+
+`scripts/` 下这几个文件现在是 `.ts`，由 **esno** 执行：
+
+| 文件 | 作用 |
+| --- | --- |
+| `imap-relay.ts` | 中继本体（WebSocket ↔ TCP/IMAP，含 watch 模式与交互控制台） |
+| `relay-kill.ts` | 释放被占用的端口 |
+| `imap-relay.test.ts` | 端到端冒烟测试（9 条断言） |
+| `relay-console.test.ts` | 真 TTY 验证 `q` / `r` |
+| `relay-port-prompt.test.ts` | 真 TTY 验证端口占用 `[Y/n]` |
+| `runScript.ts` | 测试用它把中继当子进程拉起（见下） |
+
+对应的 npm script 从 `node xxx.mjs` 换成 `esno xxx.ts`
+（`RELAY_SCRIPT` 环境变量随之删掉 —— 脚本路径现在是固定的）。
+
+#### ⚠️ 两个必须知道的坑
+
+**① 顶层 await 在 `scripts/` 里不可用。**
+
+根 `package.json` **没有** `type: "module"`，所以 esno 把 `.ts` 编成 **CommonJS**，
+而顶层 await 在 CJS 下直接失败：
+
+```
+ERROR: Top-level await is currently not supported with the "cjs" output format
+code: 'ERR_REQUIRE_ASYNC_MODULE'
+```
+
+（`tsc` 那边对应的是 TS1378。）所以入口逻辑统一包在
+`async function main()` 里，文件末尾 `void main()`。
+
+试过并**否决**的两条替代路，记在这里免得再走一遍：
+
+- 给根 `package.json` 加 `type: "module"` —— 实测能让 TS1378 归零，
+  但它会改变**整个仓库**的模块解析（vite 配置、打包产物、content script），
+  风险和收益完全不成比例；
+- 给 `scripts/` 单独放一个 `package.json`（`{"type":"module"}`）—— 能work，
+  但那是个「只有内行才看得懂的隐含约定」，后来的人删掉它就全线报错。
+
+`main()` 包一层是三者里唯一**局部且自解释**的。
+
+**② 测试要在子进程里拉起中继，不能直接 `node script.ts`。**
+
+Node 不认 `.ts`，必须经 esno。`node --import esno/register` 与 `node --import tsx`
+**都不行** —— esno 的 `package.json` 没有 `exports` 字段（只暴露 `bin`），
+子路径解析不到。
+
+采用的办法是直接执行 esno 自己的 bin：
+`node <...>/esno/esno.js <script.ts> …`，封装在 `scripts/runScript.ts` 的
+`spawnScript()` 里。它**不需要** `shell: true` —— 这一点在 Windows 上很重要
+（`shell: true` 会让参数过一遍字符串拼接，带空格的路径会被拆错，
+而且多出的 `cmd.exe` 会干扰 `relay-kill` 按命令行匹配进程）。
+
+winpty 那两个测试不能跑 `.cmd` shim，所以它们展开成
+`node <abs>/esno.js <abs>/imap-relay.ts`（见 `relay-console.test.ts` 的说明）。
 
 顺带修了 **ESLint 配置本身的一个缺陷**：`unused-imports/no-unused-vars` 在
 **所有** `.js` / `.mjs` 上都会误报（实测 `const reallyUnused = 1` 也被报成

@@ -56,12 +56,17 @@ pnpm build          # 或 pnpm dev 开发
 > `fetch` / `WebSocket`，`chrome.sockets.tcp` 只属于已废弃的 Chrome Apps。详见
 > [`ai-docs/decisions/adr-0005-imap-needs-relay.md`](./ai-docs/decisions/adr-0005-imap-needs-relay.md)。
 
-中继实现随仓库提供（**纯字节透传，看不到明文** —— TLS 是端到端建立的）：
+中继实现随仓库提供：
 
 ```bash
-pnpm relay                                     # ws://127.0.0.1:8787/
-PORT=9000 RELAY_TOKEN=xxx ALLOWED_HOSTS=imap.example.com pnpm relay
+pnpm relay                                     # 默认 ws://127.0.0.1:8787/
+pnpm relay --port 9000 --token xxx --allow-hosts imap.example.com
 ```
+
+> ⚠️ **中继能看到明文，包括邮箱密码。** 这是 TLS 语义决定的，不是缺陷：
+> 常驻监听用的是 implicit TLS（993），中继必须自己终结 TLS 才能说 IMAP ——
+> 所以它手里有一份解密后的字节流。默认只绑 `127.0.0.1`，以及 `--token` 的存在，
+> 都是因为这个。详见 [`adr-0005`](./ai-docs/decisions/adr-0005-imap-needs-relay.md)。
 
 然后在「设置 · 账号」里把中继地址填成 `ws://127.0.0.1:8787/`，再填 IMAP 服务器 / 用户名 / 密码。
 
@@ -85,11 +90,18 @@ pnpm dev            # 开发（Vite HMR + 自动重建）
 pnpm dev-firefox    # Firefox
 pnpm build          # 生产构建
 pnpm lint           # ESLint
-pnpm typecheck      # tsc --noEmit
-pnpm test           # Vitest（210 个用例）
+pnpm typecheck      # tsc --noEmit + 脚本的类型检查（tsconfig.scripts.json）
+pnpm test           # Vitest（单元 / 组件测试）
 pnpm relay:test     # IMAP 中继的端到端冒烟测试
 pnpm pack:zip       # 打包上架用
 ```
+
+`scripts/` 下的运维脚本（含中继本体）是 **TypeScript**，由
+[`esno`](https://github.com/esbuild-kit/esno) 执行（`pnpm relay` 等已经包好，不用自己敲）。
+⚠️ 它们**不能用顶层 `await`** —— 根 `package.json` 没有 `type: "module"`，
+所以 `.ts` 会被编成 CommonJS，入口逻辑要包在 `async function main()` 里。
+原因与两个被否决的替代方案见
+[`relay-deployment.md`](./ai-docs/decisions/relay-deployment.md)。
 
 **提交门槛**：`pnpm lint && pnpm typecheck && pnpm test && pnpm build` 全绿。
 

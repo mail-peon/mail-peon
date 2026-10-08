@@ -75,7 +75,7 @@ type BlockedEntry
 **索引**：
 
 - `by-email` — `keyPath: 'email'`，精确匹配查账号
-- `by-enabled` — `keyPath: 'enabled'`，只拉启用账号做心跳
+- `by-enabled` — `keyPath: 'enabled'`，只拉启用账号参与同步
 
 ---
 

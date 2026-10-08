@@ -1,5 +1,6 @@
+import type { RawData } from 'ws'
 import { Buffer } from 'node:buffer'
-import { execFileSync, spawn } from 'node:child_process'
+import { execFileSync } from 'node:child_process'
 import { mkdtempSync, readFileSync } from 'node:fs'
 import { createServer as createNetServer } from 'node:net'
 import { tmpdir } from 'node:os'
@@ -7,6 +8,7 @@ import { join } from 'node:path'
 import process from 'node:process'
 import { createServer as createTlsServer } from 'node:tls'
 import { WebSocket } from 'ws'
+import { spawnScript } from './runScript'
 
 /**
  * IMAP 中继的**端到端**冒烟测试。
@@ -30,11 +32,8 @@ const TLS_ECHO_PORT = 18897
 /** 明文回声服务器 */
 const ECHO_PORT = 18898
 
-/**
- * @param {number} ms
- * @returns {Promise<void>} 等待结束
- */
-function wait(ms) {
+/** 等一会儿（中继是独立进程，只能靠等它起来） */
+function wait(ms: number): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, ms))
 }
 
@@ -46,10 +45,10 @@ function wait(ms) {
  *   不兼容（`ArrayBuffer` 不是 `ArrayLike<number>`）。真机上也确实会遇到
  *   三种形态 —— 取决于 `binaryType` 与是否分片。所以显式分支处理。
  *
- * @param {import('ws').RawData} data
- * @returns {Buffer} 归一后的字节
+ * @param data ws 回调给的原始数据
+ * @returns 归一后的字节
  */
-function toBuffer(data) {
+function toBuffer(data: RawData): Buffer {
   if (Buffer.isBuffer(data))
     return data
   if (data instanceof ArrayBuffer)
@@ -59,14 +58,16 @@ function toBuffer(data) {
 }
 
 async function main() {
-  /** @type {string[]} */
-  const failures = []
+  const failures: string[] = []
+
   /**
-   * @param {string} name
-   * @param {boolean} ok
-   * @param {string} [detail]
+   * 记一条断言结果。
+   *
+   * @param name 断言描述
+   * @param ok 是否通过
+   * @param detail 失败时的补充信息
    */
-  const check = (name, ok, detail = '') => {
+  const check = (name: string, ok: boolean, detail = ''): void => {
     if (ok) {
       process.stdout.write(`  ✅ ${name}\n`)
     }
@@ -100,13 +101,23 @@ async function main() {
   }
 
   // ---------- 中继 ----------
-  const child = spawn(process.execPath, [process.env.RELAY_SCRIPT ?? 'scripts/imap-relay.mjs'], {
+  /*
+   * ⚠ 用 `spawnScript` 而不是 `spawn(process.execPath, ['scripts/imap-relay.ts'])`：
+   *   Node 不认 `.ts`，必须经 esno 跑（见 `runScript.ts` 的说明）。
+   *   之前这里读 `RELAY_SCRIPT` 环境变量，现在脚本路径是固定的，那个开关没必要了。
+   */
+  const child = spawnScript('scripts/imap-relay.ts', [], {
     // ⚠ 只对「自签证书」那一组断言放开证书校验；下面还有单独的用例验证默认是拦的
     env: { ...process.env, PORT: String(RELAY_PORT), HOST: '127.0.0.1', ALLOWED_HOSTS: '127.0.0.1,localhost', TLS_REJECT_UNAUTHORIZED: '0' },
     stdio: ['ignore', 'pipe', 'pipe'],
   })
-  child.stdout.on('data', chunk => process.stdout.write(`  relay> ${chunk}`))
-  child.stderr.on('data', chunk => process.stderr.write(`  relay! ${chunk}`))
+  /*
+   * ⚠ `?.` 不是多余的防御：`spawn` 的返回类型在 `stdio` 是数组字面量时会被
+   *   TS 推成一个交叉类型，`stdout` 在那里面可能是 `null`。运行期它一定存在
+   *   （我们显式要了 `pipe`），但类型上要收一下。
+   */
+  child.stdout?.on('data', chunk => process.stdout.write(`  relay> ${chunk}`))
+  child.stderr?.on('data', chunk => process.stderr.write(`  relay! ${chunk}`))
 
   await wait(1200)
 
@@ -115,10 +126,9 @@ async function main() {
     {
       const ws = new WebSocket(`ws://127.0.0.1:${RELAY_PORT}/127.0.0.1:${ECHO_PORT}?tls=0`)
       ws.binaryType = 'arraybuffer'
-      /** @type {Buffer[]} */
-      const received = []
-      await new Promise((resolve, reject) => {
-        ws.once('open', resolve)
+      const received: Buffer[] = []
+      await new Promise<void>((resolve, reject) => {
+        ws.once('open', () => resolve())
         ws.once('error', reject)
       })
       check('WebSocket 建连成功', true)
@@ -152,10 +162,9 @@ async function main() {
     if (tlsEcho) {
       const ws = new WebSocket(`ws://127.0.0.1:${RELAY_PORT}/127.0.0.1:${TLS_ECHO_PORT}?tls=1`)
       ws.binaryType = 'arraybuffer'
-      /** @type {Buffer[]} */
-      const received = []
-      await new Promise((resolve, reject) => {
-        ws.once('open', resolve)
+      const received: Buffer[] = []
+      await new Promise<void>((resolve, reject) => {
+        ws.once('open', () => resolve())
         ws.once('error', reject)
       })
       ws.on('message', data => received.push(toBuffer(data)))
@@ -182,22 +191,22 @@ async function main() {
     // 「本机自签证书」的逃生口，一旦默认值写反，中间人攻击就不可检出了 ——
     // 而那种错误在功能测试里完全看不出来（连接照样成功）。
     if (tlsEcho) {
-      const strict = spawn(process.execPath, [process.env.RELAY_SCRIPT ?? 'scripts/imap-relay.mjs'], {
+      const strict = spawnScript('scripts/imap-relay.ts', [], {
         // 刻意**不设** TLS_REJECT_UNAUTHORIZED
         env: { ...process.env, PORT: String(STRICT_PORT), HOST: '127.0.0.1', ALLOWED_HOSTS: '127.0.0.1' },
         stdio: ['ignore', 'pipe', 'pipe'],
       })
-      strict.stdout.on('data', chunk => process.stdout.write(`  strict> ${chunk}`))
-      strict.stderr.on('data', chunk => process.stderr.write(`  strict! ${chunk}`))
+      strict.stdout?.on('data', chunk => process.stdout.write(`  strict> ${chunk}`))
+      strict.stderr?.on('data', chunk => process.stderr.write(`  strict! ${chunk}`))
       await wait(1200)
 
       try {
-        /** @type {string | number} */
-        const err = await new Promise((resolve) => {
+        const err = await new Promise<string | number>((resolve) => {
           const ws = new WebSocket(`ws://127.0.0.1:${STRICT_PORT}/127.0.0.1:${TLS_ECHO_PORT}?tls=1`)
           let settled = false
-          /** @param {string | number} value */
-          const done = (value) => {
+
+          /** 收口：只允许 settle 一次（三条路径都会调它） */
+          const done = (value: string | number): void => {
             if (settled)
               return
             settled = true
@@ -278,16 +287,17 @@ async function main() {
  *
  * 超时返回 `'timeout'`：那才是「被静默放行」的表现。
  *
- * @param {string} url
- * @param {number} [timeoutMs]
- * @returns {Promise<number | 'error' | 'timeout'>} 关闭码，或 `'error'` / `'timeout'`
+ * @param url 要连的 WebSocket 地址
+ * @param timeoutMs 等多久算「被静默放行」
+ * @returns 关闭码，或 `'error'` / `'timeout'`
  */
-function expectPolicyClose(url, timeoutMs = 3000) {
+function expectPolicyClose(url: string, timeoutMs = 3000): Promise<number | 'error' | 'timeout'> {
   return new Promise((resolve) => {
     const ws = new WebSocket(url)
     let settled = false
-    /** @param {number | 'error' | 'timeout'} value */
-    const done = (value) => {
+
+    /** 收口：只允许 settle 一次（三条路径都会调它） */
+    const done = (value: number | 'error' | 'timeout'): void => {
       if (settled)
         return
       settled = true

@@ -45,6 +45,7 @@ export const ZH_SYSTEM_PROMPT = `你是 mail-peon 的邮件处理助手。任务
   "summary":  string,                  // ≤600 字中文，结构化要点（可用 markdown）。
   "isAd":     boolean,                 // true 表示营销 / 推广 / 自动通知（订单状态、签到、Newsletter）。
   "code":     string | null,           // 邮件中的验证码 / OTP，仅字母数字，无"您的验证码是"等中文。
+  "validForSeconds": number | null,    // 验证码有效期，单位**秒**。邮件没明确写就 null。
   "urgency":  "low" | "normal" | "high" // 用户需不需要立刻看到。
 }
 
@@ -61,6 +62,15 @@ export const ZH_SYSTEM_PROMPT = `你是 mail-peon 的邮件处理助手。任务
 - code：
   * 仅当邮件含 OTP / 一次性链接 / 验证码时输出字符串；否则 null。
   * 仅保留 [A-Za-z0-9]{4,12}；超过或带中文视为 null。
+- validForSeconds：
+  * **只输出秒数**，不要带单位、不要写成"5 分钟"。换算：1 分钟 = 60，1 小时 = 3600。
+  * 例："此验证码将在 5 分钟内有效" → 300；"有效期 10 分钟" → 600；"valid for 1 hour" → 3600。
+  * 邮件里**明确写了**才输出。以下情况一律 null：
+    - 只写"请尽快使用"、"短时间内有效"、"立即使用"这类模糊说法；
+    - 给的是一个**时间点**而不是时长（如"有效期至 14:30"）—— 你无法知道发信时刻；
+    - 没有提到任何有效期。
+  * 不要用"常见值"猜测（比如看到验证码就填 300）。猜错会让用户以为还有 5 分钟，
+    而实际早已失效 —— 那比不显示更糟。
 - urgency：
   * high = 用户需要立即处理（登录告警、CI 失败、退款到账失败、面试）。
   * low = 营销 / 周报 / Newsletter。
@@ -85,6 +95,7 @@ export const EN_SYSTEM_PROMPT = `You are mail-peon's email-processing assistant.
   "summary":  string,                  // ≤600 chars, structured (markdown allowed).
   "isAd":     boolean,                 // true = marketing / promo / auto-notification (order status, check-in, newsletter).
   "code":     string | null,           // OTP / one-time code if present (alphanumeric only; no surrounding words).
+  "validForSeconds": number | null,    // how long the code stays valid, in **seconds**. null if not stated.
   "urgency":  "low" | "normal" | "high" // whether the user must see this right now.
 }
 
@@ -101,6 +112,18 @@ export const EN_SYSTEM_PROMPT = `You are mail-peon's email-processing assistant.
 - code:
   * Output only if the email has an OTP / one-time code / verification code; otherwise null.
   * Keep only [A-Za-z0-9]{4,12}; longer or non-alphanumeric → null.
+- validForSeconds:
+  * Output the **number of seconds only** — no unit, never the string "5 minutes".
+    Convert: 1 minute = 60, 1 hour = 3600.
+  * e.g. "This code is valid for 5 minutes" → 300; "expires in 10 minutes" → 600.
+  * Output only when the email **explicitly states** a duration. Use null when:
+    - it only says "use it soon" / "valid for a short time" / "expires shortly";
+    - it gives a **clock time** instead of a duration (e.g. "valid until 14:30") —
+      you cannot know when the mail was sent;
+    - no validity period is mentioned at all.
+  * Never guess a "typical" value (e.g. don't just fill 300 because it's a code).
+    A wrong countdown makes the user believe they still have 5 minutes when the code
+    is already dead — that is worse than showing nothing.
 - urgency:
   * high = immediate action required (login alert, CI failure, refund fail, interview).
   * low = marketing / weekly digest / newsletter.
@@ -117,17 +140,30 @@ export const EN_SYSTEM_PROMPT = `You are mail-peon's email-processing assistant.
  * 让它输出 `{ minimal, summary, isAd, urgency }` 是纯粹的浪费（token、延迟、
  * 以及模型「顺手」把 code 写成一句话的概率）。
  *
- * 输入 < 200 token / 输出 < 30 token，几乎免费。
+ * ⚠ `validForSeconds` 是**必须**加的第二个字段，不是可选的锦上添花：
+ *   极简模式正是「用户盯着倒计时等验证码」那个场景，没有它就没有倒计时。
+ *   它只多几个 token（一个整数），与「极简」的定位并不冲突 ——
+ *   极简省掉的是**摘要 / 分类**那些要读全文才能产出的东西。
+ *
+ * 输入 < 200 token / 输出 < 40 token，几乎免费。
  */
 export const MINIMAL_SYSTEM_PROMPT = `你是验证码提取助手。阅读邮件（可能含 HTML、噪声），从中找到一次性验证码 / OTP。
 
 # 输出 JSON Schema
-{ "code": string | null }
+{ "code": string | null, "validForSeconds": number | null }
 
 # 规则
-- 有验证码：返回 {"code": "<字母数字，仅 [A-Za-z0-9]{4,12}>"}
-- 没有验证码：返回 {"code": null}
+- 有验证码：{"code": "<字母数字，仅 [A-Za-z0-9]{4,12}>"}
+- 没有验证码：{"code": null, "validForSeconds": null}
 - 只保留验证码本身，不要"您的验证码是"等任何文字
+- validForSeconds：验证码有效期，单位**秒**，只输出数字不带单位。
+  * "此验证码将在 5 分钟内有效" → 300；"有效期 10 分钟" → 600；"1 hour" → 3600
+  * 邮件**明确写了时长**才输出。以下一律 null：
+    - 只写"请尽快使用"、"短时间内有效"这类模糊说法
+    - 给的是**时间点**而不是时长（如"有效期至 14:30"）
+    - 完全没提有效期
+  * ⚠ 绝不用"常见值"猜（不要看到验证码就填 300）—— 猜错会让用户以为还有 5 分钟，
+    而实际早已失效，那比不显示更糟
 - 仅返回 JSON，不要解释、不要 \`\`\` 围栏`
 
 /**
@@ -136,9 +172,9 @@ export const MINIMAL_SYSTEM_PROMPT = `你是验证码提取助手。阅读邮件
  * 单独一份而不是复用 `MINIMAL_SYSTEM_PROMPT`：`buildJsonSystem` 会把描述拼在
  * 基础 system 之后，两处内容重复会让模型看到两遍同样的要求（无害但浪费 token）。
  */
-const MINIMAL_SCHEMA_HINT = 'Schema: { "code": string | null } —— 只输出这一个字段。'
+const MINIMAL_SCHEMA_HINT = 'Schema: { "code": string | null, "validForSeconds": number | null } —— 只输出这两个字段。'
 
-const FULL_SCHEMA_HINT = 'Schema: { "minimal": string, "summary": string, "isAd": boolean, "code": string | null, "urgency": "low" | "normal" | "high" }'
+const FULL_SCHEMA_HINT = 'Schema: { "minimal": string, "summary": string, "isAd": boolean, "code": string | null, "validForSeconds": number | null, "urgency": "low" | "normal" | "high" }'
 
 /** 输出语言指令（`ai-prompt-design.md § 2.3`） */
 function languageDirective(settings: AiSettings, browserLang: string): string {

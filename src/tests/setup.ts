@@ -32,12 +32,22 @@ const storageArea = {
   },
 }
 
+/*
+ * ⚠ `onConnect` 必须有，不能省。
+ *
+ * `logic/messaging.ts` 的 `installConnectListener()` 用它来维护「哪些扩展页面活着」，
+ * 而那个函数把整个注册过程包在 try/catch 里（浏览器里 `onConnect` 一定存在，
+ * catch 只是防御）。少了这个桩，异常会被那个 catch 吃掉 ——
+ * 于是测试**看起来**通过了，实际那条代码路径一次都没跑到。
+ * 它是本文件里唯一一个「缺失会静默改变行为」的桩，所以特意标出来。
+ */
 const runtime = {
   id: 'mail-peon-test',
   getURL: (path: string) => `chrome-extension://mail-peon-test/${path}`,
   onInstalled: { addListener() {} },
   onStartup: { addListener() {} },
   onMessage: { addListener() {} },
+  onConnect: { addListener() {} },
   sendMessage: async () => undefined,
   lastError: undefined,
 }

@@ -122,5 +122,17 @@ export default defineConfig(({ command }) => ({
      */
     include: ['**/*.spec.ts'],
     exclude: ['**/node_modules/**', '**/dist/**'],
+    /*
+     * ⚠ 需要 **node** 环境（而不是默认的 jsdom）的测试，用**文件顶部的**
+     *   `// @vitest-environment node` 注释声明 —— 见
+     *   `src/adapters/mail/__tests__/imap-e2e.spec.ts`。
+     *
+     * 不要用 `environmentMatchGlobs`：它在 Vitest 5 里**已被移除**，而配置里留着它
+     * 是**静默失效**的（不报错、不警告，环境照旧）。第一次就是这么踩的 ——
+     * 于是那些测试跑在 jsdom 里，往全局塞了 jsdom 的 `Event`，Node 的
+     * `net.Socket` 断言失败（`ERR_INVALID_ARG_TYPE`），表现成
+     * 「服务器收到命令但一个字都不回」，客户端等到超时 ——
+     * 完全看不出是测试环境的问题。
+     */
   },
 }))

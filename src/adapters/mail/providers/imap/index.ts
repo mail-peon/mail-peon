@@ -26,18 +26,43 @@ import { ImapClient } from './client'
 export const definition: MailProviderDefinition = {
   id: 'imap',
   label: 'IMAP（用户名密码）',
-  hint: '通用协议，支持任意邮箱；需要配一个 WebSocket↔TCP 中继地址',
+  hint: '通用协议，支持任意邮箱；需要先在本机运行中继（pnpm relay）',
   availability: 'needs-relay',
+  /*
+   * ⚠ 这段文案要说实话。
+   *
+   * 之前的版本写的是「中继看不到明文（TLS 是端到端）」—— 那是**错的**：
+   * 993 是 implicit TLS，中继必须自己完成 TLS 握手才能跟邮件服务器通话，
+   * 而握手完成后明文就在中继进程里，**包括用户的邮箱密码**。
+   *
+   * 这不是实现缺陷，是 TLS 的协议结构决定的（谁终止握手谁看到明文）。
+   * 所以正确的做法是：默认只绑 127.0.0.1，并把这件事明说，
+   * 让用户知道「自己跑中继」等于「密码留在自己机器上」。
+   */
   availabilityNote:
-    '浏览器扩展里没有裸 TCP。IMAP 必须经 WebSocket↔TCP 中继转发字节 —— '
-    + '中继看不到明文（TLS 是端到端），也不解析邮件。不填中继地址则无法使用本协议。',
+    '浏览器扩展里没有裸 TCP，IMAP 必须经 WebSocket↔TCP 中继转发字节。'
+    + '中继需要完成 TLS 握手，因此它能看到你的邮箱密码 —— 所以请把中继跑在'
+    + '本机（默认只监听 127.0.0.1），这样凭据不会离开你的电脑。',
   fields: [
-    { key: 'host', label: 'IMAP 服务器', type: 'text', placeholder: 'imap.example.com', required: true },
+    { key: 'host', label: 'IMAP 服务器', type: 'text', placeholder: 'imap.qq.com', required: true },
     { key: 'port', label: '端口', type: 'number', default: 993, required: true },
     { key: 'tls', label: '使用 TLS（993 端口必须开）', type: 'toggle', default: true },
-    { key: 'user', label: '用户名', type: 'text', placeholder: 'me@example.com', required: true },
-    { key: 'pass', label: '密码 / 应用专用密码', type: 'password', required: true },
-    { key: 'relayUrl', label: 'WebSocket 中继地址', type: 'text', placeholder: 'wss://relay.example.com/', required: true },
+    { key: 'user', label: '用户名', type: 'text', placeholder: '你的QQ号@qq.com', required: true },
+    { key: 'pass', label: '密码 / 授权码', type: 'password', placeholder: 'QQ 邮箱填 16 位授权码', required: true },
+    {
+      key: 'relayUrl',
+      label: 'WebSocket 中继地址',
+      type: 'text',
+      /*
+       * ⚠ `default` 而不是只给 `placeholder`：本机中继是 99% 的场景，
+       *   给默认值让用户**不用填**（也避免他把 `https://` 或裸 `127.0.0.1:8787`
+       *   填进来 —— 那两种都不是合法的中继地址，而报错会出现在「测试连接」，
+       *   用户很难联想到是地址格式问题）。
+       */
+      default: 'ws://127.0.0.1:8787/',
+      placeholder: 'ws://127.0.0.1:8787/',
+      required: true,
+    },
   ],
 }
 
@@ -142,7 +167,34 @@ export function create(): MailProvider {
             return { mails: [], nextCursor: initialCursor(), warning }
           }
 
-          const fetched = await client.fetchSince(previous.uid, { limit: MAX_MESSAGES_PER_SYNC })
+          /*
+           * ⚠ 这里**不能**用 `client.fetchSince(previous.uid, { limit: 50 })`
+           *   （原来的写法），它在本例这种真实邮箱上必然超时并丢邮件：
+           *
+           *   - `UID FETCH <cursor+1>:*` 会让服务器把**游标之后的所有邮件正文**
+           *     都发过来，`limit` 只是收完之后在客户端做的截断。该邮箱有 35492 封、
+           *     游标在 37727，积压几千封 → 几千次 `BODY.PEEK[]` 全量传输 →
+           *     撞爆中继的 30 秒命令超时。
+           *   - 更要命的是它保留的是**最新**的 50 封、然后把游标直接推到 UIDNEXT-1，
+           *     中间那几千封**永远不会再被拉取**（游标已经越过它们了）。这是静默丢件。
+           *
+           * 正确做法分两步：先 SEARCH 拿 UID 列表（只有整数，几乎不占带宽），
+           * 再取**最旧**的一批 —— 这样每一轮都在推进游标，积压会多轮消化完，
+           * 而且任何一轮失败都只影响那一批。
+           */
+          const backlog = await client.searchSince(previous.uid)
+
+          if (!backlog.length) {
+            // 没有新邮件：游标推到 UIDNEXT-1 是安全的（它只代表「服务器上已有的都看过了」）
+            return {
+              mails: [],
+              nextCursor: { uid: Math.max(uidNext > 0 ? uidNext - 1 : 0, previous.uid), uidValidity } satisfies ImapCursor,
+            }
+          }
+
+          // 取最旧的一批（不是最新的）—— 见上面关于「静默丢件」的说明
+          const batch = backlog.slice(0, MAX_MESSAGES_PER_SYNC)
+          const fetched = await client.fetchRange(batch[0], batch[batch.length - 1])
 
           const mails: RawMail[] = fetched
             .filter(message => message.source.length > 0)
@@ -155,22 +207,22 @@ export function create(): MailProvider {
             }))
 
           /*
-           * 游标推进取 `max(旧游标, 实际拉到的最大 UID, UIDNEXT - 1)` 而不是
-           * 「拉到的最大 UID」：被过滤掉的条目（正文为空、超出 limit 被截断）也要
-           * 计入推进，否则下一次心跳会把它们再拉一遍，**永远卡在同一批上**。
+           * 游标只推进到**本批最大的 UID**，而不是 UIDNEXT-1。
+           *
+           * ⚠ 这一点与上面「没有新邮件」那条分支不同，不能混：
+           *   本批之后还有积压时，把游标推到 UIDNEXT-1 就等于宣布「剩下的都处理过了」，
+           *   于是它们被永久跳过。下一轮心跳会从本批末尾继续，把积压一轮轮吃完。
+           *
+           * 取 `max(batch 最大 UID, 实际解析出的最大 UID, 旧游标)`：
+           * 被过滤掉的条目（正文为空）也要计入推进，否则会卡在同一批上反复重拉。
            */
-          const maxFetched = mails.reduce((max, mail) => Math.max(max, mail.seq), previous.uid)
-          const nextUid = Math.max(maxFetched, uidNext > 0 ? uidNext - 1 : 0, previous.uid)
+          const batchMax = batch[batch.length - 1]
+          const maxFetched = mails.reduce((max, mail) => Math.max(max, mail.seq), batchMax)
 
           return {
             mails,
-            nextCursor: { uid: nextUid, uidValidity } satisfies ImapCursor,
+            nextCursor: { uid: Math.max(maxFetched, previous.uid), uidValidity } satisfies ImapCursor,
           }
-        },
-
-        /** IMAP 的「代次」就是 UIDVALIDITY */
-        async getMailboxTag(): Promise<string | number | null> {
-          return uidValidity || null
         },
 
         async logout(): Promise<void> {

@@ -28,7 +28,8 @@ M4  极简模式 UI         → Popup 仅验证码 + Options 精简
 **功能范围**：
 - **MailProvider 适配器** + MVP 实现 IMAP + 用户名密码（`src/adapters/mail/providers/imap/`）
 - 账号 CRUD（host / port / user / password / TLS）
-- 后台心跳（`chrome.alarms`，每 5 分钟一次）
+- **本机中继**：常驻 IMAP `IDLE` 发现新邮件 + WebSocket↔TCP 字节透传
+- **中继推送 → 插件抓增量**；另有一个低频 `chrome.alarms` 兜底
 - **首次连上只记 UIDNEXT**，不拉任何历史；之后 `listSince(lastSeenUid)` 增量
 - **UIDVALIDITY 检测**（邮箱重建时清零 lastSeenUid + 提示用户）
 - **IndexedDB 持久化**：`accounts` / `rules` / `mails` / `settings` / `meta` 仓库（`src/logic/store/`）
@@ -42,7 +43,7 @@ M4  极简模式 UI         → Popup 仅验证码 + Options 精简
 
 **验收**：
 - [ ] 新增一个测试邮箱账号，能看到"测试通过"
-- [ ] **首次心跳**只记游标、不拉任何邮件
+- [ ] **首次同步**只记游标、不拉任何邮件
 - [ ] 后台开始**增量**拉取新邮件
 - [ ] UIDVALIDITY 变化 → 警告 + 清零 lastSeenUid
 - [ ] 关闭浏览器 → 重开仍能拉取（IndexedDB 持久化 OK）
@@ -121,7 +122,8 @@ M4  极简模式 UI         → Popup 仅验证码 + Options 精简
 
 **功能范围**：
 - Popup 根据 `minimalMode` 切布局（极简：仅验证码；完整：3 tab 邮件流）
-- Options 路由根据 `minimalMode` 隐藏子页（极简：只显示"通用"；完整：5 个子页）
+- Options 路由根据 `minimalMode` 隐藏**功能**页（极简：提示词 / 屏蔽列表隐藏，
+  但**保留**账号与 AI 配置 —— 它们是极简模式能用的前提）
 - 模式切换不需清数据（保留历史；只影响未来邮件）
 - 极简模式下 Options 顶部 CTA："⚠️ 验证码提取需要先配置 AI Key"（如果 key 为空）
 
@@ -131,7 +133,8 @@ M4  极简模式 UI         → Popup 仅验证码 + Options 精简
 
 **验收**：
 - [ ] 切到极简模式 → Popup 只显示验证码列表
-- [ ] 切到极简模式 → Options 侧边栏只显示"通用"
+- [ ] 切到极简模式 → Options 侧边栏隐藏「提示词」「屏蔽列表」，但**保留**
+      「账号」「AI 配置」（否则加不了邮箱、提取不了验证码）
 - [ ] 切到完整模式 → Popup 恢复 3 tab 邮件流
 - [ ] 切到完整模式 → Options 侧边栏显示完整导航
 - [ ] 极简模式下 AI Key 为空 → Options 顶部出现 CTA
@@ -142,12 +145,12 @@ M4  极简模式 UI         → Popup 仅验证码 + Options 精简
 
 | 风险 | 影响 | 缓解 |
 | --- | --- | --- |
-| IMAP 在 MV3 SW 中频繁重建连接 | 心跳延迟 / 性能 | 用 alarms 批量处理 + 单次连接抓增量 |
+| MV3 SW 空闲 30 秒被回收 | 常驻连接保不住 | 长连接交给中继；插件只做单次连接抓增量 |
 | AI 输出格式不合法 | 流程卡住 | zod 强校验 + 失败重试 1 次 + 降级 |
 | 邮件正文超 token 限制 | AI 调用失败 | 截断 + 提示词要求"先看 subject / from" |
 | 用户邮箱量很大（>10k） | 拉取慢 | MVP 限制 IDB 保留数量；按 `by-receivedAt` 滚动 |
 | Gmail OAuth 复杂度高 | M1/M2 拖期 | MVP 用 IMAP + 邮箱密码；OAuth 后置 |
-| IndexedDB 在 SW 中被回收 | 心跳首次跑慢 | 用 `openDb()` 单例懒开 + `onversionchange` 让路 |
+| IndexedDB 在 SW 中被回收 | 冷启动首次跑慢 | 用 `openDb()` 单例懒开 + `onversionchange` 让路 |
 | 凭证明文 | 隐私泄露 | Settings 加"清空所有数据"按钮 + 隐私声明卡片（M3+ 加口令保护） |
 | UIDVALIDITY 变化 | 邮箱重建 → 历史游标失效 | 检测到就清零 + 警告用户；不试图"恢复"（无 ID 可靠恢复） |
 | 极简 / 完整模式 UI 两套 | UI 实现成本 | 抽公共组件（MailListItem / EmptyState）；Popup 顶层按 mode 分发 |

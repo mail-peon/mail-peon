@@ -103,6 +103,69 @@ function fieldBool(key: string): boolean {
   return (editing.value?.config as Record<string, unknown> | undefined)?.[key] === true
 }
 
+/**
+ * 按 provider 声明校验必填字段。
+ *
+ * ⚠ 之前 `required: true` **只用来渲染一个 `*`**，保存与「测试连接」都不检查 ——
+ *   于是漏填中继地址、或把地址填成 `127.0.0.1:8787` / `https://…`，
+ *   都会一路存下去，直到建立 WebSocket 时才失败。而那时的报错是
+ *   「无法连接中继：…」，用户根本不会联想到是「地址少写了协议头」。
+ *
+ * 校验规则来自 `definition.fields`（单一信源），所以加一个 provider 字段就会自动
+ * 被校验，不需要在这里补 `if`。
+ *
+ * @returns 错误信息；通过时返回空串
+ */
+function validateAccount(account: MailAccount): string {
+  const provider = providers.value.find(item => item.value === account.provider)
+
+  for (const field of provider?.fields ?? []) {
+    if (!field.required)
+      continue
+
+    const value = (account.config as Record<string, unknown>)[field.key]
+    const missing = field.type === 'number'
+      // 数字字段：`0` 与空串都算没填（端口 0 不是有效值）
+      ? typeof value !== 'number' || !Number.isFinite(value) || value <= 0
+      : typeof value !== 'string' || !value.trim()
+
+    if (missing)
+      return `请填写「${field.label}」`
+  }
+
+  return validateRelayUrl(account)
+}
+
+/**
+ * 中继地址的格式校验。
+ *
+ * 单独一条而不是塞进上面的通用循环：这里能给出**可操作**的提示
+ * （「要写 `ws://` 开头」），而通用循环只能说「请填写」。
+ */
+function validateRelayUrl(account: MailAccount): string {
+  const raw = account.config.relayUrl?.trim()
+  // 只有用得上中继的 provider 才校验（Gmail 那条路不经过中继）
+  if (account.provider !== 'imap')
+    return ''
+
+  if (!raw)
+    return '请填写「WebSocket 中继地址」（本机运行 `pnpm relay` 后填 ws://127.0.0.1:8787/）'
+
+  if (!/^wss?:\/\//i.test(raw)) {
+    return `中继地址要以 ws:// 或 wss:// 开头（当前是「${raw}」）。`
+      + '本机中继写 ws://127.0.0.1:8787/'
+  }
+
+  try {
+    void new URL(raw)
+  }
+  catch {
+    return `中继地址不是合法 URL：「${raw}」`
+  }
+
+  return ''
+}
+
 async function onSave() {
   if (!editing.value)
     return
@@ -112,10 +175,20 @@ async function onSave() {
     pageError.value = '请填写邮箱地址'
     return
   }
+
+  const invalid = validateAccount(editing.value)
+  if (invalid) {
+    pageError.value = invalid
+    return
+  }
+
   // 邮箱地址同时作为 account.email，改它会让 `by-email` 索引失效 —— 需要重新写
   editing.value.email = editing.value.email.trim().toLowerCase()
   if (!editing.value.label.trim())
     editing.value.label = editing.value.email
+  // 顺手把中继地址的首尾空白去掉（用户复制粘贴时很常见）
+  if (editing.value.config.relayUrl)
+    editing.value.config.relayUrl = editing.value.config.relayUrl.trim()
 
   try {
     await save(editing.value)
@@ -126,7 +199,20 @@ async function onSave() {
   }
 }
 
+/**
+ * 「测试连接」也要走同一套校验。
+ *
+ * 理由：这个按钮是用户**第一次**发现配置有问题的地方。放过格式错误的话，
+ * 它会去建一个必然失败的连接，然后把「无法连接中继」当成结论显示出来 ——
+ * 而真实原因是「地址没写 ws://」。
+ */
 async function onTest(account: MailAccount) {
+  const invalid = validateAccount(account)
+  if (invalid) {
+    testState.value[account.id] = { status: 'fail', text: invalid }
+    return
+  }
+
   testState.value[account.id] = { status: 'busy', text: t('accounts.testing') }
   const result = await test(account)
   testState.value[account.id] = result.ok

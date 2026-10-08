@@ -1,7 +1,7 @@
 import type { AppSettings, Mail, RetentionLimit, StorageUsage } from '~/logic/types'
 import type { TxContext } from '~/platform/idb/database'
 import { accountIdOfMailKey, MINIMAL_RETENTION } from '~/logic/types'
-import { clearStore, count, del, get, iterate, put, runTx } from '~/platform/idb/database'
+import { clearStore, count, del, get, getAllEntries, getAllFromIndex, getIndexKeys, iterate, put, runTx } from '~/platform/idb/database'
 import { normalizeMail } from './migrations'
 import { pruneMails, RETENTION_INDEX } from './prune'
 import { withReady } from './ready'
@@ -46,7 +46,17 @@ export const readRecentMails = withReady(async (limit = 200): Promise<Mail[]> =>
     { index: RETENTION_INDEX, direction: 'prev', limit },
     (value, key) => {
       const mail = normalizeMail(value, String(key))
-      if (mail)
+      /*
+       * ⚠ 回收站里的邮件**不进主列表**。
+       *
+       *   顺序有讲究：先归一化再判断。归一化会把未知字段清掉，
+       *   所以在它之前读 `trashedAt` 会读到原始数据（可能形状不对）。
+       *
+       *   过滤放在这里而不是让每个调用方自己滤：`readRecentMails` 是
+       *   Popup / Sidepanel / badge / `markAllRead` 共同的入口，
+       *   漏掉任何一处都会让「已删除的邮件」在某个界面里冒出来。
+       */
+      if (mail && mail.trashedAt === undefined)
         out.push(mail)
     },
   )
@@ -61,7 +71,8 @@ export const readMailsByAccount = withReady(async (accountId: string, limit = 20
     { index: 'by-accountId', range: IDBKeyRange.only(accountId) },
     (value, key) => {
       const mail = normalizeMail(value, String(key))
-      if (mail)
+      // 与 `readRecentMails` 同一口径：回收站里的不算这个账号的「现有邮件」
+      if (mail && mail.trashedAt === undefined)
         out.push(mail)
     },
   )
@@ -127,6 +138,135 @@ export const dismissMail = withReady(async (id: string): Promise<Mail | undefine
   const next: Mail = { ...mail, dismissed: true, read: true }
   await runTx(['mails'], 'readwrite', ctx => put('mails', next, next.id, ctx))
   return next
+})
+
+// ---------------------------------------------------------------------------
+// 回收站
+// ---------------------------------------------------------------------------
+
+/**
+ * 移入回收站（**状态变更，不是软删除**）。
+ *
+ * 只写一个 `trashedAt` 时间戳，记录本身不动 —— 正文与 AI 结果都还在，
+ * 所以「恢复」是零成本的。真正的移除是 `purgeMails` / `deleteMailForever`。
+ *
+ * @param id 邮件键
+ * @param at 入库时刻（默认现在；测试可注入）
+ * @returns 更新后的邮件；邮件不存在时 `undefined`
+ */
+export const trashMail = withReady(async (id: string, at: number = Date.now()): Promise<Mail | undefined> => {
+  const mail = await readMail(id)
+  if (!mail)
+    return undefined
+  // 已经在回收站里就保持原来的时间 —— 否则重复点会把它的排序位置一直往前顶
+  const next: Mail = { ...mail, trashedAt: mail.trashedAt ?? at, read: true }
+  await runTx(['mails'], 'readwrite', ctx => put('mails', next, next.id, ctx))
+  return next
+})
+
+/** 从回收站恢复（清掉 `trashedAt`） */
+export const restoreMail = withReady(async (id: string): Promise<Mail | undefined> => {
+  const mail = await readMail(id)
+  if (!mail)
+    return undefined
+  const next: Mail = { ...mail }
+  delete next.trashedAt
+  await runTx(['mails'], 'readwrite', ctx => put('mails', next, next.id, ctx))
+  return next
+})
+
+/**
+ * **彻底删除**一封邮件（硬删除）。
+ *
+ * ⚠ 直接从仓库里移除记录，没有「撤销」这条路。
+ *   设计上不做软删除：回收站本身已经是软删除层了，
+ *   在它下面再叠一层软删除只会让「彻底删除」名不副实，
+ *   还会让用户以为空间被释放了而其实没有。
+ *
+ * @param id 邮件键
+ * @returns 是否真的删掉了一条
+ */
+export const deleteMailForever = withReady(async (id: string): Promise<boolean> => {
+  const mail = await readMail(id)
+  if (!mail)
+    return false
+  await runTx(['mails'], 'readwrite', ctx => del('mails', id, ctx))
+  return true
+})
+
+/** 回收站列表：按删除时间**倒序**（最近删的在最前） */
+export const readTrashedMails = withReady(async (limit = 200): Promise<Mail[]> => {
+  const raws = await getAllFromIndex<unknown>('mails', 'by-trashedAt', { direction: 'prev', limit })
+  return raws
+    .map(({ value, key }) => normalizeMail(value, String(key)))
+    .filter((mail): mail is Mail => mail !== null && mail.trashedAt !== undefined)
+})
+
+/** 回收站里有多少封（badge / 空态判断用） */
+export const countTrashedMails = withReady(async (): Promise<number> => {
+  const keys = await getIndexKeys('mails', 'by-trashedAt')
+  return keys.length
+})
+
+/**
+ * **清空回收站**（硬删除全部）。
+ *
+ * 在**一个事务**里删完：逐条删会让「清空」在大回收站上慢到看起来像卡死，
+ * 而且中途失败会留下删了一半的状态。
+ *
+ * @returns 删掉了多少封
+ */
+export const emptyTrash = withReady(async (): Promise<number> => {
+  return runTx(['mails'], 'readwrite', async (ctx) => {
+    const keys = await getIndexKeys('mails', 'by-trashedAt', ctx)
+    for (const key of keys)
+      await del('mails', key, ctx)
+    return keys.length
+  })
+})
+
+/**
+ * 把**已失效且已过宽限期**的验证码邮件移入回收站。
+ *
+ * `graceMs` 是宽限期（默认 30 秒），理由见 `AppSettings.autoDeleteExpiredCode`：
+ * 失效时刻是推算出来的，本身有几十秒误差，立刻删会误删还有效的验证码。
+ *
+ * ⚠ 只处理**带 `codeExpiresAt`** 的邮件 —— 没有明确有效期的验证码不动它。
+ *   「不知道什么时候失效」不等于「已经失效」。
+ *
+ * @param graceMs 失效之后还要等多久才移走
+ * @param now 当前时刻（测试可注入）
+ * @returns 移入回收站的封数
+ */
+export const trashExpiredCodes = withReady(async (
+  graceMs: number = 30_000,
+  now: number = Date.now(),
+): Promise<number> => {
+  const cutoff = now - graceMs
+
+  return runTx(['mails'], 'readwrite', async (ctx) => {
+    const raws = await getAllEntries<unknown>('mails', ctx)
+    let moved = 0
+
+    for (const { value, key } of raws) {
+      const mail = normalizeMail(value, String(key))
+      if (!mail)
+        continue
+      // 已经在回收站里的跳过（否则每轮都会重写一遍，白白触发广播）
+      if (mail.trashedAt !== undefined)
+        continue
+      // 没有明确有效期 → 不动它
+      if (mail.codeExpiresAt === undefined)
+        continue
+      if (mail.codeExpiresAt > cutoff)
+        continue
+
+      await put('mails', { ...mail, trashedAt: now, read: true }, mail.id, ctx)
+      moved++
+    }
+
+    return moved
+  })
 })
 
 /** 把当前窗口里所有未读标为已读（打开 Popup 时 badge 归零用） */

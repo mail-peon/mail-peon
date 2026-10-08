@@ -26,12 +26,14 @@
 | 4 | [04-exclude-ads.md](./features/04-exclude-ads.md) | 排除广告 / 营销邮件 |
 | 5 | [05-verification-code.md](./features/05-verification-code.md) | 验证码自动复制 |
 | 6 | [06-blocked-senders.md](./features/06-blocked-senders.md) | 排除邮箱（本地） |
+| 7 | [07-trash.md](./features/07-trash.md) | 回收站（状态变更 vs 硬删除、失效验证码自动删除） |
 
 ### 设计（`design/`）
 
 | 文件 | 说明 |
 | --- | --- |
 | [storage.md](./design/storage.md) | IndexedDB schema、迁移、初始化门闸、保留数量配置、UID 增量同步 |
+| [sync-flow.md](./design/sync-flow.md) | **收信流程图**（字符图：中继 IDLE 推送 / 一轮同步内部 / 积压消化 / 「同步中」如何结束） |
 | [data-model.md](./design/data-model.md) | 字段定义（MailAccount / PromptRule / Mail / Settings） |
 | [minimal-mode.md](./design/minimal-mode.md) | **极简模式设计**（默认 / 仅验证码自动复制） |
 | [ai-prompt-design.md](./design/ai-prompt-design.md) | AI 系统提示词设计、输出 Schema、多 Provider 适配 |
@@ -46,6 +48,7 @@
 | [adr-0005-imap-needs-relay.md](./decisions/adr-0005-imap-needs-relay.md) | **IMAP 在 MV3 里必须经 WebSocket↔TCP 中继**（推翻 Q1 的「IMAP+密码直接可用」） |
 | [relay-deployment.md](./decisions/relay-deployment.md) | **中继的部署方案**：用户级自启 + Rust 单安装器（安装/卸载两个选项）；为什么「零额外安装」做不到 |
 | [imap-testing.md](./decisions/imap-testing.md) | **IMAP 验收指南（QQ 邮箱）**：QQ 侧授权码怎么拿、扩展怎么填、六条验收清单、故障定位表 |
+| [debugging-receiving.md](./decisions/debugging-receiving.md) | **排查：收到推送但界面没邮件** —— 两处控制台怎么开、日志断点对照表 |
 
 ---
 

@@ -1,7 +1,7 @@
 import type { AiProvider } from '~/adapters/ai/types'
 import type { AiSettings, Mail } from '~/logic/types'
 import { createAiProvider } from '~/adapters/ai/platforms'
-import { cleanCode, fallbackOutput, parseAiOutput } from './output-schema'
+import { cleanCode, cleanValidForSeconds, fallbackOutput, parseAiOutput } from './output-schema'
 import {
   bodyBudget,
   buildMinimalSystemPrompt,
@@ -157,11 +157,29 @@ export async function summarize(
  *   远大于格式错误；而验证码是**时效性极强**的东西 —— 30 秒后再拿到已经没用了，
  *   用户早就手动去邮箱翻了。快速失败比慢速成功更有价值。
  */
+/**
+ * 极简模式的提取结果。
+ *
+ * ⚠ `validForSeconds` 与 `code` **一起返回**，而不是再调一次 AI 单独问有效期：
+ *   两次调用的结果可能不一致（第二次模型看不到第一次的上下文），
+ *   而且极简模式的全部价值就是「便宜 + 快」。一个整数多不了几个 token。
+ */
+export interface MinimalExtraction {
+  code: string
+  /** 有效期秒数；邮件没明确写就是 `null` */
+  validForSeconds: number | null
+}
+
+/**
+ * 极简模式：只提取验证码与它的有效期。
+ *
+ * @returns 提取结果；没有验证码时 `null`
+ */
 export async function extractCodeOnly(
   mail: Mail,
   settings: AiSettings,
   options: SummarizeOptions,
-): Promise<string | null> {
+): Promise<MinimalExtraction | null> {
   if (!settings.apiKey)
     return null
 
@@ -194,17 +212,17 @@ export async function extractCodeOnly(
       provider.config,
     )
 
-    const code = parseMinimalCode(response.text)
+    const parsed = parseMinimalResponse(response.text)
     options.onCall?.({
       mailId: mail.id,
       mode: 'minimal',
       model: provider.config.model,
       attempt: 1,
       latencyMs: Date.now() - started,
-      ok: !!code,
-      error: code ? undefined : '模型未提取到验证码',
+      ok: !!parsed,
+      error: parsed ? undefined : '模型未提取到验证码',
     })
-    return code
+    return parsed
   }
   catch (error) {
     options.onCall?.({
@@ -221,52 +239,62 @@ export async function extractCodeOnly(
 }
 
 /**
- * 解析极简模式的返回：`{ "code": "..." }`。
+ * 解析极简模式的返回：`{ "code": "...", "validForSeconds": 300 }`。
  *
- * ⚠ 复用 `cleanCode` 而不是自己写一遍正则：`code` 字段的清洗规则（去掉
- *   "您的验证码是"、处理 "null" 字符串、要求含数字）在两个模式里必须**完全一致** ——
- *   不一致的症状是「同一封邮件在极简模式提取出的验证码与完整模式不同」，
+ * ⚠ 复用 `cleanCode` / `cleanValidForSeconds` 而不是自己写一遍：
+ *   这两个字段的清洗规则在两个模式里必须**完全一致** —— 不一致的症状是
+ *   「同一封邮件在极简模式提取出的验证码（或倒计时）与完整模式不同」，
  *   这种 bug 极难被发现。
  */
-function parseMinimalCode(text: string): string | null {
+function parseMinimalResponse(text: string): MinimalExtraction | null {
   const trimmed = text.trim()
   if (!trimmed)
     return null
 
-  const fromJson = (): string | null => {
+  /**
+   * 从一段文本里抠出 `{ code, validForSeconds }`。
+   *
+   * @param source JSON 文本
+   */
+  const pick = (source: string): { code: string | null, validForSeconds: unknown } => {
     try {
-      const parsed = JSON.parse(trimmed) as { code?: unknown }
-      return typeof parsed.code === 'string' ? parsed.code : null
+      const parsed = JSON.parse(source) as { code?: unknown, validForSeconds?: unknown }
+      return {
+        code: typeof parsed.code === 'string' ? parsed.code : null,
+        validForSeconds: parsed.validForSeconds,
+      }
     }
     catch {
-      return null
+      return { code: null, validForSeconds: null }
     }
   }
 
-  let candidate = fromJson()
+  let picked = pick(trimmed)
 
-  if (candidate === null) {
+  if (picked.code === null) {
     // 容错：模型可能包了代码块 / 带了说明文字
     const start = trimmed.indexOf('{')
     const end = trimmed.lastIndexOf('}')
-    if (start !== -1 && end > start) {
-      try {
-        const parsed = JSON.parse(trimmed.slice(start, end + 1)) as { code?: unknown }
-        candidate = typeof parsed.code === 'string' ? parsed.code : null
-      }
-      catch {
-        candidate = null
-      }
-    }
+    if (start !== -1 && end > start)
+      picked = pick(trimmed.slice(start, end + 1))
   }
 
-  // 最后一道：模型没按 JSON 回（返回了裸验证码），用同一套清洗规则兜住。
-  // ⚠ 只在这一步用「从文本里抽」，因为这里的输入**整段都应该是验证码**，
-  //   不存在「正文里有订单号」的误伤风险。
-  if (candidate === null)
-    candidate = trimmed
+  /*
+   * 最后一道：模型没按 JSON 回（返回了裸验证码），用同一套清洗规则兜住。
+   * ⚠ 只在这一步用「从文本里抽」，因为这里的输入**整段都应该是验证码**，
+   *   不存在「正文里有订单号」的误伤风险。
+   *
+   * 这种形态下**没有**有效期信息（裸验证码里不可能带），所以给 `null` ——
+   * 不要顺手填个默认值。
+   */
+  if (picked.code === null)
+    picked = { code: trimmed, validForSeconds: null }
 
-  return cleanCode(candidate)
+  const code = cleanCode(picked.code)
+  if (!code)
+    return null
+
+  return { code, validForSeconds: cleanValidForSeconds(picked.validForSeconds) }
 }
 
 function describe(error: unknown): string {

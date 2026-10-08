@@ -27,7 +27,7 @@ import {
  *      展开两封就到底了。
  */
 
-const { mails, loading, copyCode, setRead, dismiss } = useMails(300)
+const { mails, loading, copyCode, setRead, dismiss, trash } = useMails(300)
 const { app, reload } = useSettings()
 
 const activeTab = ref<PopupTab>('important')
@@ -65,15 +65,18 @@ function openOptions() {
           {{ t('common.loading') }}
         </p>
         <EmptyState v-else-if="!codeMails.length" :text="t('popup.codeEmpty')" />
-        <MailListItem
-          v-for="mail in codeMails"
-          v-else
-          :key="mail.id"
-          :mail="mail"
-          minimal
-          @copy="(item: Mail) => copyCode(item)"
-          @open="(item: Mail) => { if (!item.read) setRead(item, true) }"
-        />
+        <!-- `v-if` 放在外层 `<template>` 上 —— 见 `popup/Popup.vue` 里同处的说明 -->
+        <template v-if="codeMails.length">
+          <MailListItem
+            v-for="mail in codeMails"
+            :key="mail.id"
+            :mail="mail"
+            minimal
+            @copy="(item: Mail) => copyCode(item)"
+            @trash="(item: Mail) => trash(item)"
+            @open="(item: Mail) => { if (!item.read) setRead(item, true) }"
+          />
+        </template>
       </div>
     </template>
 
@@ -97,16 +100,20 @@ function openOptions() {
           {{ t('common.loading') }}
         </p>
         <EmptyState v-else-if="!visibleMails.length" :text="t(tabEmptyKey(activeTab))" />
-        <MailListItem
-          v-for="mail in visibleMails"
-          v-else
-          :key="mail.id"
-          :mail="mail"
-          @copy="(item: Mail) => copyCode(item)"
-          @read="(item: Mail, read: boolean) => setRead(item, read)"
-          @dismiss="(item: Mail) => dismiss(item)"
-          @open="(item: Mail) => { if (!item.read) setRead(item, true) }"
-        />
+        <!-- `v-if` 而不是 `v-else` —— 理由见上面极简模式那段 -->
+        <!-- `v-if` 放在外层 `<template>` 上 —— 理由见上面极简模式那段 -->
+        <template v-if="visibleMails.length">
+          <MailListItem
+            v-for="mail in visibleMails"
+            :key="mail.id"
+            :mail="mail"
+            @copy="(item: Mail) => copyCode(item)"
+            @read="(item: Mail, read: boolean) => setRead(item, read)"
+            @dismiss="(item: Mail) => dismiss(item)"
+            @trash="(item: Mail) => trash(item)"
+            @open="(item: Mail) => { if (!item.read) setRead(item, true) }"
+          />
+        </template>
       </div>
     </template>
   </main>
@@ -179,6 +186,8 @@ function openOptions() {
 
 .list {
   flex: 1 1 auto;
+  /* `min-height: 0` 与 `overflow-y: auto` 是一对 —— 见 `popup/Popup.vue` 里的说明 */
+  min-height: 0;
   overflow-y: auto;
   display: flex;
   flex-direction: column;

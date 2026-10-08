@@ -133,34 +133,45 @@ export class ImapClient {
   }
 
   /**
-   * 拿 `UID > sinceUid` 的邮件。
+   * 拉一个**明确**的 UID 区间。
    *
-   * 用 `UID FETCH <from>:*` 而不是先 SEARCH 再 FETCH：一趟往返拿全，
-   * 少一次 RTT 也就少一个「SEARCH 拿到了但 FETCH 时被别的客户端删了」的窗口。
-   * 代价是 `limit` 只能在拉完之后截断（见文件头关于 `*` 语义的说明）。
+   * ⚠ 这里**没有**「拉 `UID > x` 的全部」那种方法（`fetchSince(a, { limit })`），
+   *   而且它是被**故意删掉**的 —— 保留一个「能用但在真实邮箱上必然出错」的 API
+   *   比没有它更糟。它踩过的坑（见 `imap-provider` 的 `fetchSince` 注释）：
+   *
+   *   1. 服务器会把整个区间的正文都发过来，`limit` 只是客户端**收完之后**的截断。
+   *      用户邮箱有 3 万多封、游标之后积压几千封时，就是几千次 `BODY.PEEK[]`
+   *      全量传输 —— 30 秒命令超时必然被撞爆（真机症状：UI 报「请求超时」，
+   *      而中继日志里 `CONNECT` 之后再无输出）。
+   *   2. 调用方很容易顺手写成「先全拉、再 `slice(-N)` 取最新的」，然后推进游标 ——
+   *      中间那些邮件就**永久丢失**了，而界面上看不出任何异常。
+   *
+   * 正确的入口是 `searchSince`（先拿 UID 列表）+ `fetchRange`（只取需要的一段）。
+   *
+   * 少数服务器不支持 `a:*` 的部分区间变体，但**都**支持确定区间 `a:b`。
    */
-  async fetchSince(sinceUid: number, options: { limit: number }): Promise<ImapFetchedMessage[]> {
+  async fetchRange(fromUid: number, toUid: number): Promise<ImapFetchedMessage[]> {
     this.ensureSelected()
+    if (toUid < fromUid)
+      return []
+
     this.pending.messages = new Map()
     this.pending.expecting = null
 
-    const from = sinceUid + 1
-    const response = await this.command(`UID FETCH ${from}:* (UID FLAGS BODY.PEEK[])`)
+    const response = await this.command(`UID FETCH ${fromUid}:${toUid} (UID FLAGS BODY.PEEK[])`)
     if (!response.ok)
       throw new ImapProtocolError(`拉取邮件失败：${response.text || '服务器拒绝'}`)
 
     return [...this.pending.messages.values()]
-      // 显式过滤：`from:*` 在 from 超出末尾时会返回最大的那个 UID
-      .filter(message => message.uid >= from)
+      .filter(message => message.uid >= fromUid && message.uid <= toUid)
       .sort((a, b) => a.uid - b.uid)
-      .slice(0, options.limit)
   }
 
   /**
-   * 只要 UID 列表（不拉正文）——「先看有多少封」的快路径。
+   * 只要 UID 列表（不拉正文）。
    *
-   * 目前没有生产调用方：`fetchSince` 在邮箱积压几万封时会一口气把正文全拉下来。
-   * 保留它是因为改成分批拉时需要的就是这个方法（先 SEARCH 拿 UID → 只 FETCH 前 N 个）。
+   * 这是处理积压的**第一步**：先拿到「有哪些 UID」，再用 `fetchRange` 只取需要的那一批。
+   * 一个整数几十字节，几千个 UID 也就几十 KB —— 和几千封完整邮件的正文相比可以忽略。
    */
   async searchSince(sinceUid: number): Promise<number[]> {
     this.ensureSelected()

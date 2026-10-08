@@ -196,6 +196,23 @@ export interface AiOutput {
   summary: string
   isAd: boolean
   code?: string | null
+  /**
+   * 验证码的**有效期秒数**（AI 从正文里读到的）。
+   *
+   * 实例：「此验证码将在 5 分钟内有效。」→ `300`。
+   *
+   * ⚠ 刻意让 AI 输出**相对秒数**而不是绝对时间。理由有两条：
+   *
+   *   1. 模型看不到当前时间，让它算 `expiresAt` 等于让它瞎猜；
+   *   2. 邮件里的表述本来就是相对的，而且**从发信时刻起算**
+   *      （「5 分钟内有效」= 从发信那一刻算 5 分钟）。
+   *      换算成绝对时间是我们的事，不是它的事。
+   *
+   * `null` = 邮件里**没有明确**写有效期。
+   * ⚠ 不要拿「常见值」（如 300）去猜 —— 猜错会让用户以为还有 5 分钟，
+   *   而实际早就失效了，那比不显示更糟。
+   */
+  validForSeconds?: number | null
   urgency: Urgency
   /** AI 失败走降级时为 true */
   degraded?: boolean
@@ -254,6 +271,24 @@ export interface Mail {
   dismissed?: boolean
 
   /**
+   * 进入回收站的时刻（`Date.now()`）。
+   *
+   * ## 为什么不是布尔量 `trashed: true`
+   *
+   * 回收站要**按删除时间排序**（最近删的在最上面），而且要能在列表里显示
+   * 「什么时候删的」。布尔量表达不了这两个需求，而时间戳可以 ——
+   * 判据仍然是便宜的 `!!mail.trashedAt`。
+   *
+   * ## 语义：这是**状态变更**，不是软删除
+   *
+   * 移入回收站只是把邮件换个列表放着，记录本身**不动**（正文、AI 结果都还在），
+   * 所以「恢复」是零成本的。只有「彻底删除」才真的从仓库里移除记录。
+   *
+   * 见 `logic/store/mails.ts` 的 `trashMail` / `purgeMails`。
+   */
+  trashedAt?: number
+
+  /**
    * 极简模式提取到的验证码（顶层冗余字段）。
    *
    * ⚠ 与 `ai.code` 并存是**有意的冗余**，不是设计疏漏：
@@ -263,6 +298,35 @@ export interface Mail {
    *   完整模式**不写**这个字段（只写 `ai.code`），避免两份真相互相同步。
    */
   code?: string | null
+
+  /**
+   * 验证码失效的**绝对时刻**（时间戳）。
+   *
+   * ⚠ 存下来而不是每次现算（`receivedAt + ai.validForSeconds`）：它要在 UI 上
+   *   每秒被读一次做倒计时，而现算要两跳可选链；更要紧的是**存下来才能被
+   *   「重新计算」钳制**（见 `logic/ai/pipeline.ts` 的 `reconcileCodeExpiry`）——
+   *   否则补拉一封三天前的验证码邮件，界面会显示「还有 5 分钟」。
+   *
+   * 只有「正文里明确写了有效期」时才有值。没有就**不写**这个字段，
+   * UI 也就不展示倒计时。
+   */
+  codeExpiresAt?: number
+
+  /**
+   * 验证码的**总有效期秒数**（与 `codeExpiresAt` 同时写入）。
+   *
+   * ⚠ 它存在的唯一理由是**进度条的分母**。
+   *
+   *   只靠 `codeExpiresAt` 前端算不出「现在走到百分之几了」——
+   *   那需要知道起点。而起点（入库时刻）没有单独存，
+   *   所以组件曾用「挂载那一刻的剩余量」当分母 ——
+   *   结果是**每次打开 Popup 进度条都从 100% 重新往下走**，
+   *   完全不能反映真实剩余比例。
+   *
+   *   存下总时长之后：`已过比例 = 1 - 剩余 / 总时长`，
+   *   这个值只由「现在」决定，与什么时候打开 Popup 无关。
+   */
+  codeValidForSeconds?: number
 
   // 原始（可丢弃）
   messageId?: string
@@ -288,7 +352,10 @@ export const MAIL_FIELDS: Record<keyof Mail, true> = {
   copyStatus: true,
   read: true,
   dismissed: true,
+  trashedAt: true,
   code: true,
+  codeExpiresAt: true,
+  codeValidForSeconds: true,
   messageId: true,
   listUnsubscribe: true,
   ruleId: true,
@@ -396,6 +463,22 @@ export interface AppSettings {
   mailRetention: MailRetention
   /** M3+：默认 0 = 不按时间清理 */
   mailRetentionDays: number
+
+  /**
+   * 验证码失效后自动删除（默认**开启**）。
+   *
+   * 行为：邮件的验证码到了「失效时刻」**再等 30 秒**，就自动移入回收站。
+   *
+   * ⚠ 为什么不是「立刻删」而是「等 30 秒」：
+   *   失效时刻是由 AI 读到的时长 + 入库时刻推算的，本身有几十秒的误差
+   *   （投递延迟、模型对「5 分钟」这类表述的取整）。立刻删会在边界上误删
+   *   **其实还有效**的验证码 —— 而验证码是一次性的，误删等于用户要重新申请一个。
+   *   30 秒宽限期把这类误差盖住，代价只是回收站里多躺半分钟。
+   *
+   * ⚠ 删的是**进回收站**，不是硬删除 —— 详见 `Mail.trashedAt` 的说明。
+   */
+  autoDeleteExpiredCode: boolean
+
   schemaVersion: number
 }
 
@@ -409,6 +492,7 @@ export function createDefaultAppSettings(): AppSettings {
     popupDefaultTab: 'important',
     mailRetention: 100,
     mailRetentionDays: 0,
+    autoDeleteExpiredCode: true,
     schemaVersion: 1,
   }
 }
