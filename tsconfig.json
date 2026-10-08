@@ -6,14 +6,15 @@
     "lib": ["DOM", "ESNext"],
     "baseUrl": ".",
     "module": "ESNext",
-    "moduleResolution": "node",
+    "moduleResolution": "Bundler",
     "paths": {
-      "~/*": ["src/*"]
+      "~/*": ["./src/*"]
     },
     "resolveJsonModule": true,
     "types": [
       "vite/client"
     ],
+    "allowImportingTsExtensions": true,
     "strict": true,
     "noUnusedLocals": true,
     "esModuleInterop": true,
