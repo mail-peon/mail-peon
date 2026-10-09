@@ -1,9 +1,12 @@
 <script setup lang="ts">
 import type { AppSettings, MailRetention, PopupTab, StorageUsage } from '~/logic/types'
 import { computed, onMounted, onUnmounted, ref } from 'vue'
+import ConfirmDialog from '~/components/ConfirmDialog.vue'
 import { onDataChanged, onSyncDone, send, useAccounts, useSettings } from '~/logic/bridge'
+import { useConfirmAction } from '~/logic/confirm-action'
 import { t } from '~/logic/strings'
 import { MAIL_RETENTION_OPTIONS } from '~/logic/types'
+import { ERROR_DURATION, useAppMessage, WARNING_DURATION } from '~/logic/ui-message'
 
 /**
  * 通用设置（`design/ui-flows.md § 4.6a` 极简 / `§ 4.6b` 完整）。
@@ -11,14 +14,20 @@ import { MAIL_RETENTION_OPTIONS } from '~/logic/types'
  * 两套布局在**同一个组件**里按 `minimalMode` 分支，而不是拆成两个文件：
  * 它们的上半部分（模式切换）完全相同，拆开后「模式切换」这个最关键的控件
  * 会有两份实现 —— 而它正是两套布局之间唯一的通路，重复实现迟早会分叉。
+ *
+ * 卡片、开关、下拉全部是 Ant Design Vue 的组件（`a-card` / `a-switch` /
+ * `a-checkbox` / `a-select` / `a-descriptions`）。
+ *
+ * ⚠ 操作结果（同步成功/失败、导入导出、清空数据）**不画在页面里**，走全局轻提示
+ *   （`logic/ui-message.ts`）。理由与代价都写在那里：颜色必须由「这句话是什么性质」
+ *   决定，而页面内的一行文字会把失败跟成功渲染成同一个样子。
  */
 
 const { app, ai, setApp, reload } = useSettings()
 const { accounts, syncNow, syncStatus, reload: reloadAccounts } = useAccounts()
 
 const busy = ref(false)
-const message = ref('')
-const error = ref('')
+const uiMessage = useAppMessage()
 
 /**
  * 把一轮同步的结果呈现出来（成功与失败都走这里）。
@@ -27,24 +36,31 @@ const error = ref('')
  *   完全一致的结果 —— 分成两份实现的话，差别会表现为「有时显示拉取 N 封、
  *   有时什么都不显示」，这种不一致极难排查。
  *
+ * ⚠⚠ 这里按**性质**分成四种提示，不能合并成一条：
+ *
+ *   - 整体失败（`ok: false`）⇒ `error`（红）
+ *   - 有账号级故障 / 有邮件失败 ⇒ `warning`（黄）
+ *   - 正常拉取 ⇒ `success`（绿）
+ *   - 「首次同步只记位置」⇒ `info`（蓝，它不是结果而是说明）
+ *
+ *   合并成一条 `success` 正是用户报过的问题：「无法连接中继」曾经以绿色出现。
+ *
  * @param result 后台给出的一轮同步结果
  */
 function applySyncResult(result: { ok: boolean, results: SyncSummary[], error?: string }) {
   busy.value = false
-  message.value = ''
-  error.value = ''
 
   if (!result.ok) {
     // 失败如实说。不要用「没有启用的账号」这种猜测 —— 那是另一个原因，
     // 会把用户引去反复检查一个本来就正常的账号页
-    error.value = `同步失败：${result.error ?? '未知原因'}`
+    uiMessage.error(`同步失败：${result.error ?? '未知原因'}`, ERROR_DURATION)
     void reloadUsage()
     return
   }
 
   const summaries = result.results
   if (!summaries.length) {
-    error.value = '没有启用的账号；请先在「账号」页添加（并确认「启用（参与后台同步）」是勾上的）'
+    uiMessage.warning('没有启用的账号；请先在「账号」页添加（并确认「启用（参与后台同步）」是勾上的）')
     return
   }
 
@@ -57,17 +73,34 @@ function applySyncResult(result: { ok: boolean, results: SyncSummary[], error?: 
   const blocked = summaries.reduce((sum, item) => sum + item.blocked, 0)
   const failed = summaries.reduce((sum, item) => sum + item.failed, 0)
 
-  const parts: string[] = []
+  // 「首次同步只记位置」是**说明**，不是结果 —— 用 info（蓝）而不是 success
   if (firstSync.length)
-    parts.push(`${firstSync.map(item => item.label).join('、')}：${t('general.syncFirstTime')}`)
-  if (fetched || blocked || failed)
-    parts.push(t('general.syncDone', { fetched, blocked, failed }))
+    uiMessage.info(`${firstSync.map(item => item.label).join('、')}：${t('general.syncFirstTime')}`)
 
-  const warnings = summaries.filter(item => item.warning)
-  if (warnings.length)
-    parts.push(...warnings.map(item => `⚠️ ${item.label}：${item.warning}`))
+  /*
+   * ⚠ 有失败就**不能是绿色**：`同步完成：拉取 3 封，失败 1 封` 用绿底显示，
+   *   用户会读成「一切正常」，而实际上有个账号根本没拉到信。
+   */
+  if (fetched || blocked || failed) {
+    const text = t('general.syncDone', { fetched, blocked, failed })
+    if (failed)
+      uiMessage.warning(text, WARNING_DURATION)
+    else
+      uiMessage.success(text)
+  }
 
-  message.value = parts.join('\n') || t('general.syncDone', { fetched: 0, blocked: 0, failed: 0 })
+  /*
+   * 账号级的「这一轮出了事」，例如
+   * `无法连接中继：ws://127.0.0.1:8787/imap.qq.com:993?tls=1`。
+   *
+   * ⚠ 这类文案走的是 `SyncSummary.warning` 字段（见 `adapters/mail/mailbox.ts`：
+   *   连接抛错时会把它塞进 `warning`），所以**字段名看着像警告、内容可能是故障**。
+   *   之前它跟成功文案拼成一整段、整体按 success 渲染 ⇒ 故障是绿色的。
+   *   现在按**警告色**单独提示，并且带上账号名（多账号时才知道该去修哪个）。
+   */
+  for (const item of summaries.filter(entry => entry.warning))
+    uiMessage.warning(`${item.label}：${item.warning}`, WARNING_DURATION)
+
   void reloadUsage()
   void reloadAccounts()
 }
@@ -104,7 +137,7 @@ function startSyncWatchdog(startedAt: number): () => void {
     if (Date.now() - startedAt > DEADLINE_MS) {
       stop()
       busy.value = false
-      error.value = '同步超过 6 分钟仍未返回。请检查中继是否在运行，然后重试。'
+      uiMessage.error('同步超过 6 分钟仍未返回。请检查中继是否在运行，然后重试。', ERROR_DURATION)
       return
     }
 
@@ -221,6 +254,21 @@ const usageText = computed(() => {
 })
 
 /**
+ * 模式切换（开关在中间，左边「极简模式」、右边「完整功能」）。
+ *
+ * ⚠ `a-switch` 的语义是「开 = 右侧那项」。所以 checked 是 `!minimalMode`，
+ *   而**不是** `minimalMode` —— 写反了会得到一个「往右拨却变成极简」的开关，
+ *   而且它看起来完全正常（两种模式都能用，只是与标签相反）。
+ */
+function onModeToggle(checked: boolean | string | number) {
+  patch({ minimalMode: !checked })
+}
+
+function onRetentionChange(value: unknown) {
+  patch({ mailRetention: value as MailRetention })
+}
+
+/**
  * 点「立即同步增量」。
  *
  * ⚠ 这里**不等结果**：只负责转成「进行中」，结果由上面的 `onSyncDone` 订阅填。
@@ -233,15 +281,13 @@ const usageText = computed(() => {
  */
 async function onSyncNow() {
   busy.value = true
-  message.value = ''
-  error.value = ''
 
   const result = await syncNow()
 
   if (!result?.started) {
     // 连「开始」都没成功 —— 这时才需要自己收尾（正常路径由广播/轮询收尾）
     busy.value = false
-    error.value = '无法启动同步：与后台通信失败，请重试'
+    uiMessage.error('无法启动同步：与后台通信失败，请重试', ERROR_DURATION)
     return
   }
 
@@ -257,47 +303,56 @@ async function onSyncNow() {
 }
 
 /**
- * `window.confirm` 在这个文件里是**刻意**的用法（下面三处）。
+ * 待确认的破坏性操作（三个动作共用）。
  *
- * 这是扩展自己的 Options 页（`chrome-extension://` 下的一个普通标签页），
- * 不存在「页面被第三方脚本劫持弹窗」的风险；而这三件事都是**不可撤销**的
- * （清空邮件列表 / 清空所有数据 / 导入覆盖设置），必须有一道明确的确认。
+ * ⚠ 从「`window.confirm` + `if (!confirm()) return`」改成**弹窗组件 + 待办动作**
+ *   之后，流程变成两段：点击只登记「想做什么」，真正的动作在弹窗的确认回调里跑。
+ *   这么改是因为原生 `confirm` 的样式与产品完全脱节（深色主题下尤其突兀），
+ *   而这里的三个动作（清空邮件列表 / 清空所有数据）都不可撤销，
+ *   正需要弹窗把后果写清楚。
  *
- * 用一个自研的 modal 组件能得到更漂亮的样式，但代价是：在「确认」这件事上，
- * 浏览器原生弹窗的**行为**（阻塞、ESC 取消、焦点管理、键盘可达）比自己写的更可靠 ——
- * 而它一年只会被看到几次。
+ * ⚠ 必须**解构**（理由见 `confirm-action.ts` 的文件头）。
  */
-function confirmOrAbort(message: string): boolean {
-  // eslint-disable-next-line no-alert -- 见上方说明：Options 页里的不可撤销操作确认
-  return window.confirm(message)
+const { pending, ask: askConfirm, cancel: cancelConfirm, confirm: runPending } = useConfirmAction()
+
+/** 清空邮件列表（不可撤销） */
+function onClearMails() {
+  askConfirm({
+    title: t('general.clearMails'),
+    message: t('general.confirmClearMails'),
+    confirmText: t('general.clearMails'),
+    run: async () => {
+      busy.value = true
+      try {
+        await send('settings:clear-mails', undefined, { ok: false })
+        uiMessage.success('已清空邮件列表')
+        await reloadUsage()
+      }
+      finally {
+        busy.value = false
+      }
+    },
+  })
 }
 
-async function onClearMails() {
-  if (!confirmOrAbort(t('general.confirmClearMails')))
-    return
-  busy.value = true
-  try {
-    await send('settings:clear-mails', undefined, { ok: false })
-    message.value = '已清空邮件列表'
-    await reloadUsage()
-  }
-  finally {
-    busy.value = false
-  }
-}
-
-async function onClearAll() {
-  if (!confirmOrAbort(t('general.confirmClearAll')))
-    return
-  busy.value = true
-  try {
-    await send('settings:clear-all', undefined, { ok: false })
-    message.value = '已清空所有数据'
-    await Promise.all([reload(), reloadUsage(), reloadAccounts()])
-  }
-  finally {
-    busy.value = false
-  }
+/** 清空所有数据（不可撤销） */
+function onClearAll() {
+  askConfirm({
+    title: t('general.clearAll'),
+    message: t('general.confirmClearAll'),
+    confirmText: t('general.clearAll'),
+    run: async () => {
+      busy.value = true
+      try {
+        await send('settings:clear-all', undefined, { ok: false })
+        uiMessage.success('已清空所有数据')
+        await Promise.all([reload(), reloadUsage(), reloadAccounts()])
+      }
+      finally {
+        busy.value = false
+      }
+    },
+  })
 }
 
 /** 导出 / 导入设置（`design/data-model.md § 9`） */
@@ -332,7 +387,7 @@ function onExport() {
   link.download = `mail-peon-settings-${new Date().toISOString().slice(0, 10)}.json`
   link.click()
   URL.revokeObjectURL(url)
-  message.value = '已导出（不含密码与 AI Key）'
+  uiMessage.success('已导出（不含密码与 AI Key）')
 }
 
 function stripSecrets(config: Record<string, unknown>): Record<string, unknown> {
@@ -349,7 +404,6 @@ async function onImportFile(event: Event) {
   if (!file)
     return
 
-  error.value = ''
   try {
     const text = await file.text()
     const parsed = JSON.parse(text) as {
@@ -390,11 +444,11 @@ async function onImportFile(event: Event) {
       added++
     }
 
-    message.value = `导入完成：设置已覆盖，新增 ${added} 个账号（已停用，请补填凭据后再启用）`
+    uiMessage.success(`导入完成：设置已覆盖，新增 ${added} 个账号（已停用，请补填凭据后再启用）`)
     await Promise.all([reload(), reloadAccounts()])
   }
   catch (importError) {
-    error.value = importError instanceof Error ? importError.message : String(importError)
+    uiMessage.error(importError instanceof Error ? importError.message : String(importError), ERROR_DURATION)
   }
   finally {
     // 清掉 input 的值，否则连续导入同一个文件不会触发 change
@@ -407,175 +461,163 @@ async function onImportFile(event: Event) {
 <template>
   <section class="page">
     <!-- ============ 模式切换（两套布局共用） ============ -->
-    <div class="mp-card">
-      <p class="mp-section-title">
-        {{ t('general.mode') }}
-      </p>
-      <div class="mp-radio-group">
-        <label class="mp-radio">
-          <input
-            type="radio"
-            :checked="minimalMode"
-            @change="patch({ minimalMode: true })"
-          >
-          <span>{{ t('general.modeMinimal') }}</span>
-        </label>
-        <label class="mp-radio">
-          <input
-            type="radio"
-            :checked="!minimalMode"
-            @change="patch({ minimalMode: false })"
-          >
-          <span>{{ t('general.modeFull') }}</span>
-        </label>
+    <a-card size="small" :title="t('general.mode')">
+      <!--
+        一行靠左：`极简模式 (开关) 完整功能`。
+        两个标签是**短标签**（括号里的解释在下面两行）——
+        长标签挤在开关两边会把它推歪。
+      -->
+      <div class="mode-row">
+        <span class="mode-label" :class="{ active: minimalMode }">
+          {{ t('general.modeMinimal') }}
+        </span>
+        <a-switch
+          class="mode-switch"
+          :checked="!minimalMode"
+          @update:checked="onModeToggle"
+        />
+        <span class="mode-label" :class="{ active: !minimalMode }">
+          {{ t('general.modeFull') }}
+        </span>
       </div>
-      <p v-if="minimalMode" class="mp-hint mode-hint">
-        {{ t('options.minimalOnlyNote') }}
-      </p>
-    </div>
+
+      <!-- 两个模式各一行说明（共两行），每行前面是自己的名字 -->
+      <div class="mode-desc">
+        <p>
+          <span class="mode-desc-title">{{ t('general.modeMinimal') }}</span>：{{ t('general.modeMinimalDesc') }}
+        </p>
+        <p>
+          <span class="mode-desc-title">{{ t('general.modeFull') }}</span>：{{ t('general.modeFullDesc') }}
+        </p>
+      </div>
+    </a-card>
+
     <!-- ============ 极简模式的通用页 ============ -->
     <template v-if="minimalMode">
-      <div class="mp-card">
-        <label class="mp-checkbox">
-          <input
-            type="checkbox"
-            :checked="app?.autoCopyCode ?? true"
-            @change="patch({ autoCopyCode: ($event.target as HTMLInputElement).checked })"
-          >
-          <span>{{ t('general.autoCopyCode') }}</span>
-        </label>
-        <p class="mp-hint">
-          极简模式下强制开启：看到验证码就自动复制并弹提示。
-        </p>
+      <a-card size="small">
+        <!--
+          ⚠ 这里**不是** disabled。
+             「验证码自动复制」在极简模式里也是一个普通开关：关掉之后验证码照旧
+             提取、照旧进列表，只是不写剪贴板 —— toast 上给「点击复制」按钮兜底
+             （见 `logic/ai/pipeline.ts` 的 `processMinimal`）。
+        -->
+        <a-checkbox
+          :checked="app?.autoCopyCode ?? true"
+          @update:checked="(value: boolean) => patch({ autoCopyCode: value })"
+        >
+          {{ t('general.autoCopyCode') }}
+        </a-checkbox>
 
-        <hr class="mp-divider">
+        <a-divider class="divider" />
 
-        <div class="stat-row">
-          <span class="stat-label">{{ t('general.accountCount', { n: accounts.length }) }}</span>
-          <span class="stat-value">{{ accounts.map(item => item.email).join('、') || '—' }}</span>
-        </div>
-        <div class="stat-row">
-          <span class="stat-label">{{ t('general.codeCount', { n: codeCount }) }}</span>
-          <span class="stat-value">{{ usageText }}</span>
-        </div>
+        <a-descriptions :column="1" size="small" class="stats">
+          <a-descriptions-item :label="t('general.accountCount', { n: accounts.length })">
+            {{ accounts.map(item => item.email).join('、') || '—' }}
+          </a-descriptions-item>
+          <a-descriptions-item :label="t('general.codeCount', { n: codeCount })">
+            {{ usageText }}
+          </a-descriptions-item>
+        </a-descriptions>
 
         <div class="actions">
-          <button class="mp-btn mp-btn-primary" type="button" :disabled="busy" @click="onSyncNow">
+          <a-button type="primary" :loading="busy" @click="onSyncNow">
             {{ busy ? t('general.syncing') : t('general.syncNow') }}
-          </button>
-          <button class="mp-btn mp-btn-danger" type="button" :disabled="busy" @click="onClearAll">
+          </a-button>
+          <a-button danger :disabled="busy" @click="onClearAll">
             {{ t('general.clearAll') }}
-          </button>
+          </a-button>
         </div>
-      </div>
+      </a-card>
     </template>
 
     <!-- ============ 完整模式的通用页 ============ -->
     <template v-else>
-      <div class="mp-card">
-        <p class="mp-section-title">
-          行为
-        </p>
+      <a-card size="small" :title="t('general.behavior')">
         <div class="checks">
-          <label class="mp-checkbox">
-            <input
-              type="checkbox"
+          <div>
+            <a-checkbox
               :checked="app?.excludeAds ?? true"
-              @change="patch({ excludeAds: ($event.target as HTMLInputElement).checked })"
+              @update:checked="(value: boolean) => patch({ excludeAds: value })"
             >
-            <span>{{ t('general.excludeAds') }}</span>
-          </label>
-          <p class="mp-hint indent">
-            {{ t('general.excludeAdsHint') }}
-          </p>
+              {{ t('general.excludeAds') }}
+            </a-checkbox>
+            <p class="mp-hint checkbox-hint">
+              {{ t('general.excludeAdsHint') }}
+            </p>
+          </div>
 
-          <label class="mp-checkbox">
-            <input
-              type="checkbox"
-              :checked="app?.autoCopyCode ?? true"
-              @change="patch({ autoCopyCode: ($event.target as HTMLInputElement).checked })"
-            >
-            <span>{{ t('general.autoCopyCode') }}</span>
-          </label>
-
-          <label class="mp-checkbox">
-            <input
-              type="checkbox"
-              :checked="app?.blockedEnabled ?? true"
-              @change="patch({ blockedEnabled: ($event.target as HTMLInputElement).checked })"
-            >
-            <span>{{ t('general.blockedEnabled') }}</span>
-          </label>
-
-          <label class="mp-checkbox">
-            <input
-              type="checkbox"
-              :checked="app?.notifyOnNew ?? true"
-              @change="patch({ notifyOnNew: ($event.target as HTMLInputElement).checked })"
-            >
-            <span>{{ t('general.notifyOnNew') }}</span>
-          </label>
-        </div>
-
-        <hr class="mp-divider">
-
-        <div class="mp-field">
-          <span class="mp-field-label">{{ t('general.popupDefaultTab') }}</span>
-          <select
-            class="mp-select"
-            :value="app?.popupDefaultTab ?? 'important'"
-            @change="patch({ popupDefaultTab: ($event.target as HTMLSelectElement).value as PopupTab })"
+          <a-checkbox
+            :checked="app?.autoCopyCode ?? true"
+            @update:checked="(value: boolean) => patch({ autoCopyCode: value })"
           >
-            <option v-for="item in POPUP_TABS" :key="item.value" :value="item.value">
-              {{ item.label }}
-            </option>
-          </select>
-        </div>
-      </div>
+            {{ t('general.autoCopyCode') }}
+          </a-checkbox>
 
-      <div class="mp-card">
-        <p class="mp-section-title">
-          {{ t('general.retention') }}
-        </p>
-        <div class="mp-radio-group">
-          <label v-for="option in MAIL_RETENTION_OPTIONS" :key="String(option)" class="mp-radio">
-            <input
-              type="radio"
-              :checked="(app?.mailRetention ?? 100) === option"
-              @change="patch({ mailRetention: option as MailRetention })"
-            >
-            <span>{{ option === 'unlimited' ? t('general.retentionUnlimited') : `${option} ${t('general.retentionUnit')}` }}</span>
-          </label>
+          <a-checkbox
+            :checked="app?.blockedEnabled ?? true"
+            @update:checked="(value: boolean) => patch({ blockedEnabled: value })"
+          >
+            {{ t('general.blockedEnabled') }}
+          </a-checkbox>
+
+          <a-checkbox
+            :checked="app?.notifyOnNew ?? true"
+            @update:checked="(value: boolean) => patch({ notifyOnNew: value })"
+          >
+            {{ t('general.notifyOnNew') }}
+          </a-checkbox>
         </div>
 
-        <hr class="mp-divider">
+        <a-divider class="divider" />
 
-        <div class="stat-row">
-          <span class="stat-label">{{ t('general.usage') }}</span>
-          <span class="stat-value">{{ usageText }}</span>
+        <div class="field">
+          <span class="field-label">{{ t('general.popupDefaultTab') }}</span>
+          <a-select
+            class="field-control"
+            :value="app?.popupDefaultTab ?? 'important'"
+            :options="POPUP_TABS"
+            @update:value="(value: unknown) => patch({ popupDefaultTab: value as PopupTab })"
+          />
         </div>
+      </a-card>
+
+      <a-card size="small" :title="t('general.retention')">
+        <a-radio-group
+          class="vertical"
+          :value="app?.mailRetention ?? 100"
+          @update:value="onRetentionChange"
+        >
+          <a-radio v-for="option in MAIL_RETENTION_OPTIONS" :key="String(option)" :value="option">
+            {{ option === 'unlimited' ? t('general.retentionUnlimited') : `${option} ${t('general.retentionUnit')}` }}
+          </a-radio>
+        </a-radio-group>
+
+        <a-divider class="divider" />
+
+        <a-descriptions :column="1" size="small" class="stats">
+          <a-descriptions-item :label="t('general.usage')">
+            {{ usageText }}
+          </a-descriptions-item>
+        </a-descriptions>
 
         <div class="actions">
-          <button class="mp-btn mp-btn-primary" type="button" :disabled="busy" @click="onSyncNow">
+          <a-button type="primary" :loading="busy" @click="onSyncNow">
             {{ busy ? t('general.syncing') : t('general.syncNow') }}
-          </button>
+          </a-button>
         </div>
-      </div>
+      </a-card>
 
-      <div class="mp-card">
-        <p class="mp-section-title">
-          数据
-        </p>
-        <div class="actions">
-          <button class="mp-btn" type="button" :disabled="busy" @click="onExport">
+      <a-card size="small" :title="t('general.data')">
+        <div class="actions actions-tight">
+          <a-button :disabled="busy" @click="onExport">
             {{ t('general.exportSettings') }}
-          </button>
-          <button class="mp-btn" type="button" :disabled="busy" @click="importInput?.click()">
+          </a-button>
+          <a-button :disabled="busy" @click="importInput?.click()">
             {{ t('general.importSettings') }}
-          </button>
-          <button class="mp-btn" type="button" :disabled="busy" @click="onClearMails">
+          </a-button>
+          <a-button :disabled="busy" @click="onClearMails">
             {{ t('general.clearMails') }}
-          </button>
+          </a-button>
         </div>
         <input
           ref="importInput"
@@ -587,29 +629,37 @@ async function onImportFile(event: Event) {
         <p class="mp-hint">
           导出不含密码 / OAuth token / AI Key，也不含邮件正文。
         </p>
-      </div>
+      </a-card>
 
-      <div class="mp-card privacy">
-        <p class="mp-section-title">
-          {{ t('general.privacyTitle') }}
-        </p>
+      <a-card size="small" class="privacy" :title="t('general.privacyTitle')">
         <p class="mp-hint">
           {{ t('general.privacyBody') }}
         </p>
         <div class="actions">
-          <button class="mp-btn mp-btn-danger" type="button" :disabled="busy" @click="onClearAll">
+          <a-button danger :disabled="busy" @click="onClearAll">
             {{ t('general.clearAll') }}
-          </button>
+          </a-button>
         </div>
-      </div>
+      </a-card>
     </template>
 
-    <p v-if="message" class="result ok">
-      {{ message }}
-    </p>
-    <p v-if="error" class="result err">
-      {{ error }}
-    </p>
+    <!--
+      ⚠ 这里**故意没有**结果提示块。
+        操作结果（同步成功/失败/警告、导入导出、清空数据）全部走全局轻提示
+        （`logic/ui-message.ts`）—— 画在页面里时，一句「无法连接中继」会和
+        「拉取 3 封」共用一个绿色 Alert，而且它会一直占着版面。
+    -->
+
+    <!-- 不可撤销动作共用一个确认弹窗（见脚本里 `useConfirmAction` 的说明） -->
+    <ConfirmDialog
+      :open="pending !== null"
+      :title="pending?.title ?? ''"
+      :message="pending?.message ?? ''"
+      :confirm-text="pending?.confirmText ?? t('common.confirm')"
+      danger
+      @confirm="runPending"
+      @cancel="cancelConfirm"
+    />
   </section>
 </template>
 
@@ -624,42 +674,111 @@ async function onImportFile(event: Event) {
 .checks {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 10px;
 }
 
-.indent {
-  margin: -4px 0 4px 20px;
+/* 说明文字挂在被说明的那个开关下面，缩进一级 */
+.checkbox-hint {
+  margin: 2px 0 0 24px;
 }
 
-.mode-hint {
-  margin-top: 8px;
-}
-
-.stat-row {
+/*
+ * 模式切换：`极简模式 (开关) 完整功能`，**靠左**一行。
+ *
+ * ⚠ 不用 `justify-content: center` 居中：这一行下面的两段说明是左对齐的，
+ *   开关居中的话整张卡片会看起来「一半居中一半靠左」。
+ */
+.mode-row {
   display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: 12px;
-  font-size: 12px;
-  padding: 2px 0;
+  align-items: center;
+  gap: 10px;
 }
 
-.stat-label {
+.mode-label {
+  font-size: 12px;
+  color: var(--mp-text-faint);
+  transition: color 0.15s;
+}
+
+/* 当前生效的那一侧亮起来（另一侧保持灰，一眼能看出现在在哪边） */
+.mode-label.active {
+  color: var(--mp-text);
+  font-weight: 600;
+}
+
+/*
+ * 两个模式的说明（两行），每行以模式名开头。
+ *
+ * ⚠ `margin: 0` 不能省：它们挂在 `<p>` 上，而 antd 的 reset 给 `p` 留了
+ *   `margin-bottom: 1em`（见 `styles/index.ts` 的说明）—— 两行之间会多出 16px。
+ */
+.mode-desc {
+  margin-top: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.mode-desc p {
+  margin: 0;
+  font-size: 11px;
+  line-height: 1.6;
+  color: var(--mp-text-faint);
+}
+
+.mode-desc-title {
+  color: var(--mp-text-dim);
+  font-weight: 600;
+}
+
+.divider {
+  margin: 14px 0;
+}
+
+/*
+ * 描述列表：antd 默认把标签放进左侧固定宽度的列，窄卡片里正文会被挤成竖条。
+ * 这里把标签宽度收到 140px 并让它不换行。
+ */
+.stats :deep(.ant-descriptions-item-label) {
+  width: 140px;
   color: var(--mp-text-dim);
 }
 
-.stat-value {
-  color: var(--mp-text);
-  text-align: right;
-  min-width: 0;
+.stats :deep(.ant-descriptions-item-content) {
   word-break: break-all;
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.field-label {
+  font-size: 12px;
+  color: var(--mp-text-dim);
+}
+
+/* 宽度交给内容自己算，但别撑满整张卡片（下拉框太宽看起来像输入框） */
+.field-control {
+  max-width: 200px;
+}
+
+.vertical :deep(.ant-radio-wrapper) {
+  display: flex;
+  margin-bottom: 6px;
 }
 
 .actions {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
-  margin-top: 10px;
+  margin-top: 12px;
+}
+
+/* 「数据」那张卡片的按钮紧跟在标题下面，不需要额外的上边距 */
+.actions-tight {
+  margin-top: 0;
 }
 
 .hidden-input {
@@ -668,20 +787,5 @@ async function onImportFile(event: Event) {
 
 .privacy {
   border-color: color-mix(in srgb, var(--mp-warn) 35%, var(--mp-border));
-}
-
-.result {
-  margin: 0;
-  font-size: 12px;
-  line-height: 1.6;
-  white-space: pre-wrap;
-}
-
-.result.ok {
-  color: var(--mp-success);
-}
-
-.result.err {
-  color: var(--mp-danger);
 }
 </style>

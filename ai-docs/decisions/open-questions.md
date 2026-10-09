@@ -236,7 +236,7 @@ Options · 通用设置：
 interface AppSettings {
   // ... 其它
   minimalMode: boolean               // 默认 true
-  autoCopyCode: boolean             // 默认 true；极简模式下**强制为 true**
+  autoCopyCode: boolean             // 默认 true；两种模式都尊重它（极简模式不再强制 true）
   // ...
 }
 ```

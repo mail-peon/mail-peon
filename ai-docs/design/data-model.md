@@ -184,7 +184,7 @@ interface AppSettings {
   /** 两套运行模式：极简（只验证码） / 完整（全部功能） */
   minimalMode: boolean               // 默认 true
   excludeAds: boolean                // 默认 true（仅完整模式生效）
-  autoCopyCode: boolean              // 默认 true；极简模式强制为 true
+  autoCopyCode: boolean              // 默认 true；两种模式都尊重它（极简模式不再强制 true）
   blockedEnabled: boolean            // 默认 true（仅完整模式生效）
   notifyOnNew: boolean               // master switch；默认 true
   popupDefaultTab: 'important' | 'all' | 'code' | 'ad'   // 默认 'important'（仅完整模式生效）

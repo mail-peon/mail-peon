@@ -12,7 +12,7 @@
 
 | # | 目标 |
 | --- | --- |
-| G1 | 全局开关 `autoCopyCode`，**默认 ON**（极简模式下强制为 true） |
+| G1 | 全局开关 `autoCopyCode`，**默认 ON**。两种模式都尊重它 —— 极简模式**不再强制为 true**（关掉后验证码照旧提取并入库，只是不写剪贴板，toast 给"点击复制"兜底） |
 | G2 | AI 输出 `code` 字段非空时 → 自动复制 → 顶部 toast "验证码：XXX 已复制 ✓" |
 | G3 | 自动复制**失败**时 → 顶部 toast "验证码：XXX（点击复制）" + Popup 卡片保留复制按钮 |
 | G4 | 关闭自动复制开关 → 顶部 toast 同样弹出（带"再复制"按钮），Popup 卡片也有复制按钮 |
@@ -27,6 +27,9 @@
 ## 2. 决策表
 
 > `autoCopy` = `settings.autoCopyCode || rule.alwaysCopyCode`
+>
+> ⚠ 判据里**不看 `minimalMode`**：极简模式与完整模式用同一个开关
+> （模式决定的是走哪条处理链，不是要不要复制）。
 
 | autoCopy | AI.code 有值 | Toast | Popup 列表 | Popup 复制按钮 |
 | --- | --- | --- | --- | --- |

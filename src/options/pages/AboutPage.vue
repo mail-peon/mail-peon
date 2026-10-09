@@ -1,54 +1,56 @@
 <script setup lang="ts">
 import { t } from '~/logic/strings'
+
+/**
+ * 关于页 —— 纯说明，没有任何可操作的东西。
+ *
+ * 用 antd 的卡片 + 排版组件：`a-typography-paragraph` 自带次要文字的配色与行高，
+ * 不用再手写 `.body` 那套。
+ */
+const MODES: Array<{ name: string, desc: string }> = [
+  { name: '极简模式', desc: 'modeMinimalDesc' },
+  { name: '完整模式', desc: 'modeFullDesc' },
+]
 </script>
 
 <template>
   <section class="page">
-    <div class="mp-card">
-      <p class="mp-section-title">
-        {{ t('about.title') }}
-      </p>
-      <p class="body">
+    <a-card size="small" :title="t('about.title')">
+      <a-typography-paragraph class="body">
         {{ t('about.intro') }}
-      </p>
-    </div>
+      </a-typography-paragraph>
+    </a-card>
 
-    <div class="mp-card">
-      <p class="mp-section-title">
-        {{ t('about.modeTitle') }}
-      </p>
-      <ul class="list">
-        <li><strong>极简模式</strong>：{{ t('about.modeMinimalDesc') }}</li>
-        <li><strong>完整模式</strong>：{{ t('about.modeFullDesc') }}</li>
-      </ul>
-    </div>
+    <a-card size="small" :title="t('about.modeTitle')">
+      <a-typography-paragraph
+        v-for="mode in MODES"
+        :key="mode.name"
+        class="body"
+      >
+        <a-typography-text strong>
+          {{ mode.name }}
+        </a-typography-text>
+        ：{{ t(`about.${mode.desc}`) }}
+      </a-typography-paragraph>
+    </a-card>
 
-    <div class="mp-card">
-      <p class="mp-section-title">
-        {{ t('about.storageTitle') }}
-      </p>
-      <p class="body">
+    <a-card size="small" :title="t('about.storageTitle')">
+      <a-typography-paragraph class="body">
         {{ t('about.storageDesc') }}
-      </p>
-    </div>
+      </a-typography-paragraph>
+    </a-card>
 
-    <div class="mp-card">
-      <p class="mp-section-title">
-        {{ t('about.aiTitle') }}
-      </p>
-      <p class="body">
+    <a-card size="small" :title="t('about.aiTitle')">
+      <a-typography-paragraph class="body">
         {{ t('about.aiDesc') }}
-      </p>
-    </div>
+      </a-typography-paragraph>
+    </a-card>
 
-    <div class="mp-card">
-      <p class="mp-section-title">
-        {{ t('about.shortcutsTitle') }}
-      </p>
-      <p class="body">
+    <a-card size="small" :title="t('about.shortcutsTitle')">
+      <a-typography-paragraph class="body">
         {{ t('about.shortcutsDesc') }}
-      </p>
-    </div>
+      </a-typography-paragraph>
+    </a-card>
   </section>
 </template>
 
@@ -60,6 +62,7 @@ import { t } from '~/logic/strings'
   max-width: 720px;
 }
 
+/* 段落的默认下边距在卡片里显得多余（卡片自己已经把它们分开了） */
 .body {
   margin: 0;
   font-size: 12px;
@@ -67,11 +70,7 @@ import { t } from '~/logic/strings'
   color: var(--mp-text-dim);
 }
 
-.list {
-  margin: 0;
-  padding-left: 18px;
-  font-size: 12px;
-  line-height: 1.8;
-  color: var(--mp-text-dim);
+.body + .body {
+  margin-top: 8px;
 }
 </style>

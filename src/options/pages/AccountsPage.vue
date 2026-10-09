@@ -1,9 +1,13 @@
 <script setup lang="ts">
+import type { AccountStatus } from './accounts-status'
 import type { MailAccount, SyncCursor } from '~/logic/types'
 import { computed, onMounted, ref } from 'vue'
+import ConfirmDialog from '~/components/ConfirmDialog.vue'
 import SecretInput from '~/components/SecretInput.vue'
 import { send, useAccounts } from '~/logic/bridge'
+import { useConfirmAction } from '~/logic/confirm-action'
 import { t } from '~/logic/strings'
+import { accountStatus } from './accounts-status'
 
 /**
  * 账号页（`design/ui-flows.md § 4.2`）。
@@ -12,6 +16,9 @@ import { t } from '~/logic/strings'
  *   字段清单来自 `src/adapters/mail/providers/<id>/index.ts` 的 `fields`，
  *   所以「加了一家 provider 但设置页没有它的输入框」这件事在结构上不可能发生。
  *   写死表单的话，加 provider 要改两个地方，而漏改的表现是「新协议保存后字段全空」。
+ *
+ * 界面构件是 Ant Design Vue 的（`a-card` / `a-form` / `a-select` / `a-input` /
+ * `a-input-number` / `a-switch` / `a-alert`）。
  */
 
 interface ProviderOption {
@@ -48,8 +55,60 @@ const currentProvider = computed(() =>
   providers.value.find(item => item.value === editing.value?.provider) ?? null,
 )
 
+/** 协议下拉的选项（antd 的 `Select` 要的是 `{ label, value }` 数据） */
+const providerOptions = computed(() =>
+  providers.value.map(item => ({ value: item.value, label: item.label })),
+)
+
+/**
+ * 每个账号的连接状态（颜色 / 状态词 / 悬停详情）。
+ *
+ * ⚠ 做成 `computed` 的**映射**而不是在模板里逐处调 `accountStatus()`：
+ *   模板里要同时用它的三个字段，逐处调用等于每次渲染算三遍，
+ *   而且三处参数必须一致（漏传一次就会得到与颜色不匹配的详情）。
+ *
+ * ⚠ 校验逻辑在 `accounts-status.ts`（纯函数、有单测），这里只负责喂数据。
+ */
+const accountStatuses = computed<Record<string, AccountStatus>>(() =>
+  Object.fromEntries(accounts.value.map(account => [account.id, statusOf(account)])),
+)
+
+/** 编辑表单那张卡片的状态（新建的账号也走这里 —— 它还没入库，自然没有同步记录） */
+const editingStatus = computed(() =>
+  editing.value ? statusOf(editing.value) : undefined,
+)
+
+function statusOf(account: MailAccount): AccountStatus {
+  return accountStatus(account, testState.value[account.id], {
+    lastSyncText: relativeTime(account.lastSyncedAt),
+    cursorText: describeCursor(account.cursor),
+  })
+}
+
+/**
+ * 打开编辑弹窗。
+ *
+ * ⚠ 拷一份再编辑（与 `editing.value = { ...account }` 同理）：直接改列表里那条
+ *   记录的话，「取消」就失效了 —— 改动已经落在那条记录上。
+ *
+ * ⚠ 顺手清掉上一次留下的 `pageError`：弹窗是同一个实例（`v-if` 只在开/关时
+ *   挂载/卸载，但错误文案是页面级的 ref）。不清的话，新开一个弹窗会先看到
+ *   上一次那条「请填写「密码 / 授权码」」。
+ */
+function openEditor(account: MailAccount) {
+  pageError.value = ''
+  editing.value = { ...account }
+}
+
+/** 关闭编辑弹窗（取消 / 点遮罩 / Esc 都走这里） */
+function closeEditor() {
+  editing.value = null
+  pageError.value = ''
+}
+
 function newAccount() {
   const first = providers.value[0]
+  pageError.value = ''
   editing.value = {
     id: `${first?.value ?? 'account'}-${Math.random().toString(36).slice(2, 10)}`,
     label: '',
@@ -72,7 +131,7 @@ function defaultConfigFor(provider: ProviderOption | null | undefined): MailAcco
   return config
 }
 
-function onProviderChange(value: string) {
+function onProviderChange(value: unknown) {
   if (!editing.value)
     return
   const provider = providers.value.find(item => item.value === value) ?? null
@@ -83,7 +142,7 @@ function onProviderChange(value: string) {
    * 不能整个重置成 `defaultConfigFor()`：用户填了一半再切协议时，
    * 那些填过的值会全部消失 —— 而「切错了再切回来」是很常见的操作。
    */
-  editing.value.provider = value
+  editing.value.provider = String(value)
   editing.value.config = { ...defaultConfigFor(provider), ...editing.value.config }
 }
 
@@ -97,6 +156,18 @@ function setField(key: string, value: unknown) {
 function fieldValue(key: string): string {
   const raw = (editing.value?.config as Record<string, unknown> | undefined)?.[key]
   return raw === undefined || raw === null ? '' : String(raw)
+}
+
+/**
+ * 数字字段的当前值。
+ *
+ * ⚠ 单独一个函数而不是复用 `fieldValue()` 再 `Number(...)`：
+ *   `a-input-number` 要的是**数字或 null**，而「清空输入框」拿到的是 null。
+ *   传一个字符串 "NaN" 进去会让那个输入框显示成乱七八糟的东西。
+ */
+function fieldNumber(key: string): number | null {
+  const raw = (editing.value?.config as Record<string, unknown> | undefined)?.[key]
+  return typeof raw === 'number' && Number.isFinite(raw) ? raw : null
 }
 
 function fieldBool(key: string): boolean {
@@ -193,6 +264,7 @@ async function onSave() {
   try {
     await save(editing.value)
     editing.value = null
+    pageError.value = ''
   }
   catch (error) {
     pageError.value = error instanceof Error ? error.message : String(error)
@@ -226,12 +298,21 @@ async function onTestEditing() {
   await onTest(editing.value)
 }
 
-async function onDelete(account: MailAccount) {
-  // Options 页里的不可撤销操作走原生 confirm（理由见 GeneralPage.vue 的 confirmOrAbort）
-  // eslint-disable-next-line no-alert
-  if (!window.confirm(t('accounts.deleteConfirm')))
-    return
-  await remove(account.id)
+/**
+ * 删除账号（不可撤销：该账号已保存的邮件也会一并删除）。
+ *
+ * ⚠ 从原生 `window.confirm` 换成弹窗组件 —— 理由见 `confirm-action.ts`。
+ *   这里必须**解构**返回值（同上）。
+ */
+const { pending, ask: askConfirm, cancel: cancelConfirm, confirm: runPending } = useConfirmAction()
+
+function onDelete(account: MailAccount) {
+  askConfirm({
+    title: t('common.delete'),
+    message: t('accounts.deleteConfirm'),
+    confirmText: t('common.delete'),
+    run: () => remove(account.id),
+  })
 }
 
 async function onResetCursor(account: MailAccount) {
@@ -298,138 +379,186 @@ function relativeTime(ts: number | undefined): string {
     return t('common.hoursAgo', { n: Math.floor(diff / 3_600_000) })
   return new Date(ts).toLocaleString('zh-CN')
 }
+
+/** 表单标题：编辑已有账号还是新增 */
+const formTitle = computed(() =>
+  editing.value && accounts.value.some(item => item.id === editing.value!.id)
+    ? t('accounts.editTitle')
+    : t('accounts.addTitle'),
+)
 </script>
 
 <template>
   <section class="page">
     <div class="header">
-      <button class="mp-btn mp-btn-primary" type="button" @click="newAccount">
+      <a-button type="primary" @click="newAccount">
+        <span class="i-pixelarticons-plus" aria-hidden="true" />
         {{ t('accounts.add') }}
-      </button>
+      </a-button>
     </div>
-
-    <p v-if="pageError" class="mp-error">
-      {{ pageError }}
-    </p>
 
     <!-- ============ 列表 ============ -->
-    <div v-if="!accounts.length && !editing" class="mp-card empty">
-      {{ t('accounts.empty') }}
-    </div>
+    <a-card v-if="!accounts.length && !editing" size="small">
+      <a-empty :description="t('accounts.empty')" />
+    </a-card>
 
-    <div v-for="account in accounts" :key="account.id" class="mp-card account">
-      <div class="account-head">
-        <span class="account-label">{{ account.label || account.email }}</span>
-        <span class="account-email">{{ account.email }}</span>
-        <span class="mp-badge">{{ account.provider }}</span>
-        <span v-if="!account.enabled" class="mp-badge off">已停用</span>
-      </div>
+    <a-card v-for="account in accounts" :key="account.id" size="small">
+      <template #title>
+        <div class="account-head">
+          <span class="account-label">{{ account.label || account.email }}</span>
+          <span class="account-email">{{ account.email }}</span>
+          <a-tag :bordered="false">
+            {{ account.provider }}
+          </a-tag>
+        </div>
+      </template>
+
+      <!--
+        连接状态放在卡片**右上角**（`#extra`），与左边的账号信息两端对齐。
+        颜色只有圆点，具体原因在悬停的 tooltip 里 —— 这样「坏消息」不再是一整条
+        红色横幅把卡片撑开（那是用户报的「突兀的提示」），但信息一点没少。
+      -->
+      <template #extra>
+        <StatusBadge v-bind="accountStatuses[account.id]" />
+      </template>
 
       <div class="account-meta">
         <span>{{ t('accounts.lastSync') }}：{{ relativeTime(account.lastSyncedAt) }}</span>
         <span>同步位置：{{ describeCursor(account.cursor) }}</span>
       </div>
 
-      <p v-if="account.lastError" class="mp-error">
-        {{ account.lastError }}
-      </p>
-
-      <div class="actions">
-        <button class="mp-btn" type="button" :disabled="testState[account.id]?.status === 'busy'" @click="onTest(account)">
+      <a-space class="actions" :size="8" wrap>
+        <a-button size="small" :loading="testState[account.id]?.status === 'busy'" @click="onTest(account)">
           {{ t('accounts.test') }}
-        </button>
-        <button class="mp-btn" type="button" @click="editing = { ...account }">
+        </a-button>
+        <a-button size="small" @click="openEditor(account)">
           {{ t('common.edit') }}
-        </button>
-        <button class="mp-btn" type="button" @click="onResetCursor(account)">
+        </a-button>
+        <a-button size="small" @click="onResetCursor(account)">
           {{ t('accounts.resetCursor') }}
-        </button>
-        <button class="mp-btn mp-btn-danger" type="button" @click="onDelete(account)">
+        </a-button>
+        <a-button size="small" danger @click="onDelete(account)">
           {{ t('common.delete') }}
-        </button>
-      </div>
+        </a-button>
+      </a-space>
+    </a-card>
 
-      <p v-if="testState[account.id]" class="test-result" :class="testState[account.id].status">
-        {{ testState[account.id].text }}
-      </p>
-    </div>
+    <!--
+      ============ 新增 / 编辑（弹窗） ============
 
-    <!-- ============ 编辑表单 ============ -->
-    <div v-if="editing" class="mp-card">
-      <p class="mp-section-title">
-        {{ accounts.some(item => item.id === editing!.id) ? t('accounts.editTitle') : t('accounts.addTitle') }}
-      </p>
+      ⚠ 原来这块是页面**下方的一张卡片**：点了「编辑」之后表单出现在列表底下，
+        用户要往下滚才知道发生了什么，而且它会一直留在页面上（像个幽灵）。
+        改成弹窗之后「在编辑哪个账号」是明确的，关掉即消失。
 
-      <div class="form">
-        <label class="mp-field">
-          <span class="mp-field-label">{{ t('accounts.label') }}</span>
-          <input v-model="editing.label" class="mp-input" :placeholder="t('accounts.labelPlaceholder')">
-        </label>
+      ⚠ `v-if` + `:open="true"` + `:get-container="false"` —— 与 `ConfirmDialog`
+        同一套（那边有详细说明）：关闭时整棵子树不存在，不会留在 Tab 顺序里。
+    -->
+    <a-modal
+      v-if="editing"
+      class="editor"
+      :open="true"
+      :width="560"
+      :get-container="false"
+      :mask-closable="false"
+      :body-style="{ maxHeight: '60vh', overflowY: 'auto' }"
+      centered
+      @cancel="closeEditor"
+    >
+      <!--
+        标题行：左边「新增 / 编辑账号」，右边这个账号的连接状态。
+        ⚠ 与列表卡片保持一致 —— 编辑一个正在报错的账号时，那一目了然的状态不该消失。
+        ⚠ `padding-right` 是给右上角的关闭按钮让位（它是绝对定位的）。
+      -->
+      <template #title>
+        <div class="editor-title">
+          <span>{{ formTitle }}</span>
+          <StatusBadge v-bind="editingStatus" />
+        </div>
+      </template>
 
-        <label class="mp-field">
-          <span class="mp-field-label">邮箱地址</span>
-          <input v-model="editing.email" class="mp-input" placeholder="me@example.com" type="email">
-        </label>
+      <!--
+        ⚠ 校验/授权失败留在弹窗里（而不是弹一个全局 message）：
+          它要跟出错的那个输入框待在一起，而且用户改的时候必须还看得见 ——
+          toast 会在两三秒后消失，那时他可能还在改。
+      -->
+      <a-alert v-if="pageError" class="editor-error" type="error" show-icon :message="pageError" />
 
-        <label class="mp-field">
-          <span class="mp-field-label">{{ t('accounts.provider') }}</span>
-          <select
-            class="mp-select"
+      <a-form layout="vertical" class="form">
+        <a-form-item :label="t('accounts.label')">
+          <a-input v-model:value="editing.label" :placeholder="t('accounts.labelPlaceholder')" />
+        </a-form-item>
+
+        <a-form-item :label="t('accounts.email')">
+          <a-input v-model:value="editing.email" placeholder="me@example.com" type="email" />
+        </a-form-item>
+
+        <a-form-item :label="t('accounts.provider')" :help="currentProvider?.hint">
+          <a-select
+            class="control"
             :value="editing.provider"
-            @change="onProviderChange(($event.target as HTMLSelectElement).value)"
-          >
-            <option v-for="item in providers" :key="item.value" :value="item.value">
-              {{ item.label }}
-            </option>
-          </select>
-          <span v-if="currentProvider?.hint" class="mp-hint">{{ currentProvider.hint }}</span>
-        </label>
+            :options="providerOptions"
+            @update:value="onProviderChange"
+          />
+        </a-form-item>
 
         <!-- 协议可用性提示：走不通的路要提前说，而不是等「测试连接」报一个看不懂的错 -->
-        <p v-if="currentProvider?.availability !== 'ready'" class="notice">
-          ⚠️ {{ currentProvider?.availabilityNote }}
-        </p>
+        <a-alert
+          v-if="currentProvider && currentProvider.availability !== 'ready'"
+          class="notice"
+          type="warning"
+          show-icon
+          :message="currentProvider.availabilityNote"
+        />
 
         <!-- 字段由 provider 声明生成 -->
         <template v-for="field in currentProvider?.fields ?? []" :key="field.key">
-          <label v-if="field.type === 'toggle'" class="mp-checkbox">
-            <input
-              type="checkbox"
+          <a-form-item v-if="field.type === 'toggle'" :label="field.label">
+            <a-switch
               :checked="fieldBool(field.key)"
-              @change="setField(field.key, ($event.target as HTMLInputElement).checked)"
-            >
-            <span>{{ field.label }}</span>
-          </label>
+              @update:checked="(value: boolean) => setField(field.key, value)"
+            />
+          </a-form-item>
 
-          <label v-else-if="field.type === 'password'" class="mp-field">
-            <span class="mp-field-label">
-              {{ field.label }}<span v-if="field.required" class="req">*</span>
-            </span>
+          <a-form-item
+            v-else-if="field.type === 'password'"
+            :label="field.label"
+            :required="field.required"
+          >
             <SecretInput
               :model-value="fieldValue(field.key)"
               :placeholder="field.placeholder"
               @update:model-value="setField(field.key, $event)"
             />
-          </label>
+          </a-form-item>
 
-          <label v-else class="mp-field">
-            <span class="mp-field-label">
-              {{ field.label }}<span v-if="field.required" class="req">*</span>
-            </span>
-            <input
-              class="mp-input"
-              :type="field.type === 'number' ? 'number' : 'text'"
+          <a-form-item
+            v-else-if="field.type === 'number'"
+            :label="field.label"
+            :required="field.required"
+          >
+            <a-input-number
+              class="control"
+              :value="fieldNumber(field.key)"
+              :min="1"
+              :placeholder="field.placeholder"
+              @update:value="(value: number | null) => setField(field.key, value ?? undefined)"
+            />
+          </a-form-item>
+
+          <a-form-item v-else :label="field.label" :required="field.required">
+            <a-input
               :value="fieldValue(field.key)"
               :placeholder="field.placeholder"
-              @input="setField(field.key, field.type === 'number' ? Number(($event.target as HTMLInputElement).value) : ($event.target as HTMLInputElement).value)"
-            >
-          </label>
+              spellcheck="false"
+              @update:value="(value: string) => setField(field.key, value)"
+            />
+          </a-form-item>
 
           <!-- Gmail 专属：一键授权 -->
           <div v-if="field.key === 'refreshToken' && editing.provider === 'gmail'" class="oauth">
-            <button class="mp-btn" type="button" :disabled="authorizing" @click="onAuthorizeGmail">
+            <a-button :loading="authorizing" @click="onAuthorizeGmail">
               {{ authorizing ? '授权中…' : '使用 Google 授权' }}
-            </button>
+            </a-button>
             <span class="mp-hint">
               需要先在 Google Cloud 建一个「Chrome 扩展」类型的 OAuth 客户端，
               并把此扩展的授权回调地址加进重定向白名单。
@@ -437,28 +566,42 @@ function relativeTime(ts: number | undefined): string {
           </div>
         </template>
 
-        <label class="mp-checkbox">
-          <input v-model="editing.enabled" type="checkbox">
-          <span>{{ t('accounts.enableLabel') }}</span>
-        </label>
-      </div>
+        <a-form-item>
+          <a-checkbox v-model:checked="editing.enabled">
+            {{ t('accounts.enableLabel') }}
+          </a-checkbox>
+        </a-form-item>
+      </a-form>
 
-      <p v-if="testState[editing.id]" class="test-result" :class="testState[editing.id].status">
-        {{ testState[editing.id].text }}
-      </p>
+      <!--
+        底部按钮。顺序：诊断动作（测试连接）靠左，取消 / 保存靠右 ——
+        「保存」在最右是 antd 的约定（主操作在最外侧）。
+      -->
+      <template #footer>
+        <div class="editor-footer">
+          <a-button :loading="testState[editing.id]?.status === 'busy'" @click="onTestEditing">
+            {{ t('accounts.test') }}
+          </a-button>
+          <span class="editor-footer-spacer" />
+          <a-button @click="closeEditor">
+            {{ t('common.cancel') }}
+          </a-button>
+          <a-button type="primary" @click="onSave">
+            {{ t('common.save') }}
+          </a-button>
+        </div>
+      </template>
+    </a-modal>
 
-      <div class="actions">
-        <button class="mp-btn mp-btn-primary" type="button" @click="onSave">
-          {{ t('common.save') }}
-        </button>
-        <button class="mp-btn" type="button" :disabled="testState[editing.id]?.status === 'busy'" @click="onTestEditing">
-          {{ t('accounts.test') }}
-        </button>
-        <button class="mp-btn" type="button" @click="editing = null">
-          {{ t('common.cancel') }}
-        </button>
-      </div>
-    </div>
+    <ConfirmDialog
+      :open="pending !== null"
+      :title="pending?.title ?? ''"
+      :message="pending?.message ?? ''"
+      :confirm-text="pending?.confirmText ?? t('common.confirm')"
+      danger
+      @confirm="runPending"
+      @cancel="cancelConfirm"
+    />
   </section>
 </template>
 
@@ -475,16 +618,14 @@ function relativeTime(ts: number | undefined): string {
   gap: 8px;
 }
 
-.empty {
-  color: var(--mp-text-faint);
-  font-size: 12px;
-  text-align: center;
-  padding: 24px;
-}
+/*
+ * ⚠ 按钮里「图标 + 文字」的间距统一由 `shared.css` 的
+ *   `.ant-btn > [class^='i-']` 负责，这里不再各写一遍。
+ */
 
 .account-head {
   display: flex;
-  align-items: baseline;
+  align-items: center;
   flex-wrap: wrap;
   gap: 6px;
 }
@@ -496,64 +637,84 @@ function relativeTime(ts: number | undefined): string {
 
 .account-email {
   font-size: 12px;
+  font-weight: 400;
   color: var(--mp-text-dim);
-}
-
-.mp-badge.off {
-  color: var(--mp-warn);
 }
 
 .account-meta {
   display: flex;
   flex-wrap: wrap;
   gap: 12px;
-  margin-top: 6px;
   font-size: 11px;
   color: var(--mp-text-faint);
 }
 
-.form {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
+/*
+ * 卡片右上角的状态徽标。
+ *
+ * ⚠ 用 `flex: 0 0 auto` 顶住宽度：`#extra` 里的内容默认可以被压缩，
+ *   而「同步失败」这种稍长的状态词被压成两行会很难看（卡片头部是单行高度）。
+ *   徽标本身的字号 / 配色在 `components/StatusBadge.vue` 里。
+ */
+.page :deep(.ant-card-extra) {
+  flex: 0 0 auto;
+  margin-inline-start: 8px;
 }
 
-.req {
-  color: var(--mp-danger);
-  margin-left: 2px;
+.form {
+  max-width: 520px;
+}
+
+/*
+ * 弹窗标题行：左边标题、右边连接状态。
+ * ⚠ `padding-right: 28px` 给右上角的关闭按钮让位（它是绝对定位的，会盖住内容）。
+ */
+.editor-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding-right: 28px;
+}
+
+.editor-error {
+  margin-bottom: 12px;
+}
+
+/* 底部：诊断动作用左，取消 / 保存靠右 */
+.editor-footer {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.editor-footer-spacer {
+  flex: 1 1 auto;
+}
+
+/* 弹窗里的状态词与列表卡片保持同样的字号 */
+.editor :deep(.ant-badge-status-text) {
+  font-size: 12px;
+  color: var(--mp-text-dim);
+}
+/* 下拉 / 数字输入不要撑满整行（撑满看起来像「随便填点什么」的文本框） */
+.control {
+  max-width: 260px;
 }
 
 .notice {
-  margin: 0;
-  padding: 8px 10px;
-  border-radius: 8px;
-  border: 1px solid color-mix(in srgb, var(--mp-warn) 40%, transparent);
-  background: color-mix(in srgb, var(--mp-warn) 10%, transparent);
-  font-size: 11px;
-  line-height: 1.6;
+  margin-bottom: 14px;
 }
 
 .oauth {
   display: flex;
   flex-direction: column;
-  gap: 6px;
   align-items: flex-start;
+  gap: 6px;
+  margin-bottom: 14px;
 }
 
 .actions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  margin-top: 10px;
+  margin-top: 4px;
 }
-
-.test-result {
-  margin: 8px 0 0;
-  font-size: 11px;
-  line-height: 1.5;
-}
-
-.test-result.busy { color: var(--mp-text-faint); }
-.test-result.ok { color: var(--mp-success); }
-.test-result.fail { color: var(--mp-danger); }
 </style>

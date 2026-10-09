@@ -176,15 +176,16 @@ const urgencyClass = computed(() => {
         @mouseenter="trashZoneHovered = true"
         @mouseleave="trashZoneHovered = false"
       >
-        <button
+        <a-button
           class="trash"
-          type="button"
+          type="text"
+          size="small"
           :title="t('mail.trash')"
           :aria-label="t('mail.trash')"
           @click.stop="emit('trash', mail)"
         >
           <span class="i-pixelarticons-trash" aria-hidden="true" />
-        </button>
+        </a-button>
       </span>
     </header>
 
@@ -199,7 +200,8 @@ const urgencyClass = computed(() => {
       <!--
         「复制」是一个**文字按钮**，不是按钮样式的方块 ——
         它读起来是这句话的一部分（「验证码 34949 复制」），
-        而不是一个需要去找的控件。
+        而不是一个需要去找的控件。antd 的 `type="link"` 正是这个语义
+        （无边框、无底色、主色文字）。
 
         ⚠ 判据是 `justCopied`（**前端瞬时状态**），不是 `mail.copyStatus`。
           后者是持久字段，读完就写库、`reload()` 又会把它读回来，
@@ -210,14 +212,15 @@ const urgencyClass = computed(() => {
           复原是必需的：用户可能有**两个**验证码要复制，
           第一封永远停在成功态会让他分不清哪封是刚点过的。
       -->
-      <button
+      <a-button
         v-if="!justCopied"
         class="copy"
-        type="button"
+        type="link"
+        size="small"
         @click.stop="emit('copy', mail)"
       >
         {{ t('mail.copy') }}
-      </button>
+      </a-button>
       <span v-else class="copy-done">{{ t('mail.copyDone') }}</span>
     </div>
 
@@ -230,8 +233,10 @@ const urgencyClass = computed(() => {
       </p>
     </template>
 
-    <p v-if="degraded" class="degraded" :title="mail.ai?.error ?? ''">
-      ⚠️ {{ t('mail.degraded') }}
+    <p v-if="degraded" class="degraded" :title="mail.ai?.error ?? t('mail.degradedTip')">
+      <a-tag color="warning">
+        {{ t('mail.degraded') }}
+      </a-tag>
     </p>
 
     <!-- 展开态：摘要全文 + 操作 -->
@@ -241,24 +246,25 @@ const urgencyClass = computed(() => {
       </p>
       <pre class="detail-body">{{ mail.ai?.summary || t('mail.minimalCaptured') }}</pre>
       <div class="actions">
-        <button class="btn-mini" type="button" @click="emit('read', mail, !mail.read)">
+        <a-button size="small" @click="emit('read', mail, !mail.read)">
           {{ mail.read ? t('mail.markUnread') : t('mail.markRead') }}
-        </button>
-        <button class="btn-mini" type="button" @click="emit('dismiss', mail)">
+        </a-button>
+        <a-button size="small" @click="emit('dismiss', mail)">
           {{ t('mail.dismiss') }}
-        </button>
+        </a-button>
       </div>
     </div>
 
-    <button
+    <a-button
       v-if="!minimal && !code"
       class="expand"
-      type="button"
+      type="link"
+      size="small"
       :aria-expanded="expanded"
       @click.stop="expanded = !expanded"
     >
-      {{ expanded ? '收起' : '展开' }}
-    </button>
+      {{ expanded ? t('common.collapse') : t('common.expand') }}
+    </a-button>
 
     <!--
       倒计时：**只在邮件里明确写了有效期**时出现，且必须在 card 的**最后一个**
@@ -321,6 +327,8 @@ const urgencyClass = computed(() => {
 
 .mail-item:hover {
   border-color: var(--mp-border-strong);
+  /* 悬停时给一点极淡的底色：antd 的卡片交互就是这个手感（hoverable） */
+  background: var(--mp-surface-2);
 }
 
 /* 广告：视觉弱化（features/04 § 5：透明度 0.6 / 灰边） */
@@ -502,21 +510,28 @@ const urgencyClass = computed(() => {
 }
 
 /*
- * 垃圾桶本体。
+ * 垃圾桶本体（antd 的 `type="text"` 按钮）。
  *
  * ⚠ `position: absolute; inset: 0` —— 填满热区。
  *   不再自己算 `top` / `right`（那会让「热区」与「图标」两处偏移各写一遍，
  *   改一个忘一个就错位）。
+ *
+ * ⚠ `width/height: auto` 是**为了压过 antd**：`.ant-btn` 自己带
+ *   `height: <controlHeight>`（30px），有显式高度时 `inset: 0` 的「上下拉伸」
+ *   就不生效了，图标会从 18px 的热区里溢出来。只有把它交还给 auto，
+ *   `top/right/bottom/left: 0` 才能把按钮撑成热区那么大。
  */
 .trash {
   position: absolute;
   inset: 0;
+  width: auto;
+  height: auto;
+  min-width: 0;
   display: flex;
   align-items: center;
   justify-content: center;
-  appearance: none;
-  border: 0;
   padding: 0;
+  border: 0;
   background: transparent;
   /* 先灰后红：这一层是「出现在卡片右上角的默认色」 */
   color: var(--mp-text-faint);
@@ -527,6 +542,14 @@ const urgencyClass = computed(() => {
 }
 
 /*
+ * ⚠ 只有图标，没有文字 ⇒ 把 `shared.css` 给「图标 + 文字」留的右边距归零，
+ *   否则 18px 的热区里图标会偏左 3px。
+ */
+.trash [class^='i-'] {
+  margin-inline-end: 0;
+}
+
+/*
  * 鼠标移到**垃圾桶本身**上才变红。
  *
  * ⚠ 红色是「危险动作」的信号，只在用户真的瞄准它时给 ——
@@ -534,6 +557,8 @@ const urgencyClass = computed(() => {
  */
 .trash:hover {
   color: var(--mp-danger);
+  /* antd 的文字按钮有自己的 hover 底色，这里统一不要 —— 它只是个小图标 */
+  background: transparent;
 }
 
 /*
@@ -595,7 +620,7 @@ const urgencyClass = computed(() => {
 }
 
 .code {
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-family: var(--mp-font-mono);
   font-size: 15px;
   font-weight: 600;
   letter-spacing: 0.5px;
@@ -609,21 +634,30 @@ const urgencyClass = computed(() => {
  *
  * ⚠ 用 `--mp-accent` 而不是继承正文色：它是个可点的动作，需要一点视觉提示；
  *   但只在文字色上体现（不加下划线/底色），保持轻量。
+ *
+ * ⚠ `height: auto` + `padding: 0`：antd 的按钮默认是 30px 高的盒子，
+ *   直接放进这一行会把行高撑起来（验证码那一行看起来「中间空了一块」）。
+ *   把它压回纯文字的高度，只在字色上有区别。
  */
 .copy {
   appearance: none;
   border: 0;
   background: transparent;
+  height: auto;
   padding: 0;
   color: var(--mp-accent);
   font-family: inherit;
   font-size: 11px;
+  line-height: inherit;
   cursor: pointer;
   transition: color 0.12s;
 }
 
 .copy:hover {
   text-decoration: underline;
+  /* antd 的文字按钮 hover 会换色，这里保持一致（不引第二个主色） */
+  color: var(--mp-accent);
+  background: transparent;
 }
 
 /*
@@ -639,9 +673,15 @@ const urgencyClass = computed(() => {
 }
 
 .degraded {
-  margin: 4px 0 0;
+  margin: 6px 0 0;
+}
+
+/* antd 的 `Tag` 自带内边距，这里只把它压小一点（卡片很窄） */
+.degraded :deep(.ant-tag) {
+  margin: 0;
   font-size: 11px;
-  color: #f59e0b;
+  line-height: 16px;
+  padding: 0 6px;
 }
 
 .detail {
@@ -674,34 +714,21 @@ const urgencyClass = computed(() => {
   margin-top: 8px;
 }
 
-.btn-mini {
-  appearance: none;
-  border: 1px solid var(--mp-border-strong);
-  background: transparent;
-  color: var(--mp-text);
-  font-size: 11px;
-  padding: 3px 8px;
-  border-radius: 6px;
-  cursor: pointer;
-  font-family: inherit;
-}
-
-.btn-mini:hover {
-  background: var(--mp-hover);
-}
-
+/*
+ * 「展开 / 收起」也是文字按钮 —— 与「复制」同理：它是这段文字的延续，
+ * 不该长成一个方块按钮跟下面的操作按钮混在一起。
+ */
 .expand {
-  appearance: none;
-  border: 0;
-  background: transparent;
+  height: auto;
+  margin-top: 4px;
+  padding: 0;
   color: var(--mp-text-faint);
   font-size: 11px;
-  padding: 4px 0 0;
-  cursor: pointer;
-  font-family: inherit;
+  line-height: inherit;
 }
 
 .expand:hover {
   color: var(--mp-text-dim);
+  background: transparent;
 }
 </style>

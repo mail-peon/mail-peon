@@ -1,43 +1,66 @@
 /**
- * 共享设计令牌与通用控件样式。
+ * 共享设计令牌与全局微调。
  *
- * 三个界面（Popup / Options / Sidepanel）都引用这个文件，所以只写**跨界面共用**
- * 的东西：颜色令牌、`.mp-*` 控件类、滚动条。
+ * 三个界面（Popup / Options / Sidepanel）都引用这个文件，所以只写**跨界面共用**的
+ * 东西：颜色令牌、几个纯文字辅助类、对 antd 组件的少量全局收紧。
  * 布局与尺寸留给各界面自己 —— 把「弹窗固定 360px 宽」这类规则塞进公共文件，
  * 会让 Options 页也不得不覆盖它。
  *
- * 用 CSS 变量而不是直接写颜色：深色模式只需要覆盖变量，组件样式一行都不用改。
+ * ## 与 Ant Design Vue 的关系
+ *
+ * 控件本体全部交给 antd（`<a-button>` / `<a-input>` / …），它们的颜色来自
+ * `ConfigProvider` 的 token（见 `src/styles/theme.ts`）。这里只保留**我们自己写
+ * 的那些元素**需要的令牌 —— 卡片右上角的垃圾桶、倒计时进度条、提示文案。
+ *
+ * ⚠ 令牌值刻意与 antd 的调色板对齐（`--mp-accent` = `colorPrimary`，
+ *   `--mp-danger` = `colorError`，…）。不对齐的话，一个 antd 蓝色按钮旁边放着
+ *   一个 Tailwind 蓝色的自定义元素，两者只差一点点色相，看起来像渲染错误。
+ *
+ * ⚠ 用 CSS 变量而不是直接写颜色：深色模式只需要覆盖变量，组件样式一行都不用改。
+ *   深色值取 antd 的 dark 调色板（`@media (prefers-color-scheme: dark)` 与
+ *   `theme.ts` 里的 `darkAlgorithm` 是同一个判据 —— 两边必须一起看）。
  */
 
 :root {
-  --mp-bg: #ffffff;
+  /*
+   * `--mp-bg` 是**页面底色**（antd 的 `colorBgLayout`），`--mp-surface` 是
+   * **卡片 / 容器色**（`colorBgContainer`）。两者刻意不同：白卡片落在浅灰底上
+   * 才有层次，全白的话「卡片」只能靠 1px 描边勉强区分，看起来就很像原生 HTML。
+   * 深色模式同理（#000 底 + #141414 卡片）。
+   */
+  --mp-bg: #f5f5f5;
   --mp-surface: #ffffff;
-  --mp-surface-2: #f7f7f8;
-  --mp-border: #e8e8ec;
-  --mp-border-strong: #d4d4da;
-  --mp-text: #1c1c1e;
-  --mp-text-dim: #5a5a63;
-  --mp-text-faint: #8e8e96;
-  --mp-hover: rgba(0, 0, 0, 0.05);
+  --mp-surface-2: #fafafa;
+  --mp-border: #f0f0f0;
+  --mp-border-strong: #d9d9d9;
+  --mp-text: rgba(0, 0, 0, 0.88);
+  --mp-text-dim: rgba(0, 0, 0, 0.65);
+  --mp-text-faint: rgba(0, 0, 0, 0.45);
+  --mp-hover: rgba(0, 0, 0, 0.04);
   --mp-input-bg: #ffffff;
-  --mp-accent: #3b82f6;
-  --mp-danger: #ef4444;
-  --mp-success: #10b981;
-  --mp-warn: #f59e0b;
+  --mp-accent: #1677ff;
+  --mp-danger: #ff4d4f;
+  --mp-success: #52c41a;
+  --mp-warn: #faad14;
+  --mp-font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
 }
 
 @media (prefers-color-scheme: dark) {
   :root {
-    --mp-bg: #1c1c1e;
-    --mp-surface: #242427;
-    --mp-surface-2: #2c2c30;
-    --mp-border: #35353a;
-    --mp-border-strong: #45454c;
-    --mp-text: #f5f5f7;
-    --mp-text-dim: #b0b0b8;
-    --mp-text-faint: #7c7c85;
+    --mp-bg: #000000;
+    --mp-surface: #141414;
+    --mp-surface-2: #1f1f1f;
+    --mp-border: #303030;
+    --mp-border-strong: #424242;
+    --mp-text: rgba(255, 255, 255, 0.85);
+    --mp-text-dim: rgba(255, 255, 255, 0.65);
+    --mp-text-faint: rgba(255, 255, 255, 0.45);
     --mp-hover: rgba(255, 255, 255, 0.08);
-    --mp-input-bg: #1a1a1c;
+    --mp-input-bg: #141414;
+    --mp-accent: #1668dc;
+    --mp-danger: #dc4446;
+    --mp-success: #49aa19;
+    --mp-warn: #d89614;
   }
 }
 
@@ -70,136 +93,28 @@ body {
 }
 
 /* --------------------------------------------------------------------------
-   控件
+   纯文字辅助类
    -------------------------------------------------------------------------- */
 
-.mp-input,
-.mp-textarea,
-.mp-select {
-  width: 100%;
-  padding: 6px 8px;
-  border: 1px solid var(--mp-border-strong);
-  border-radius: 6px;
-  background: var(--mp-input-bg);
-  color: var(--mp-text);
-  font-size: 12px;
-  font-family: inherit;
-}
-
-.mp-textarea {
-  resize: vertical;
-  line-height: 1.6;
-}
-
-.mp-input:focus,
-.mp-textarea:focus,
-.mp-select:focus {
-  outline: 2px solid var(--mp-accent);
-  outline-offset: -1px;
-}
-
-.mp-btn {
-  appearance: none;
-  border: 1px solid var(--mp-border-strong);
-  border-radius: 6px;
-  background: transparent;
-  color: var(--mp-text);
-  font-size: 12px;
-  font-family: inherit;
-  padding: 5px 12px;
-  cursor: pointer;
-  white-space: nowrap;
-}
-
-.mp-btn:hover:not(:disabled) {
-  background: var(--mp-hover);
-}
-
-.mp-btn:disabled {
-  opacity: 0.5;
-  cursor: default;
-}
-
-.mp-btn-primary {
-  background: var(--mp-accent);
-  border-color: var(--mp-accent);
-  color: #ffffff;
-}
-
-.mp-btn-primary:hover:not(:disabled) {
-  filter: brightness(1.08);
-  background: var(--mp-accent);
-}
-
-.mp-btn-danger {
-  color: var(--mp-danger);
-  border-color: color-mix(in srgb, var(--mp-danger) 40%, transparent);
-}
-
-.mp-btn-danger:hover:not(:disabled) {
-  background: color-mix(in srgb, var(--mp-danger) 12%, transparent);
-}
-
-.mp-checkbox {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 12px;
-  cursor: pointer;
-  user-select: none;
-}
-
-.mp-checkbox input {
-  width: 14px;
-  height: 14px;
-  margin: 0;
-  accent-color: var(--mp-accent);
-  cursor: pointer;
-}
-
-.mp-radio-group {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-
-.mp-radio {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 12px;
-  cursor: pointer;
-  user-select: none;
-}
-
-.mp-radio input {
-  margin: 0;
-  accent-color: var(--mp-accent);
-  cursor: pointer;
-}
-
-/* --------------------------------------------------------------------------
-   表单骨架
-   -------------------------------------------------------------------------- */
-
-.mp-field {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-
-.mp-field-label {
-  font-size: 12px;
-  color: var(--mp-text-dim);
-}
-
+/*
+ * 控件下方的补充说明。
+ *
+ * ⚠ `margin: 0` 不能删：这些类大多挂在 `<p>` 上，而 antd 的 `reset.css` 给
+ *   `p` 留了 `margin-bottom: 1em`（16px）。在这套密集布局里那是「一段莫名其妙的
+ *   空白」，需要留白的地方都由各自的容器（`gap` / `margin-top`）显式给。
+ *   （antd reset 与 Tailwind reset 的差异就只剩这一处，见 `styles/index.ts`。）
+ */
 .mp-hint {
+  margin: 0;
   font-size: 11px;
   color: var(--mp-text-faint);
   line-height: 1.5;
 }
 
+/* 就地报错（校验没通过时）。用它而不是 antd 的 `message`：错误要留在原地，
+   和出错的输入框待在一起，而不是飘到屏幕角落去 */
 .mp-error {
+  margin: 0;
   font-size: 11px;
   color: var(--mp-danger);
   line-height: 1.5;
@@ -210,40 +125,128 @@ body {
   color: var(--mp-success);
 }
 
-.mp-card {
-  border: 1px solid var(--mp-border);
-  border-radius: 10px;
-  background: var(--mp-surface);
-  padding: 12px;
-}
-
-.mp-divider {
-  height: 1px;
-  background: var(--mp-border);
-  border: 0;
-  margin: 12px 0;
-}
-
-.mp-section-title {
-  font-size: 13px;
+.mp-page-title {
+  margin: 0;
+  font-size: 16px;
   font-weight: 600;
-  margin: 0 0 8px;
+  color: var(--mp-text);
 }
 
-.mp-row {
-  display: flex;
-  align-items: center;
-  gap: 8px;
+/* --------------------------------------------------------------------------
+   antd 全局收紧
+   --------------------------------------------------------------------------
+   弹窗 360px 宽、设置页又是给「配置」用的，antd 默认的行距显得很空。
+   这些选择器都带了类名前缀（0,2,0），而 antd v4 的组件样式外面包着 `:where()`
+   （特异度 0），所以这里能稳定赢过它 —— 不靠 `!important`。
+   -------------------------------------------------------------------------- */
+
+/*
+ * 表单行：默认 `margin-bottom: 24px`。antd 4.2 的 Form 没有暴露组件级 token，
+ * 所以只能在这里调。14px 仍能拉开层次，但一屏能放下更多设置项。
+ */
+.ant-form-vertical .ant-form-item {
+  margin-bottom: 14px;
 }
 
-.mp-badge {
-  display: inline-block;
-  min-width: 18px;
-  padding: 1px 6px;
-  border-radius: 9px;
-  background: var(--mp-surface-2);
+/* 竖排标签与控件贴得近一点（默认 8px 对 12px 字号偏松） */
+.ant-form-vertical .ant-form-item-label {
+  padding-bottom: 2px;
+}
+
+.ant-form-vertical .ant-form-item-label > label {
+  height: auto;
+  font-size: 12px;
   color: var(--mp-text-dim);
-  font-size: 11px;
-  line-height: 16px;
-  text-align: center;
 }
+
+/*
+ * 弹窗：内边距与小字号。`getContainer: false` 之下弹窗留在组件树里，
+ * 所以这些选择器同样只作用于我们自己的弹窗。
+ */
+.ant-modal .ant-modal-content {
+  padding: 16px;
+  border-radius: 12px;
+}
+
+.ant-modal .ant-modal-header {
+  margin-bottom: 8px;
+  background: transparent;
+}
+
+.ant-modal .ant-modal-footer {
+  margin-top: 12px;
+}
+
+/* 头像区在这么小的弹窗里纯属浪费空间 */
+.ant-empty-normal {
+  margin: 0;
+  padding: 24px 8px;
+}
+
+.ant-empty-normal .ant-empty-image {
+  height: 32px;
+  margin-bottom: 4px;
+}
+
+/*
+ * 标签页：弹窗宽度只有 360px，把四个 tab 的间距收窄一点才放得下计数角标。
+ * （Tabs 在本版本的 antd 里没有组件级 token，只能这样调 —— 见 `theme.ts` 的说明。）
+ */
+.ant-tabs-small > .ant-tabs-nav .ant-tabs-tab {
+  padding: 6px 0;
+}
+
+.ant-tabs > .ant-tabs-nav {
+  margin-bottom: 8px;
+}
+
+/*
+ * 表格：回收站可能几百行，默认行高（16px 上下内边距）会让一屏只剩几行。
+ * 收紧到 8px，同时把表头改成透明（默认的灰底在卡片里显得像另一块区域）。
+ */
+.ant-table-wrapper .ant-table-thead > tr > th {
+  background: transparent;
+  font-weight: 600;
+  color: var(--mp-text-dim);
+}
+
+.ant-table-wrapper .ant-table-tbody > tr > td {
+  padding: 8px 10px;
+}
+
+/* 菜单项：antd 默认 40px 高，侧边栏 7 项会占掉半屏 */
+.ant-menu-inline .ant-menu-item {
+  height: 32px;
+  line-height: 32px;
+  font-size: 12px;
+}
+
+/*
+ * 按钮里的图标与文字之间的间距。
+ *
+ * ⚠ 必须自己给：项目里的图标是 UnoCSS 生成的 `<span class="i-pixelarticons-*">`，
+ *   而 antd 只认自己的 `.anticon`（它有一条 `.ant-btn > .anticon + span`），
+ *   于是我们的图标会**贴着**文字（"⚙打开设置"）。
+ *
+ * ⚠ 用 `margin-inline-end` 而不是 `gap`：antd 的按钮是 `display: inline-block`，
+ *   `gap` 在非 flex 容器上不起作用 —— 那种写法看起来"写了样式却没效果"。
+ *   只有图标的按钮（垃圾桶、密码框的眼睛）在各自组件里把它归零。
+ */
+.ant-btn > [class^='i-'] {
+  margin-inline-end: 6px;
+}
+
+/*
+ * 轻提示（`message`）的宽度上限。
+ *
+ * ⚠ 默认的 notice 是 `inline-block` 且**不限宽** —— 一句带 URL 的报错
+ *   （`无法连接中继：ws://127.0.0.1:8787/imap.qq.com:993?tls=1`）会拉成一条
+ *   比窗口还宽的长条：在窄窗口（弹窗 360px、或用户把设置页拖窄）里直接溢出屏幕。
+ *
+ * ⚠ `word-break` 也要给：URL 里没有空格，不强制断行的话设了宽度也换不了行。
+ */
+.ant-message-notice-content {
+  max-width: min(560px, calc(100vw - 32px));
+  word-break: break-word;
+}
+

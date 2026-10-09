@@ -34,6 +34,12 @@ const zhCN: StringTable = {
     copied: '已复制 ✓',
     copyFailed: '复制失败',
     test: '测试',
+    /** 卡片右下角的展开 / 收起（摘要全文） */
+    expand: '展开',
+    collapse: '收起',
+    /** 密码输入框上的显示 / 隐藏切换 */
+    show: '显示',
+    hide: '隐藏',
     enabled: '启用',
     disabled: '停用',
     unknownSender: '(未知发件人)',
@@ -72,6 +78,14 @@ const zhCN: StringTable = {
     summary: '摘要',
     markRead: '标记已读',
     markUnread: '标记未读',
+    /**
+     * 「不再显示」。
+     *
+     * ⚠ 这个键曾经**漏了**，而 `t()` 查不到时返回键名本身 —— 于是展开卡片上
+     *   那两个按钮里有一个显示成 `mail.dismiss`。`t()` 返回键名而不是空串正是
+     *   为了让这种遗漏一眼可见（见 `t()` 的说明），这里如实记一笔。
+     */
+    dismiss: '不再显示',
     /** 卡片上那个文字按钮 */
     copy: '复制',
     /**
@@ -107,7 +121,6 @@ const zhCN: StringTable = {
     navBlocked: '屏蔽列表',
     navTrash: '回收站',
     navAbout: '关于',
-    minimalOnlyNote: '极简模式只做验证码提取；「通用」里的广告排除、Badge 等选项对极简模式无意义，已隐藏。「账号」与「AI 配置」仍然可用——它们是极简模式能工作的前提。',
   },
 
   trash: {
@@ -143,8 +156,22 @@ const zhCN: StringTable = {
 
   general: {
     mode: '模式',
-    modeMinimal: '极简模式（仅验证码）',
-    modeFull: '完整功能（AI 总结 + 屏蔽 + …）',
+    /**
+     * 模式切换两侧的**短标签**（开关中间）。
+     *
+     * ⚠ 括号里的解释已经挪到下面两行的 `modeMinimalDesc` / `modeFullDesc` ——
+     *   `极简模式（仅验证码）` 这种写法挤在开关两边会把开关推歪，
+     *   而且两个标签长度差太多时「开关在中间」看起来并不居中。
+     */
+    modeMinimal: '极简模式',
+    modeFull: '完整功能',
+    /** 模式说明（开关下方，一行一个模式，共两行） */
+    modeMinimalDesc: '只提取验证码并自动复制；其它邮件不入库、不展示',
+    modeFullDesc: 'AI 总结 + 广告屏蔽 + 提示词规则 + 排除邮箱',
+    /** 完整模式通用页的第一个卡片标题 */
+    behavior: '行为',
+    /** 完整模式通用页的最后一个卡片标题（导出 / 导入 / 清空） */
+    data: '数据',
     autoCopyCode: '验证码自动复制',
     excludeAds: '排除广告 / 营销邮件',
     excludeAdsHint: '被判为广告的邮件仍会被 AI 处理，可在弹窗「营销」分区查看。',
@@ -180,6 +207,9 @@ const zhCN: StringTable = {
     empty: '还没有添加邮箱账号',
     label: '备注名',
     labelPlaceholder: '工作邮箱',
+    /** 邮箱地址（账号的唯一标识，改它要重建索引） */
+    email: '邮箱地址',
+    emailPlaceholder: 'me@example.com',
     provider: '协议',
     test: '测试连接',
     testing: '测试中…',
@@ -188,6 +218,18 @@ const zhCN: StringTable = {
     resetCursorDone: '已重置；下次心跳从最新邮件开始',
     lastSync: '上次同步',
     never: '从未同步',
+    /** 卡片右上角的连接状态（颜色见 `options/pages/accounts-status.ts`） */
+    statusConnected: '已连接',
+    statusConnecting: '连接中…',
+    /** 这一次「测试连接 / 重置同步位置」失败 */
+    statusTestFailed: '连接失败',
+    /** 上一次同步留下的错误（`MailAccount.lastError`） */
+    statusFailed: '同步失败',
+    statusDisabled: '已停用',
+    statusNeverSynced: '未同步',
+    disabledHint: '这个账号不参与后台同步；启用后下一轮心跳会连它。',
+    disabledSuffix: '（账号已停用，不参与后台同步）',
+    neverSyncedHint: '还没有同步过。首次同步只记录同步位置，不会拉取历史邮件。',
     editTitle: '编辑账号',
     addTitle: '新增账号',
     deleteConfirm: '删除账号后，该账号已保存的邮件也会一并删除。确定继续吗？',
@@ -210,9 +252,14 @@ const zhCN: StringTable = {
     moveDown: '下移',
     alwaysCopyCode: '本规则强制自动复制验证码',
     alwaysSkipAd: '本规则始终视为非广告',
+    deleteConfirm: '规则「{name}」将被删除，此操作无法撤销。',
+    /** 列表里那行匹配条件的标题（内置规则的角标也是这个词） */
+    builtinTag: '兜底',
   },
 
   ai: {
+    /** 卡片标题（nav 里那项叫「AI 配置」，卡片里说明它是配置本体） */
+    cardTitle: 'AI 配置',
     platform: '平台',
     baseUrl: 'Base URL',
     apiKey: 'API Key',
@@ -225,6 +272,11 @@ const zhCN: StringTable = {
     test: '测试连通',
     testing: '测试中…',
     testOk: '连接成功',
+    /** 状态徽标上的短状态词（颜色见 `options/pages/AiPage.vue` 的 `aiStatus`） */
+    statusUntested: '未测试',
+    statusFail: '连接失败',
+    /** 悬停详情：`DeepSeek · deepseek-flash` 后面接这句 */
+    untestedHint: '还没有测试过这份配置',
     baseUrlPlaceholder: '留空则使用平台默认：{url}',
     modelPlaceholder: '留空则使用平台默认：{model}',
     notConfigured: '尚未配置',

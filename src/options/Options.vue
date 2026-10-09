@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue'
 import { useSettings } from '~/logic/bridge'
+import { readRememberedPage, rememberPage } from '~/logic/options-page-memory'
 import { t } from '~/logic/strings'
 import AboutPage from './pages/AboutPage.vue'
 import AccountsPage from './pages/AccountsPage.vue'
@@ -37,9 +38,6 @@ import TrashPage from './pages/TrashPage.vue'
 type PageId = 'general' | 'accounts' | 'rules' | 'ai' | 'blocked' | 'trash' | 'about'
 
 const { app, ai, reload } = useSettings()
-const activePage = ref<PageId>('general')
-
-const minimalMode = computed(() => app.value?.minimalMode ?? true)
 
 const NAV: Array<{ id: PageId, key: string }> = [
   { id: 'general', key: 'options.navGeneral' },
@@ -50,6 +48,21 @@ const NAV: Array<{ id: PageId, key: string }> = [
   { id: 'trash', key: 'options.navTrash' },
   { id: 'about', key: 'options.navAbout' },
 ]
+
+/**
+ * 当前页。初始值来自**前端记忆**（`logic/options-page-memory.ts`）——
+ * 刷新后停在上次那一页，而不是每次都弹回「通用」。
+ *
+ * ⚠ 记忆的取值要经过 `NAV` 的校验（旧版本可能存过一个已删掉的页面），
+ *   否则会停在一个没有任何内容的页面上。
+ *
+ * ⚠ 记忆在**极简模式**下可能指向隐藏页（提示词 / 屏蔽列表）：那时由下面的
+ *   `ensureVisiblePage()` 把它拉回「通用」。注意它**不覆盖记忆** ——
+ *   记忆只在用户点导航时写（见 `select()`），切回完整模式还能回到提示词页。
+ */
+const activePage = ref<PageId>(readRememberedPage(NAV.map(item => item.id), 'general'))
+
+const minimalMode = computed(() => app.value?.minimalMode ?? true)
 
 /**
  * 极简模式隐藏的页面：它们对应的是**完整模式的功能**，不是配置前提。
@@ -82,8 +95,16 @@ onMounted(async () => {
   ensureVisiblePage()
 })
 
+/**
+ * 切换页面（侧边导航点击）。
+ *
+ * ⚠ 记忆**只在这里写**：`ensureVisiblePage()` 那种程序性的跳转不该改写它
+ *   （否则切一次极简模式就会把「上次在看提示词」抹掉）。理由详见
+ *   `logic/options-page-memory.ts` 的文件头。
+ */
 function select(page: PageId) {
   activePage.value = page
+  rememberPage(page)
 }
 
 /**
@@ -94,39 +115,50 @@ function select(page: PageId) {
  */
 watch(minimalMode, () => ensureVisiblePage())
 
+/**
+ * 侧边导航的菜单项（antd 的 `Menu` 要的是 `items` 数组，不是一堆子组件）。
+ *
+ * ⚠ 用 `:items` 而不是 `<a-menu-item v-for>`：`items` 是**数据**，
+ *   它让「极简模式少两项」这件事只发生在 `visibleNav` 一处 ——
+ *   子组件写法下，`v-for` 与「哪些项被隐藏」会分散到两处。
+ */
+const navItems = computed(() =>
+  visibleNav.value.map(item => ({ key: item.id, label: t(item.key) })),
+)
+
+function onNavClick(info: { key: string | number }) {
+  select(String(info.key) as PageId)
+}
+
 defineExpose({ reload })
 </script>
 
 <template>
-  <div class="options">
+  <a-layout class="options">
     <header class="topbar">
       <span class="title">{{ t('options.title') }}</span>
-      <span v-if="minimalMode" class="mode-tag">{{ t('app.minimalSuffix') }}</span>
+      <a-tag v-if="minimalMode" class="mode-tag" :bordered="false">
+        {{ t('app.minimalSuffix') }}
+      </a-tag>
     </header>
 
-    <div class="body">
+    <a-layout class="body">
       <!--
         侧边导航在两种模式下**都显示**（见文件头：极简模式保留「账号 / AI 配置」等
         配置页，它们是极简模式能用的前提）。两种模式的差别只是 visibleNav 里少了
         「提示词」与「屏蔽列表」。
       -->
-      <aside class="sidebar">
-        <button
-          v-for="item in visibleNav"
-          :key="item.id"
-          class="nav-item"
-          type="button"
-          :class="{ active: activePage === item.id }"
-          @click="select(item.id)"
-        >
-          {{ t(item.key) }}
-        </button>
-      </aside>
+      <a-layout-sider class="sidebar" :width="148" theme="light">
+        <a-menu
+          mode="inline"
+          :selected-keys="[activePage]"
+          :items="navItems"
+          @click="onNavClick"
+        />
+      </a-layout-sider>
 
-      <main class="content">
-        <div v-if="!app" class="loading">
-          {{ t('common.loading') }}
-        </div>
+      <a-layout-content class="content">
+        <a-spin v-if="!app" class="loading" size="small" />
 
         <template v-else>
           <GeneralPage v-show="activePage === 'general'" />
@@ -139,19 +171,24 @@ defineExpose({ reload })
           <RulesPage v-else-if="activePage === 'rules' && !minimalMode" />
           <BlockedPage v-else-if="activePage === 'blocked' && !minimalMode" />
         </template>
-      </main>
-    </div>
-  </div>
+      </a-layout-content>
+    </a-layout>
+  </a-layout>
 </template>
 
 <style scoped>
 .options {
-  display: flex;
-  flex-direction: column;
   min-height: 100vh;
+  /*
+   * ⚠ 用 `--mp-surface`（容器色）当整页底色，而不是 `--mp-bg`（页面灰）：
+   *   这一页是「一整个应用界面」，顶部栏 + 侧栏 + 内容区都是它的一部分。
+   *   弹性布局下 `min-height: 100vh` 保证内容少时也铺满视口。
+   */
+  background: var(--mp-surface);
 }
 
 .topbar {
+  flex: 0 0 auto;
   display: flex;
   align-items: center;
   gap: 8px;
@@ -165,51 +202,21 @@ defineExpose({ reload })
 }
 
 .mode-tag {
+  margin: 0;
   font-size: 11px;
-  color: var(--mp-text-faint);
-  border: 1px solid var(--mp-border-strong);
-  border-radius: 10px;
-  padding: 1px 8px;
+  line-height: 18px;
 }
 
 .body {
   flex: 1 1 auto;
-  display: flex;
-  align-items: stretch;
   min-height: 0;
+  background: var(--mp-surface);
 }
 
 .sidebar {
-  flex: 0 0 148px;
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  padding: 12px 8px;
   border-right: 1px solid var(--mp-border);
-}
-
-.nav-item {
-  appearance: none;
-  border: 0;
-  border-radius: 6px;
-  background: transparent;
-  color: var(--mp-text-dim);
-  font-size: 12px;
-  font-family: inherit;
-  text-align: left;
-  padding: 7px 10px;
-  cursor: pointer;
-}
-
-.nav-item:hover {
-  background: var(--mp-hover);
-  color: var(--mp-text);
-}
-
-.nav-item.active {
-  background: var(--mp-surface-2);
-  color: var(--mp-text);
-  font-weight: 600;
+  /* 侧栏顶端留一点白，菜单不要贴着顶栏的下边框 */
+  padding-top: 8px;
 }
 
 .content {
@@ -217,10 +224,12 @@ defineExpose({ reload })
   min-width: 0;
   overflow-y: auto;
   padding: 20px 24px 48px;
+  /* 内容区用页面灰底：卡片（`a-card` 是容器色）落在上面才有层次 */
+  background: var(--mp-bg);
 }
 
 .loading {
-  font-size: 12px;
-  color: var(--mp-text-faint);
+  display: block;
+  margin: 32px auto;
 }
 </style>

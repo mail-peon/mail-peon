@@ -222,8 +222,16 @@ describe('极简模式渲染', () => {
     const copyButton = wrapper.find('.copy')
     expect(copyButton.exists()).toBe(true)
     expect(copyButton.text()).toBe('复制')
-    // 刻意不是 `.btn-mini`（带边框的方块）—— 它读起来应是验证码那一行的延续
+    /*
+     * 刻意**不是带边框的方块按钮**（旧实现里的 `.btn-mini`）——
+     * 它读起来应是验证码那一行的延续。
+     *
+     * ⚠ 实现换成 antd 之后，这个语义由 `type="link"` 表达（`ant-btn-link`：
+     *   无边框、无底色、主色文字）。断言类名是为了守住「它还是文字按钮」这件事
+     *   —— 换成 `type="primary"` 之类的方块按钮时这条会失败。
+     */
     expect(copyButton.classes()).not.toContain('btn-mini')
+    expect(copyButton.classes()).toContain('ant-btn-link')
 
     wrapper.unmount()
   })

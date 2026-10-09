@@ -17,6 +17,3 @@ src/components.d.ts
 .eslintcache
 # Vitest coverage 产物
 .coverage/
-# Playwright 产物（e2e 跑完会生成 .last-run.json 之类，不该参与 lint 与提交）
-test-results
-playwright-report

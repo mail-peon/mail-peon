@@ -4,7 +4,7 @@ import 'fake-indexeddb/auto'
 /**
  * 单测的全局准备。
  *
- * 三件事，每件都是「不做就跑不起来」的：
+ * 四件事，每件都是「不做就跑不起来」的：
  *
  * 1. **`fake-indexeddb/auto`**：Node 里没有 IndexedDB。它在 `globalThis` 上装一个
  *    纯 JS 实现，于是 `platform/idb/*` 与 `logic/store/*` 可以在毫秒级跑完单测，
@@ -15,9 +15,74 @@ import 'fake-indexeddb/auto'
  *    而抛错（模块加载期抛错会让整条 import 链失败，连不相关的测试都跑不起来）。
  *    这里按 polyfill 期望的形状装一个最小桩：只要 `get` / `remove` 存在就够了。
  *
- * 3. **每个测试前清库**：模块级的 `openDb()` 单例与 `ensureStoreReady()` 的
+ * 3. **浏览器 API 桩**（`matchMedia` / `ResizeObserver` / `getBBox`）：jsdom 里没有。
+ *    Ant Design Vue 的组件在挂载时会用到它们（自适应断点、Tabs 的滚动测量、
+ *    表格的响应式），缺一个就是 `is not a function` 直接炸掉整个用例 ——
+ *    而报错位置在 antd 内部，跟被测代码看不出关系。
+ *
+ * 4. **每个测试前清库**：模块级的 `openDb()` 单例与 `ensureStoreReady()` 的
  *    promise 会跨测试存活，不重置的话第二个测试会看到第一个测试留下的数据。
  */
+
+/* --------------------------------------------------------------------------
+   antd 需要的浏览器 API
+   -------------------------------------------------------------------------- */
+
+/*
+ * ⚠ `matchMedia` 必须返回一个**有 add/removeEventListener 的真对象**：
+ *   `@vueuse/core` 的 `usePreferredDark()` 会挂监听，只给一个 `{ matches: false }`
+ *   的话它会在挂载时抛「addEventListener is not a function」。
+ *   返回 `matches: false` ⇒ 测试跑在浅色主题下，与真机默认一致。
+ */
+Object.defineProperty(globalThis, 'matchMedia', {
+  writable: true,
+  value: (query: string) => ({
+    matches: false,
+    media: query,
+    onchange: null,
+    addListener() {},
+    removeListener() {},
+    addEventListener() {},
+    removeEventListener() {},
+    dispatchEvent: () => false,
+  }),
+})
+
+/** 只提供「观察得到、但从不触发」的最小实现 —— 布局在 jsdom 里本来就不存在 */
+class ResizeObserverStub {
+  observe() {}
+  unobserve() {}
+  disconnect() {}
+}
+
+class IntersectionObserverStub {
+  root = null
+  rootMargin = ''
+  thresholds: number[] = []
+  observe() {}
+  unobserve() {}
+  disconnect() {}
+  takeRecords() {
+    return []
+  }
+}
+
+Object.assign(globalThis, {
+  ResizeObserver: ResizeObserverStub,
+  IntersectionObserver: IntersectionObserverStub,
+})
+
+/*
+ * `SVGElement.prototype.getBBox`：Tabs / Table 的指示条要量文字宽度，
+ * 而 jsdom 的 SVG 实现里没有这个方法（会抛 `getBBox is not a function`）。
+ * 返回全 0 是诚实的 —— jsdom 不跑布局，量出来的尺寸本来就只能是 0。
+ */
+if (typeof SVGElement !== 'undefined' && !('getBBox' in SVGElement.prototype)) {
+  Object.defineProperty(SVGElement.prototype, 'getBBox', {
+    writable: true,
+    value: () => ({ x: 0, y: 0, width: 0, height: 0 }),
+  })
+}
 
 const storageArea = {
   async get(keys?: unknown) {

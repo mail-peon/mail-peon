@@ -17,7 +17,24 @@ import ConfirmDialog from '~/components/ConfirmDialog.vue'
  * ⚠ 断言用 `.open` 判定是否渲染，而不是去数 DOM 节点 ——
  *   弹窗用 `v-if`，关闭时**整个子树都不存在**（这是刻意的：
  *   隐藏的弹窗不该留在 Tab 顺序里）。
+ *
+ * ⚠ 按钮的类名是 **antd 的**（`ant-btn-primary` / `ant-btn-dangerous`）：
+ *   弹窗内部已经换成 `a-button`，所以「主色还是红色」这件事由 antd 的
+ *   `type` / `danger` 表达，而不是我们自己的 `mp-btn-*`。
  */
+
+/**
+ * 去掉空白后的按钮文案。
+ *
+ * ⚠ antd 默认会在**两个汉字**的按钮里插一个空格（"取 消"、"彻 底 删 除"）。
+ *   应用里靠 `ConfigProvider` 的 `autoInsertSpaceInButton: false` 关掉了它，
+ *   但**单独挂载这个组件**的测试没有那层 Provider，于是拿到的是插了空格的文本。
+ *   这里去掉空白再断言 —— 强度不变（文案错了照样失败），
+ *   只是不把「antd 的排版细节」当成产品行为来考。
+ */
+function buttonLabel(text: string): string {
+  return text.replace(/\s+/g, '')
+}
 
 function mountDialog(props: Record<string, unknown> = {}) {
   return mount(ConfirmDialog, {
@@ -49,8 +66,8 @@ describe('confirmDialog（破坏性操作的唯一闸门）', () => {
 
     const buttons = wrapper.findAll('.actions button')
     expect(buttons).toHaveLength(2)
-    expect(buttons[0].text()).toBe('取消')
-    expect(buttons[1].text()).toBe('彻底删除')
+    expect(buttonLabel(buttons[0].text())).toBe('取消')
+    expect(buttonLabel(buttons[1].text())).toBe('彻底删除')
 
     wrapper.unmount()
   })
@@ -63,7 +80,7 @@ describe('confirmDialog（破坏性操作的唯一闸门）', () => {
     await new Promise(resolve => setTimeout(resolve, 0))
 
     const active = document.activeElement
-    expect(active?.textContent?.trim()).toBe('取消')
+    expect(active?.textContent && buttonLabel(active.textContent)).toBe('取消')
 
     wrapper.unmount()
   })
@@ -149,18 +166,23 @@ describe('confirmDialog（破坏性操作的唯一闸门）', () => {
     wrapper.unmount()
   })
 
-  it('danger 为假时确认按钮用主色', () => {
+  it('danger 为假时确认按钮是主色，不带 danger', () => {
     const wrapper = mountDialog({ danger: false })
-    expect(wrapper.findAll('.actions button')[1].classes()).toContain('mp-btn-primary')
-    expect(wrapper.findAll('.actions button')[1].classes()).not.toContain('mp-btn-danger')
+    const confirmButton = wrapper.findAll('.actions button')[1]
+    expect(confirmButton.classes()).toContain('ant-btn-primary')
+    expect(confirmButton.classes()).not.toContain('ant-btn-dangerous')
     wrapper.unmount()
   })
 
-  it('danger 为真时确认按钮用红色', () => {
+  /*
+   * ⚠ 危险按钮在 antd 里是「primary + dangerous」两个类**同时**有
+   *   （红底实心按钮）。所以这里只能断言「带 danger」，不能再断言
+   *   「不带 primary」—— 那是我们自己那套 `mp-btn-*` 的旧约定。
+   */
+  it('danger 为真时确认按钮带 danger（红底实心）', () => {
     const wrapper = mountDialog()
     const confirmButton = wrapper.findAll('.actions button')[1]
-    expect(confirmButton.classes()).toContain('mp-btn-danger')
-    expect(confirmButton.classes()).not.toContain('mp-btn-primary')
+    expect(confirmButton.classes()).toContain('ant-btn-dangerous')
     wrapper.unmount()
   })
 })

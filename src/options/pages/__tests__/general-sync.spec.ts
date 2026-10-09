@@ -23,6 +23,10 @@ import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
  * 而是把 `~/logic/bridge` 整个 mock 掉，只保留它的**接口语义**：
  * `syncNow()` 立即返回、`onSyncDone()` 注册监听、`syncStatus()` 问一次。
  * 于是「广播丢了会怎样」变成一句话：**注册的监听器不调用**。
+ *
+ * ⚠ 结果提示走**全局 message**（`logic/ui-message.ts`）而不是页面里的一行文字，
+ *   所以这里也把那个模块 mock 掉，断言的是「哪个级别收到了哪句文案」——
+ *   这样「故障必须是警告色而不是成功色」才是可测的（见最后两条用例）。
  */
 
 /** 被测组件用到的那些 composable 的假实现 */
@@ -34,10 +38,28 @@ const mocks = vi.hoisted(() => {
   /** `accounts:sync-status` 会被问到的结果队列（每次调用弹一个） */
   const statusQueue: unknown[] = []
 
+  /**
+   * 全局轻提示的假实现。
+   *
+   * ⚠ 结果**不在页面里**了（原来是一个 `a-alert`），所以断言的对象从
+   *   `wrapper.text()` 变成「调了哪个级别、文案是什么」。这让「颜色对不对」
+   *   变成可测的：`无法连接中继` 必须走 `warning` 而不是 `success`。
+   */
+  const message = {
+    info: vi.fn(),
+    success: vi.fn(),
+    warning: vi.fn(),
+    error: vi.fn(),
+    loading: vi.fn(),
+    open: vi.fn(),
+    destroy: vi.fn(),
+  }
+
   return {
     syncListeners,
     dataListeners,
     statusQueue,
+    message,
     syncNow: vi.fn(async () => ({ started: true, startedAt: Date.now() })),
     syncStatus: vi.fn(async () => statusQueue.shift() ?? null),
     reloadAccounts: vi.fn(async () => {}),
@@ -45,6 +67,13 @@ const mocks = vi.hoisted(() => {
     setApp: vi.fn(async () => {}),
   }
 })
+
+vi.mock('~/logic/ui-message', () => ({
+  useAppMessage: () => mocks.message,
+  // 时长常量照抄真实值：它们只是「停多久」，不影响这里的断言
+  ERROR_DURATION: 8,
+  WARNING_DURATION: 6,
+}))
 
 vi.mock('~/logic/bridge', () => ({
   onSyncDone: (listener: (result: { ok: boolean, results: unknown[], error?: string }) => void) => {
@@ -109,6 +138,16 @@ async function flush(times = 6) {
     await Promise.resolve()
 }
 
+/**
+ * 某个提示级别**收到过的全部文案**（拼成一段，方便 `toContain`）。
+ *
+ * ⚠ 用「哪些文案走过哪一级」来断言，而不是去查页面文本：结果提示已经不在页面里了
+ *   （全局 message），而且这样能顺带守住「故障不能走 success」这件事。
+ */
+function messageText(level: { mock: { calls: unknown[][] } }): string {
+  return level.mock.calls.map(call => String(call[0])).join('\n')
+}
+
 describe('同步中一定会结束', () => {
   beforeEach(() => {
     mocks.syncListeners.length = 0
@@ -116,6 +155,8 @@ describe('同步中一定会结束', () => {
     mocks.statusQueue.length = 0
     mocks.syncNow.mockClear()
     mocks.syncStatus.mockClear()
+    for (const level of Object.values(mocks.message))
+      level.mockClear()
     vi.useRealTimers()
   })
 
@@ -133,9 +174,8 @@ describe('同步中一定会结束', () => {
     mocks.syncListeners[0]({ ok: true, results: [summary({ fetched: 3 })] })
     await flush()
 
-    const text = wrapper.text()
-    expect(text).toContain('拉取 3 封')
-    expect(text).not.toContain('同步失败')
+    expect(messageText(mocks.message.success)).toContain('拉取 3 封')
+    expect(messageText(mocks.message.error)).toBe('')
 
     wrapper.unmount()
   })
@@ -167,9 +207,9 @@ describe('同步中一定会结束', () => {
     await flush()
 
     expect(mocks.syncStatus).toHaveBeenCalled()
-    const text = wrapper.text()
-    expect(text).toContain('拉取 5 封')
-    expect(text).not.toContain('同步中')
+    expect(messageText(mocks.message.success)).toContain('拉取 5 封')
+    // 按钮回到可点状态（不再停在「同步中」）
+    expect(wrapper.text()).not.toContain('同步中')
 
     wrapper.unmount()
     vi.useRealTimers()
@@ -198,19 +238,19 @@ describe('同步中一定会结束', () => {
     await vi.advanceTimersByTimeAsync(1600)
     await flush()
 
-    expect(wrapper.text()).not.toContain('拉取 99 封')
+    expect(messageText(mocks.message.success)).not.toContain('拉取 99 封')
     // 仍在等：下一次轮询要有东西可拿
     mocks.statusQueue.push({ ok: true, results: [summary({ fetched: 2 })], finishedAt: Date.now() + 1 })
     await vi.advanceTimersByTimeAsync(1600)
     await flush()
 
-    expect(wrapper.text()).toContain('拉取 2 封')
+    expect(messageText(mocks.message.success)).toContain('拉取 2 封')
 
     wrapper.unmount()
     vi.useRealTimers()
   })
 
-  it('后台报错时如实显示原因，而不是「没有启用的账号」', async () => {
+  it('后台报错时用危险色如实说原因，而不是「没有启用的账号」', async () => {
     vi.useFakeTimers()
 
     const wrapper = mountPage()
@@ -229,14 +269,60 @@ describe('同步中一定会结束', () => {
     await vi.advanceTimersByTimeAsync(1600)
     await flush()
 
-    const text = wrapper.text()
-    expect(text).toContain('同步失败')
-    expect(text).toContain('IMAP 服务器响应超时')
+    expect(messageText(mocks.message.error)).toContain('同步失败')
+    expect(messageText(mocks.message.error)).toContain('IMAP 服务器响应超时')
     // 这句话只该在「真的没有启用账号」时出现，不能拿来当万能兜底
-    expect(text).not.toContain('请先在「账号」页添加')
+    expect(messageText(mocks.message.warning)).not.toContain('请先在「账号」页添加')
+    // 也不该同时报一次「成功」
+    expect(messageText(mocks.message.success)).toBe('')
 
     wrapper.unmount()
     vi.useRealTimers()
+  })
+
+  /*
+   * ⚠⚠ 用户报过的那一条：`无法连接中继：ws://…` 曾经是**绿色**的。
+   *
+   * 原因有两个，这里一次把两个都钉住：
+   *   1. 这类文案走的是 `SyncSummary.warning`（`adapters/mail/mailbox.ts` 在连接
+   *      抛错时把错误塞进 `warning`），而它当时跟「拉取 N 封」拼在同一段里；
+   *   2. 那一段整体按 `type="success"` 渲染 ⇒ 故障报成了好消息。
+   */
+  it('账号级故障走警告色，不会混进成功提示', async () => {
+    const wrapper = mountPage()
+    await flush()
+
+    await syncButton(wrapper).trigger('click')
+    await flush()
+
+    mocks.syncListeners[0]({
+      ok: true,
+      results: [summary({ warning: '无法连接中继：ws://127.0.0.1:8787/imap.qq.com:993?tls=1' })],
+    })
+    await flush()
+
+    expect(messageText(mocks.message.warning)).toContain('无法连接中继')
+    // 账号名要带上：多账号时才知道该去修哪一个
+    expect(messageText(mocks.message.warning)).toContain('个人邮箱')
+    expect(messageText(mocks.message.success)).not.toContain('无法连接中继')
+
+    wrapper.unmount()
+  })
+
+  it('有邮件失败时不用成功色（「拉取 3 封」和「失败 1 封」是同一句话）', async () => {
+    const wrapper = mountPage()
+    await flush()
+
+    await syncButton(wrapper).trigger('click')
+    await flush()
+
+    mocks.syncListeners[0]({ ok: true, results: [summary({ fetched: 3, failed: 1 })] })
+    await flush()
+
+    expect(messageText(mocks.message.warning)).toContain('失败 1 封')
+    expect(messageText(mocks.message.success)).toBe('')
+
+    wrapper.unmount()
   })
 
   it('超过 6 分钟仍未返回：给出超时提示并结束「同步中」', async () => {
@@ -252,9 +338,8 @@ describe('同步中一定会结束', () => {
     await vi.advanceTimersByTimeAsync(6 * 60 * 1000 + 3000)
     await flush()
 
-    const text = wrapper.text()
-    expect(text).toContain('仍未返回')
-    expect(text).not.toContain('同步中')
+    expect(messageText(mocks.message.error)).toContain('仍未返回')
+    expect(wrapper.text()).not.toContain('同步中')
 
     wrapper.unmount()
     vi.useRealTimers()

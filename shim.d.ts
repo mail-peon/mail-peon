@@ -134,6 +134,14 @@ declare module 'webext-bridge' {
     }>
     'settings:clear-mails': ProtocolWithReturn<undefined, { ok: true, removed: number }>
     'settings:clear-all': ProtocolWithReturn<undefined, { ok: true }>
+    /**
+     * bg → 所有扩展页面：设置被改动了。
+     *
+     * ⚠ 与 `data:changed` 分开，语义也不同：这条带**新的值**，
+     *   收到的一方直接写进共享的响应式状态即可，不需要再去 `settings:get` 拉一次。
+     *   `app` / `ai` 只有一个字段有值（改哪个发哪个）。
+     */
+    'settings:changed': { app?: AppSettings, ai?: AiSettings }
 
     // --- AI ---
     'ai:test': ProtocolWithReturn<{ ai: AiSettings }, AiTestResult>

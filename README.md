@@ -136,6 +136,8 @@ src/
 │   ├── strings.ts       集中文案（i18n 钩子）
 │   ├── messaging.ts     webext-bridge 通道封装
 │   ├── bridge.ts        UI 侧的数据访问层（所有 UI 都经它问 background 要数据）
+│   ├── mount-app.ts     三个界面的挂载入口（ConfigProvider + zh-CN + 主题）
+│   ├── confirm-action.ts 不可撤销操作的「待确认动作」状态（确认弹窗的调用方）
 │   ├── store/           仓库门面：accounts / rules / mails / settings
 │   │   ├── ready.ts     ★ 初始化门闸 + withReady 包装
 │   │   ├── prune.ts     滚动淘汰（单独一个模块以打断循环依赖）
@@ -144,6 +146,10 @@ src/
 │   ├── rules/           规则匹配 + 排除邮箱
 │   ├── ai/              流水线 / 提示词 / zod 校验 / 降级 / 并发闸门
 │   └── notification/    Notifier 接口 + badge + 文案
+├── styles/              设计令牌与主题
+│   ├── index.ts         ★ 样式入口（**只引 antd 那一套 reset**，见文件头）
+│   ├── theme.ts         Ant Design Vue 的 ConfigProvider token（浅/深色）
+│   └── shared.css       颜色令牌 + 少量纯文字辅助类
 ├── background/          心跳（alarms）+ 消息处理 + Notifier 实现
 ├── contentScripts/      页面顶部 toast（closed shadow DOM）+ 剪贴板
 ├── popup/ sidepanel/ options/   三个界面（两套布局按 minimalMode 分发）
@@ -151,6 +157,24 @@ src/
 ```
 
 ★ = 最容易踩坑的几处，改之前先读文件头的说明。
+
+### 界面与样式
+
+界面构件全部基于 **Ant Design Vue 4**（按需引入，`unplugin-vue-components`
+的 `AntDesignVueResolver`）：
+
+- **主题**：`src/styles/theme.ts` 里的 token 是唯一入口（主色 / 字号 / 控件高度 /
+  圆角），深浅色跟随系统（`darkAlgorithm`）。我们自己写的元素（卡片右上角的垃圾桶、
+  倒计时进度条）走 `shared.css` 的 `--mp-*` 令牌，取值与 antd 调色板对齐。
+- **reset 只有一套**（antd 自带的那份）。引第二套（例如
+  `@unocss/reset/tailwind.css`）会让 `button[type] { background-color: transparent }`
+  以更高特异度压掉 antd 的主色按钮 —— 详见 `src/styles/index.ts` 的文件头。
+- **图标**：我们自己的图标走 UnoCSS（`i-pixelarticons-*`，按需生成），不额外引
+  `@ant-design/icons-vue` —— 只有 antd 组件内部（Alert 的感叹号、密码框的眼睛、
+  表格的排序箭头）才用它，那部分跟着组件一起按需进产物。
+- **设置页记住上次停在哪一页**（`logic/options-page-memory.ts`）：纯界面偏好，
+  存在 `localStorage`，**不进** `AppSettings`（它不影响任何处理逻辑，background
+  也不需要知道），因此不会进 IDB、不会进导出的设置文件、也不需要广播。
 
 ### 三条硬规矩
 

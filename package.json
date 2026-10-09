@@ -26,7 +26,6 @@
     "clear": "esno scripts/clean.ts",
     "lint": "eslint --cache .",
     "test": "vitest run",
-    "test:e2e": "playwright test",
     "relay": "esno scripts/imap-relay.ts",
     "relay:trace": "cross-env RELAY_TRACE=1 esno scripts/imap-relay.ts",
     "relay:kill": "esno scripts/relay-kill.ts",
@@ -37,6 +36,7 @@
     "typecheck": "tsc --noEmit && tsc -p tsconfig.scripts.json"
   },
   "dependencies": {
+    "ant-design-vue": "^4.2.6",
     "nanoid": "^6.0.2",
     "postal-mime": "^4.0.4",
     "zod": "^4.6.5"
@@ -45,7 +45,6 @@
     "@antfu/eslint-config": "^9.5.1",
     "@ffflorian/jszip-cli": "^3.16.8",
     "@iconify-json/pixelarticons": "^1.2.4",
-    "@playwright/test": "^1.63.0",
     "@types/node": "^26.6.3",
     "@types/webextension-polyfill": "^0.12.6",
     "@types/ws": "^8.18.2",

@@ -157,19 +157,28 @@ describe('parseBlockedText', () => {
 
 describe('shouldAutoCopyCode（features/05 § 2 的决策表）', () => {
   it('全局开关开着就复制', () => {
-    expect(shouldAutoCopyCode({ minimalMode: false, autoCopyCode: true }, null)).toBe(true)
+    expect(shouldAutoCopyCode({ autoCopyCode: true }, null)).toBe(true)
   })
 
   it('全局关掉时不复制', () => {
-    expect(shouldAutoCopyCode({ minimalMode: false, autoCopyCode: false }, null)).toBe(false)
+    expect(shouldAutoCopyCode({ autoCopyCode: false }, null)).toBe(false)
   })
 
   it('规则的 alwaysCopyCode 能覆盖全局关闭', () => {
-    expect(shouldAutoCopyCode({ minimalMode: false, autoCopyCode: false }, { alwaysCopyCode: true })).toBe(true)
+    expect(shouldAutoCopyCode({ autoCopyCode: false }, { alwaysCopyCode: true })).toBe(true)
   })
 
-  it('极简模式**恒为 true**（漏掉这条特判等于把这个功能废掉）', () => {
-    expect(shouldAutoCopyCode({ minimalMode: true, autoCopyCode: false }, null)).toBe(true)
+  /*
+   * ⚠ 曾经是「极简模式**恒为 true**」。产品上改掉了：极简模式里的
+   *   「验证码自动复制」也是一个可以关的开关 —— 关掉之后验证码照旧提取、照旧入库，
+   *   只是不写剪贴板，toast 给「点击复制」兜底（见 `pipeline.ts` 的 `processMinimal`）。
+   *
+   *   ⚠ 判据里**不再传 `minimalMode`**（类型上都传不进去了）：该函数只回答
+   *     「该不该写剪贴板」，而模式决定的是「走哪条处理链」。
+   */
+  it('极简模式也走同一个开关（不再恒为 true）', () => {
+    expect(shouldAutoCopyCode({ autoCopyCode: false }, null)).toBe(false)
+    expect(shouldAutoCopyCode({ autoCopyCode: true }, null)).toBe(true)
   })
 })
 

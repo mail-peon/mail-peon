@@ -7,6 +7,7 @@ import UnoCSS from 'unocss/vite'
 import AutoImport from 'unplugin-auto-import/vite'
 import IconsResolver from 'unplugin-icons/resolver'
 import Icons from 'unplugin-icons/vite'
+import { AntDesignVueResolver } from 'unplugin-vue-components/resolvers'
 import Components from 'unplugin-vue-components/vite'
 import { defineConfig } from 'vite'
 import packageJson from './package.json' with { type: 'json' }
@@ -44,6 +45,17 @@ export const sharedConfig: UserConfig = {
       // generate `components.d.ts` for ts support with Volar
       dts: r('src/components.d.ts'),
       resolvers: [
+        /*
+         * Ant Design Vue 按需引入：模板里写 `<a-button>` 就自动 import
+         * `ant-design-vue/es/button`，不用的组件（以及它们的依赖）不会进产物。
+         *
+         * ⚠ `importStyle: false` 是**必须**的：v4 起 antd 的样式是运行期
+         *   CSS-in-JS（`@ant-design/cssinjs`），没有「每个组件一份 css」可引；
+         *   让 resolver 去找样式文件只会找到一份重复的 reset。
+         *   全量的 `reset.css` 在 `src/styles/index.ts` 里引一次。
+         */
+        AntDesignVueResolver({ importStyle: false }),
+
         // auto import icons
         IconsResolver({
           prefix: '',
@@ -112,6 +124,18 @@ export default defineConfig(({ command }) => ({
   test: {
     globals: true,
     environment: 'jsdom',
+    /*
+     * ⚠ `hookTimeout` 特意放宽到 30 秒。
+     *
+     *   设置页的测试用 `beforeAll` + 动态 import 加载组件（见
+     *   `options/pages/__tests__/general-sync.spec.ts` 的说明），而那些组件现在
+     *   会拉进 Ant Design Vue 的十来个组件（每个都是独立模块，Vite 要逐个 transform）。
+     *   **全量跑**（多文件并行）时首次 import 会逼近默认的 10 秒上限，
+     *   表现是「单独跑通过、一起跑就 hook 超时」—— 纯属构建耗时，不是产品问题。
+     *
+     *   只放宽 hook（模块加载），不放宽 `testTimeout`：单个用例变慢是真的有问题。
+     */
+    hookTimeout: 30_000,
     // 单测的全局准备：装 fake-indexeddb、桩 chrome.storage、每个用例前清库。
     // 见 `src/tests/setup.ts` 的说明（import 顺序是这里的关键）。
     setupFiles: [r('src/tests/setup.ts')],

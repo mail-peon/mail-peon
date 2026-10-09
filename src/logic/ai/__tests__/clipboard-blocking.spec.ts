@@ -59,8 +59,13 @@ vi.mock('~/logic/store/settings', () => ({
    *   （见 `pipeline.ts` 的 `process`）。不桩它的话，它返回 `undefined`，
    *   报错是 `Cannot read properties of undefined (reading 'minimalMode')` ——
    *   那个错误指向 `minimalMode`，看不出真正原因是「settings 没被桩住」。
+   *
+   * ⚠ `autoCopyCode` 必须给上：极简模式下它**不再被强制为 true**
+   *   （见 `processMinimal`）。漏了这个字段时它是 `undefined` ⇒ 关 ⇒
+   *   「正常路径：复制成功」那条会以 `copyStatus = 'none'` 失败，
+   *   而失败信息指向 copyStatus，看不出是桩不完整。
    */
-  readAppSettings: vi.fn(async () => ({ minimalMode: true, blockedEnabled: false })),
+  readAppSettings: vi.fn(async () => ({ minimalMode: true, autoCopyCode: true, blockedEnabled: false })),
   patchAiSettings: vi.fn(),
   patchAppSettings: vi.fn(),
 }))
@@ -186,5 +191,33 @@ describe('剪贴板不阻塞入库', () => {
     const stored = mocks.upsertMail.mock.calls[0]?.[0] as unknown as Mail
     expect(stored.copyStatus).toBe('failed')
     expect(stored.code).toBe('34949')
+  })
+
+  /*
+   * ⚠ 极简模式下的 `autoCopyCode` 是一个**普通开关**（产品决定，曾经恒为 true）。
+   *   关掉之后：不写剪贴板、`copyStatus` 保持 `none`、toast 给「点击复制」——
+   *   但**验证码照旧提取并入库**，这一点是本条的重点。
+   */
+  it('极简模式关掉自动复制：不碰剪贴板，但仍然入库，toast 走 manual', async () => {
+    const { readAppSettings } = await import('~/logic/store/settings')
+    vi.mocked(readAppSettings).mockResolvedValueOnce({
+      minimalMode: true,
+      autoCopyCode: false,
+      blockedEnabled: false,
+    } as never)
+
+    const pipeline = createMailPipeline({ notifier: notifier() })
+    const outcome = await pipeline.process(mail(), account())
+
+    expect(outcome).toBe('saved')
+    expect(mocks.copyToClipboard).not.toHaveBeenCalled()
+
+    const stored = mocks.upsertMail.mock.calls[0]?.[0] as unknown as Mail
+    expect(stored.code).toBe('34949')
+    expect(stored.copyStatus).toBe('none')
+
+    // toast 不是「复制失败」，而是「点击复制」（用户自己决定要不要复制）
+    expect(mocks.showToast).toHaveBeenCalledTimes(1)
+    expect((mocks.showToast.mock.calls[0]?.[0] as { status?: string })?.status).toBe('manual')
   })
 })

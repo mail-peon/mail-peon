@@ -516,6 +516,14 @@ onMessage('accounts:list', async () => {
 onMessage('accounts:upsert', async ({ data }) => {
   await ensureStoreReady()
   await upsertAccount(data.account)
+  /*
+   * ⚠ 广播出去，否则「通用」页会一直显示旧的账号数。
+   *
+   *   这一页用 `v-show` 常驻（见 `Options.vue`），它 `onMounted` 里读的那次账号
+   *   是「用户还没添加账号」时读的；没有这条广播，用户去「账号」页新建一个再切回来，
+   *   看到的还是「账号 · 0 个」—— 真机症状就是「账号页明明有账号，通用页说没有」。
+   */
+  broadcastToExtension('data:changed', { reason: 'accounts' })
   return { ok: true as const, id: data.account.id }
 })
 
@@ -528,6 +536,7 @@ onMessage('accounts:delete', async ({ data }) => {
   await clearMailsByAccount(data.id)
   await deleteAccount(data.id)
   await refreshBadge()
+  broadcastToExtension('data:changed', { reason: 'accounts' })
   return { ok: true as const }
 })
 
@@ -616,6 +625,7 @@ onMessage('rules:upsert', async ({ data }) => {
   // ⚠ 规则改了必须失效缓存，否则要等下一次 SW 重启才生效 ——
   //   用户会看到「改完规则、发封测试邮件，没反应」
   ruleCache.invalidate()
+  broadcastToExtension('data:changed', { reason: 'rules' })
   return { ok: true as const, id: data.rule.id }
 })
 
@@ -623,6 +633,7 @@ onMessage('rules:delete', async ({ data }) => {
   await ensureStoreReady()
   await deleteRule(data.id)
   ruleCache.invalidate()
+  broadcastToExtension('data:changed', { reason: 'rules' })
   return { ok: true as const }
 })
 
@@ -630,6 +641,7 @@ onMessage('rules:move', async ({ data }) => {
   await ensureStoreReady()
   const rules = await moveRule(data.id, data.direction)
   ruleCache.invalidate()
+  broadcastToExtension('data:changed', { reason: 'rules' })
   return { rules }
 })
 
@@ -661,12 +673,27 @@ onMessage('settings:set-app', async ({ data }) => {
       await clearBadge()
   }
 
+  /*
+   * ⚠ 广播**新的设置**，让其它还开着的扩展页面立刻跟上。
+   *
+   *   同一页面里的其它组件不需要它（`logic/bridge.ts` 里设置是模块级共享状态，
+   *   拨开关时整页一起重渲染）；这一条服务的是**别的页面** ——
+   *   开着 Popup / Sidepanel 时改模式，它们不该等到下次打开才知道。
+   *
+   * ⚠ 送达是**尽力而为**：webext-bridge 里三个界面共用 `popup` 端点名、
+   *   每个名字只留最后一个连接（见 `logic/bridge.ts` 文件头）。所以丢一次是正常的，
+   *   各界面在挂载时都会主动 `settings:get` 拉一次全量。
+   */
+  broadcastToExtension('settings:changed', { app })
+
   return { app }
 })
 
 onMessage('settings:set-ai', async ({ data }) => {
   await ensureStoreReady()
-  return { ai: await patchAiSettings(data.patch) }
+  const ai = await patchAiSettings(data.patch)
+  broadcastToExtension('settings:changed', { ai })
+  return { ai }
 })
 
 onMessage('settings:usage', async () => {

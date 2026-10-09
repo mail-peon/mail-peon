@@ -118,9 +118,31 @@ function withTimeout<T>(promise: Promise<T>, ms: number, channel: string): Promi
 // 设置
 // ---------------------------------------------------------------------------
 
+/**
+ * 设置状态**放在模块作用域**，所有 `useSettings()` 调用共用同一份。
+ *
+ * ⚠⚠ 这不是省内存，是修一个真机问题：「切了模式要刷新页面才生效」。
+ *
+ *   原来这两个 ref 是在 `useSettings()` **里面**创建的 —— 也就是
+ *   **每个组件各拿一份**。于是「通用」页里拨一下模式开关：
+ *
+ *     - `GeneralPage` 自己那份 `app` 被乐观更新了（它看起来立刻生效了）；
+ *     - 但 `Options.vue` 那份没变 ⇒ 左侧导航里该隐藏的「提示词 / 屏蔽列表」
+ *       还在、该出现的也不出现；`RulesPage` / `BlockedPage` 同理；
+ *     - 停在隐藏页面上的路由校正（`Options.vue` 的 `watch(minimalMode)`）也不会触发。
+ *
+ *   刷新页面才生效，是因为刷新会重新 `reload()` 一遍 —— 也就是「每份副本各拉一次」。
+ *
+ *   同一份状态之后，同一个页面里的所有组件天然是同步的（Vue 的响应式负责重渲染），
+ *   跨页面（Popup / Sidepanel / 另一个设置页）由 background 的
+ *   `settings:changed` 广播补齐 —— 见 `installBridgeListener()`。
+ */
+const settingsApp = ref<AppSettings | null>(null)
+const settingsAi = ref<AiSettings | null>(null)
+
 export function useSettings() {
-  const app = ref<AppSettings | null>(null)
-  const ai = ref<AiSettings | null>(null)
+  const app = settingsApp
+  const ai = settingsAi
 
   async function reload() {
     const result = await send<{ app: AppSettings, ai: AiSettings }>('settings:get', undefined, {
@@ -211,6 +233,20 @@ function installBridgeListener(): void {
   onMessage('data:changed', () => {
     for (const listener of dataChangeListeners)
       listener()
+  })
+  /*
+   * ⚠ 设置改动走**单独的通道**，而不是复用 `data:changed`：
+   *
+   *   - 设置是**共享响应式状态**（上面的 `settingsApp` / `settingsAi`），
+   *     收到广播直接写进 ref 就够了，不需要订阅者各自去拉一次；
+   *   - 而 `data:changed` 的订阅者做的是「重读账号 / 用量」这类**网络往返**，
+   *     把设置变化也塞进去等于每次拨开关都多打几个 message。
+   */
+  onMessage('settings:changed', ({ data }) => {
+    if (data?.app)
+      settingsApp.value = data.app
+    if (data?.ai)
+      settingsAi.value = data.ai
   })
   onMessage('sync:done', ({ data }) => {
     for (const listener of syncDoneListeners)

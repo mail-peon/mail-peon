@@ -3,6 +3,9 @@ trustPolicy: no-downgrade
 shellEmulator: true
 # pnpm 10+ 默认不执行依赖的构建脚本，需要在这里显式放行。
 allowBuilds:
+  # ant-design-vue → @simonwep/pickr → core-js：它的 postinstall 只打印赞助信息，
+  # 不产出任何构建结果，显式标记为「有意不执行」，免得 pnpm 每次都报 ERR_PNPM_IGNORED_BUILDS
+  core-js: false
   # Vite / Vitest 依赖它的 postinstall 落位平台原生二进制
   esbuild: true
   simple-git-hooks: true

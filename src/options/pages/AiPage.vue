@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import type { AiSettings } from '~/logic/types'
+import type { UiStatusText } from '~/logic/ui-status'
 import { computed, ref, watch } from 'vue'
 import SecretInput from '~/components/SecretInput.vue'
 import { send, useSettings } from '~/logic/bridge'
@@ -14,6 +15,15 @@ import { t } from '~/logic/strings'
  * ⚠ 表单是「受控副本 + 保存」而不是「输入即保存」：
  *   API Key 输入到一半就被写进库的话，一轮心跳正好跑起来时它会拿着半个 key 去
  *   调 AI，然后失败并把邮件标成降级。这些副作用用户完全看不到原因。
+ *
+ * ## 「测试连通」的结果是一枚**状态徽标**（卡片右上角），不是一条横幅
+ *
+ * 与「账号」页同一套（`components/StatusBadge.vue` + `logic/ui-status.ts`）：
+ * 圆点给颜色、状态词给结论、悬停给详情 ——
+ * 例如 `DeepSeek · deepseek-flash 连接成功（1735 ms）`。
+ *
+ * ⚠ 改配置会让上一次结果**失效**（见 `watch(draft)`）：测通之后又改了 Key，
+ *   那枚绿点说的是**旧值**，留着就是误导。
  */
 
 const props = defineProps<{ settings: AiSettings | null }>()
@@ -32,10 +42,48 @@ interface PlatformOption {
 const platforms = ref<PlatformOption[]>([])
 const draft = ref<AiSettings | null>(null)
 const testing = ref(false)
-const testResult = ref<{ ok: boolean, text: string } | null>(null)
+const testResult = ref<{ ok: boolean, text: string, latencyMs?: number } | null>(null)
 const saved = ref('')
 
 const current = computed(() => platforms.value.find(item => item.value === draft.value?.platform) ?? null)
+
+/** 平台下拉的选项 */
+const platformOptions = computed(() =>
+  platforms.value.map(item => ({ value: item.value, label: item.label })),
+)
+
+/**
+ * 「这次测的是哪一份配置」——平台 · 模型。
+ *
+ * ⚠ 用它拼 tooltip 的详情，格式就是用户要的那种：
+ *   `DeepSeek · deepseek-flash 连接成功（1735 ms）`。
+ *   模型留空时用平台的默认模型（那才是实际会用的值）。
+ */
+const testedLabel = computed(() => {
+  const platform = current.value?.label ?? draft.value?.platform ?? ''
+  const model = draft.value?.model || current.value?.defaultModel || ''
+  return [platform, model].filter(Boolean).join(' · ')
+})
+
+/** 卡片右上角那枚状态徽标 */
+const aiStatus = computed<UiStatusText>(() => {
+  if (testing.value)
+    return { status: 'warning', label: t('ai.testing'), detail: `${testedLabel.value} ${t('ai.testing')}` }
+
+  const result = testResult.value
+  if (!result)
+    return { status: 'default', label: t('ai.statusUntested'), detail: `${testedLabel.value} ${t('ai.untestedHint')}` }
+
+  if (result.ok) {
+    return {
+      status: 'success',
+      label: t('ai.testOk'),
+      detail: `${testedLabel.value} ${t('ai.testOk')}（${result.latencyMs ?? 0} ms）`,
+    }
+  }
+
+  return { status: 'error', label: t('ai.statusFail'), detail: `${testedLabel.value}：${result.text}` }
+})
 
 // 平台清单只拉一次
 void send<{ platforms: PlatformOption[] }>('ai:platforms', undefined, { platforms: [] }).then((result) => {
@@ -73,6 +121,17 @@ watch(
   { immediate: true, deep: true },
 )
 
+/**
+ * 改任何一项配置 → 上一次的测试结果作废。
+ *
+ * ⚠ 只在**已有结果**时清（`if (!testResult.value) return`），
+ *   否则这个 watcher 会在每次输入时都写一次 ref（多一次无谓的重渲染）。
+ */
+watch(draft, () => {
+  if (testResult.value)
+    testResult.value = null
+}, { deep: true })
+
 let savedTimer: ReturnType<typeof setTimeout> | null = null
 
 async function onSave() {
@@ -101,7 +160,7 @@ async function onTest() {
       { ok: false, error: '请求失败' },
     )
     testResult.value = result.ok
-      ? { ok: true, text: `${result.detail ?? t('ai.testOk')}（${result.latencyMs ?? 0} ms）` }
+      ? { ok: true, text: result.detail ?? t('ai.testOk'), latencyMs: result.latencyMs }
       : { ok: false, text: result.error ?? '测试失败' }
   }
   finally {
@@ -110,119 +169,122 @@ async function onTest() {
 }
 
 /** 切平台时把 baseUrl / model 清空 —— 它们此刻指的是上一家的地址 */
-function onPlatformChange(value: string) {
+function onPlatformChange(value: unknown) {
   if (!draft.value)
     return
-  draft.value.platform = value
+  draft.value.platform = String(value)
   draft.value.baseUrl = ''
   draft.value.model = ''
   testResult.value = null
+}
+
+/**
+ * 输出语言（只有两个取值）。
+ *
+ * ⚠ 参数是 `unknown`：`a-radio-group` 的 `update:value` 载荷在 antd 的类型里是
+ *   `any`（同一组还能装字符串 / 数字），这里自己收窄到那两个合法值 ——
+ *   顺手把「将来多一个选项」变成一个需要显式处理的分支。
+ */
+function onOutputLanguageChange(value: unknown) {
+  if (!draft.value)
+    return
+  draft.value.outputLanguage = value === 'auto-email' ? 'auto-email' : 'auto-browser'
 }
 </script>
 
 <template>
   <section class="page">
-    <div v-if="!draft" class="mp-card">
-      {{ t('common.loading') }}
-    </div>
+    <a-card v-if="!draft" size="small">
+      <a-spin size="small" />
+    </a-card>
 
     <template v-else>
-      <div class="mp-card">
-        <div class="form">
-          <label class="mp-field">
-            <span class="mp-field-label">{{ t('ai.platform') }}</span>
-            <select
-              class="mp-select"
-              :value="draft.platform"
-              @change="onPlatformChange(($event.target as HTMLSelectElement).value)"
-            >
-              <option v-for="item in platforms" :key="item.value" :value="item.value">
-                {{ item.label }}
-              </option>
-            </select>
-            <span v-if="current?.hint" class="mp-hint">{{ current.hint }}</span>
-            <span v-if="current && !current.nativeJson" class="mp-hint">
-              该平台不支持原生 JSON 输出，会在提示词里明确要求返回 JSON，并由 zod 校验。
-            </span>
-          </label>
+      <a-card size="small" :title="t('ai.cardTitle')">
+        <!-- 状态徽标放卡片右上角，与「账号」页一致（颜色 + 状态词 + 悬停详情） -->
+        <template #extra>
+          <StatusBadge v-bind="aiStatus" />
+        </template>
 
-          <label class="mp-field">
-            <span class="mp-field-label">{{ t('ai.baseUrl') }}</span>
-            <input
-              v-model="draft.baseUrl"
-              class="mp-input"
+        <a-form layout="vertical" class="form">
+          <a-form-item
+            :label="t('ai.platform')"
+            :help="current?.hint"
+          >
+            <a-select
+              class="control"
+              :value="draft.platform"
+              :options="platformOptions"
+              @update:value="onPlatformChange"
+            />
+            <p v-if="current && !current.nativeJson" class="mp-hint">
+              该平台不支持原生 JSON 输出，会在提示词里明确要求返回 JSON，并由 zod 校验。
+            </p>
+          </a-form-item>
+
+          <a-form-item :label="t('ai.baseUrl')">
+            <a-input
+              v-model:value="draft.baseUrl"
               :placeholder="current?.defaultBaseUrl ? t('ai.baseUrlPlaceholder', { url: current.defaultBaseUrl }) : 'https://…'"
               spellcheck="false"
-            >
-          </label>
+            />
+          </a-form-item>
 
-          <label class="mp-field">
-            <span class="mp-field-label">{{ t('ai.apiKey') }}</span>
+          <a-form-item :label="t('ai.apiKey')" help="Key 只存在本机 IndexedDB，不会上传到任何服务器（除了你配置的 AI 平台本身）。">
             <SecretInput v-model="draft.apiKey" placeholder="sk-…" />
-            <span class="mp-hint">Key 只存在本机 IndexedDB，不会上传到任何服务器（除了你配置的 AI 平台本身）。</span>
-          </label>
+          </a-form-item>
 
-          <label class="mp-field">
-            <span class="mp-field-label">{{ t('ai.model') }}</span>
-            <input
-              v-model="draft.model"
-              class="mp-input"
+          <a-form-item :label="t('ai.model')">
+            <a-input
+              v-model:value="draft.model"
               :placeholder="current?.defaultModel ? t('ai.modelPlaceholder', { model: current.defaultModel }) : 'gpt-4o-mini'"
               spellcheck="false"
+            />
+          </a-form-item>
+
+          <a-form-item>
+            <a-checkbox v-model:checked="draft.thinking">
+              {{ t('ai.thinking') }}
+            </a-checkbox>
+            <p class="mp-hint indent">
+              {{ t('ai.thinkingHint') }}
+            </p>
+          </a-form-item>
+
+          <a-divider class="divider" />
+
+          <a-form-item :label="t('ai.outputLanguage')" help="只影响摘要与判定文字，不会翻译邮件原文。">
+            <a-radio-group
+              class="vertical"
+              :value="draft.outputLanguage"
+              @update:value="onOutputLanguageChange"
             >
-          </label>
+              <a-radio value="auto-browser">
+                {{ t('ai.outputLanguageBrowser') }}
+              </a-radio>
+              <a-radio value="auto-email">
+                {{ t('ai.outputLanguageEmail') }}
+              </a-radio>
+            </a-radio-group>
+          </a-form-item>
+        </a-form>
+      </a-card>
 
-          <label class="mp-checkbox">
-            <input v-model="draft.thinking" type="checkbox">
-            <span>{{ t('ai.thinking') }}</span>
-          </label>
-          <p class="mp-hint indent">
-            {{ t('ai.thinkingHint') }}
-          </p>
-
-          <hr class="mp-divider">
-
-          <div class="mp-field">
-            <span class="mp-field-label">{{ t('ai.outputLanguage') }}</span>
-            <div class="mp-radio-group">
-              <label class="mp-radio">
-                <input
-                  type="radio"
-                  :checked="draft.outputLanguage !== 'auto-email'"
-                  @change="draft.outputLanguage = 'auto-browser'"
-                >
-                <span>{{ t('ai.outputLanguageBrowser') }}</span>
-              </label>
-              <label class="mp-radio">
-                <input
-                  type="radio"
-                  :checked="draft.outputLanguage === 'auto-email'"
-                  @change="draft.outputLanguage = 'auto-email'"
-                >
-                <span>{{ t('ai.outputLanguageEmail') }}</span>
-              </label>
-            </div>
-            <span class="mp-hint">
-              只影响摘要与判定文字，不会翻译邮件原文。
-            </span>
-          </div>
-        </div>
-
-        <div class="actions">
-          <button class="mp-btn mp-btn-primary" type="button" :disabled="!isDirty" @click="onSave">
+      <!--
+        「测试连通」的结果不在这里铺一条横幅，而是**这张卡片右上角的一枚状态徽标**
+        （颜色 + 状态词 + 悬停详情）—— 与「账号」页同一套呈现方式。
+      -->
+      <a-card size="small">
+        <a-space :size="8" wrap>
+          <a-button type="primary" :disabled="!isDirty" @click="onSave">
             {{ t('common.save') }}
-          </button>
-          <button class="mp-btn" type="button" :disabled="testing" @click="onTest">
+          </a-button>
+          <a-button :loading="testing" @click="onTest">
             {{ testing ? t('ai.testing') : t('ai.test') }}
-          </button>
+          </a-button>
           <span v-if="saved" class="mp-ok">{{ saved }}</span>
           <span v-if="isDirty" class="mp-hint">有未保存的改动（测试用的是当前填写的值）</span>
-        </div>
-
-        <p v-if="testResult" class="test-result" :class="testResult.ok ? 'ok' : 'fail'">
-          {{ testResult.ok ? '✓' : '✗' }} {{ testResult.text }}
-        </p>
-      </div>
+        </a-space>
+      </a-card>
     </template>
   </section>
 </template>
@@ -236,29 +298,30 @@ function onPlatformChange(value: string) {
 }
 
 .form {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
+  max-width: 560px;
+}
+
+/* 平台下拉不要撑满整行（撑满看起来像文本框） */
+.control {
+  max-width: 260px;
 }
 
 .indent {
-  margin: -4px 0 0;
+  margin: 4px 0 0;
 }
 
-.actions {
+.divider {
+  margin: 14px 0;
+}
+
+.vertical :deep(.ant-radio-wrapper) {
   display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 8px;
-  margin-top: 12px;
+  margin-bottom: 6px;
 }
 
-.test-result {
-  margin: 8px 0 0;
-  font-size: 11px;
-  line-height: 1.5;
+/* 状态徽标不要被卡片头部压缩（「未测试」这类长一点的状态词会换成两行） */
+.page :deep(.ant-card-extra) {
+  flex: 0 0 auto;
+  margin-inline-start: 8px;
 }
-
-.test-result.ok { color: var(--mp-success); }
-.test-result.fail { color: var(--mp-danger); }
 </style>

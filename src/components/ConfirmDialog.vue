@@ -2,7 +2,7 @@
 import { nextTick, onUnmounted, ref, watch } from 'vue'
 
 /**
- * 确认弹窗。
+ * 确认弹窗（基于 antd 的 `Modal`）。
  *
  * ## 为什么不用原生 `confirm()`
  *
@@ -22,8 +22,8 @@ import { nextTick, onUnmounted, ref, watch } from 'vue'
  *
  * - 按 `Escape` = 取消（`cancel` 事件）；
  * - 点遮罩 = 取消（危险操作不该因为「点偏了」而执行）；
- * - 点弹窗本体 = 什么都不做（`@click.stop`）；
- * - `danger` 为真时确认按钮是红色（`mp-btn-danger`）。
+ * - 点弹窗本体 = 什么都不做；
+ * - `danger` 为真时确认按钮是红色（antd 的 `danger`）。
  *
  * ⚠ 弹窗本身**不做**任何业务判断 —— 它只回答「用户点了哪个按钮」。
  *   把「该不该确认」留在调用方：这个组件不该知道什么是回收站。
@@ -54,11 +54,26 @@ const emit = defineEmits<{
   cancel: []
 }>()
 
-/** 取消按钮 —— 打开时把焦点放上去（见模板里的说明） */
-const cancelRef = ref<HTMLButtonElement | null>(null)
+/**
+ * 取消按钮 —— 打开时把焦点放上去（见下面的说明）。
+ *
+ * ⚠ 类型是「有 `$el` 的东西」而不是 `HTMLButtonElement`：
+ *   它绑在 `<a-button>` 这个**组件**上，拿到的就是组件实例，
+ *   真正的 `<button>` 在 `$el` 里。
+ */
+const cancelRef = ref<{ $el?: HTMLElement } | null>(null)
+
+function focusCancel() {
+  cancelRef.value?.$el?.focus()
+}
 
 /**
  * `Escape` 键处理。
+ *
+ * ⚠ 只用**我们自己**这一条监听（`<a-modal :keyboard="false">`），
+ *   不能两套都留：antd 的 Dialog 也在 wrap 上听 Esc，两边都开着的话按一次
+ *   Esc 会发出**两次** `cancel` —— 调用方拿到两次「取消」，
+ *   在一次取消要触发清理的场景里就是重复执行。
  *
  * ⚠ 只在 `open` 为真时挂监听，关闭时立刻摘掉 ——
  *   常驻一个全局 keydown 监听会让「按 Esc」在弹窗之外也触发取消逻辑，
@@ -74,92 +89,109 @@ function onKeydown(event: KeyboardEvent) {
   }
 }
 
+/**
+ * ⚠⚠ 焦点守卫：这是本组件最容易悄悄坏掉的地方。
+ *
+ * antd 的 Dialog 在**显示变化**时会主动 focus 自己的内容容器
+ * （`.ant-modal`，`tabindex="-1"`，见 `vc-dialog/Dialog.js` 的
+ * `onDialogVisibleChanged`）—— 那个时机在进入动画的末尾，**晚于**我们
+ * `nextTick` 里的聚焦。于是「焦点在取消上」这条保证会在弹窗出现约 0.2 秒后
+ * 被 antd 悄悄拿走。
+ *
+ * 而这条保证正是这个组件的存在意义：危险操作的默认焦点**必须**在「不删」那一侧，
+ * 否则用户习惯性敲回车就会把邮件删掉（文件头已写明）。
+ *
+ * 所以：只要焦点落在**弹窗容器自身**上，就把它拉回取消按钮。
+ * 弹窗里的其它元素（按钮等）不动 —— 用户 Tab 过去的焦点是有效的，不该被抢。
+ */
+function onFocusIn(event: FocusEvent) {
+  const target = event.target as HTMLElement | null
+  if (target?.classList.contains('ant-modal'))
+    focusCancel()
+}
+
 watch(() => props.open, async (open) => {
   if (!open) {
     globalThis.removeEventListener('keydown', onKeydown, true)
+    document.removeEventListener('focusin', onFocusIn)
     return
   }
 
   globalThis.addEventListener('keydown', onKeydown, true)
+  document.addEventListener('focusin', onFocusIn)
   // 等 DOM 真的渲染出来再聚焦（`v-if` 之下这一帧按钮还不存在）
   await nextTick()
-  cancelRef.value?.focus()
+  focusCancel()
 }, { immediate: true })
 
 // 组件被卸载时（例如在回收站里操作后列表重渲染）也要摘掉
 onUnmounted(() => {
   globalThis.removeEventListener('keydown', onKeydown, true)
+  document.removeEventListener('focusin', onFocusIn)
 })
 </script>
 
 <template>
   <!--
-    ⚠ 用 `v-if` 而不是 `v-show` + `visibility`：
-       隐藏的弹窗不该留在 DOM 里参与 Tab 顺序，否则用户按 Tab 会「跳进一个看不见的弹窗」。
+    ⚠ 用 `v-if` 而不是把 `open` 交给 antd 自己藏：
+       `getContainer: false` 之下 antd 的 Dialog 是**常驻 DOM** 的，
+       关闭只是给 wrap 加 `display: none`。虽然 `display: none` 的元素本来也
+       进不了 Tab 顺序，但我们不依赖那个隐式规则 —— 关闭时整棵子树不存在，
+       「看不见的弹窗」这件事在结构上就不可能发生。
   -->
-  <div v-if="open" class="overlay" @click="emit('cancel')">
-    <div
-      class="dialog mp-card"
-      role="alertdialog"
-      aria-modal="true"
-      :aria-label="title"
-      @click.stop
-    >
+  <a-modal
+    v-if="open"
+    class="dialog"
+    wrap-class-name="overlay"
+    :open="true"
+    :width="320"
+    :footer="null"
+    :closable="false"
+    :keyboard="false"
+    :get-container="false"
+    centered
+    @cancel="emit('cancel')"
+  >
+    <template #title>
       <p class="title">
         {{ title }}
       </p>
-      <p v-if="message" class="message">
-        {{ message }}
-      </p>
+    </template>
 
-      <div class="actions">
-        <!--
-          ⚠ 焦点**先给取消按钮**，不是确认按钮。
-            危险操作的默认焦点必须在「不删」那一侧 —— 否则用户习惯性敲回车
-            就会把邮件删掉。这是「弹窗确认」相对「两步按钮」唯一可能更糟的地方，
-            所以在这里补上。
-        -->
-        <button ref="cancelRef" class="mp-btn" type="button" @click="emit('cancel')">
-          {{ cancelText }}
-        </button>
-        <button
-          class="mp-btn"
-          :class="danger ? 'mp-btn-danger' : 'mp-btn-primary'"
-          type="button"
-          @click="emit('confirm')"
-        >
-          {{ confirmText }}
-        </button>
-      </div>
+    <p v-if="message" class="message">
+      {{ message }}
+    </p>
+
+    <div class="actions">
+      <!--
+        ⚠ 焦点**先给取消按钮**，不是确认按钮。
+          危险操作的默认焦点必须在「不删」那一侧 —— 否则用户习惯性敲回车
+          就会把邮件删掉。这是「弹窗确认」相对「两步按钮」唯一可能更糟的地方，
+          所以在这里补上（antd 会在动画结束时抢焦点，脚本里的 `onFocusIn` 负责拉回来）。
+      -->
+      <a-button ref="cancelRef" @click="emit('cancel')">
+        {{ cancelText }}
+      </a-button>
+      <a-button type="primary" :danger="danger" @click="emit('confirm')">
+        {{ confirmText }}
+      </a-button>
     </div>
-  </div>
+  </a-modal>
 </template>
 
 <style scoped>
-.overlay {
-  position: fixed;
-  inset: 0;
-  z-index: 1000;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  /*
-   * 半透明遮罩：同时起两个作用 —— 视觉上聚焦到弹窗，
-   * 以及**截获点击**（点到外面 = 取消，不会误触到下面的列表）。
-   */
-  background: rgba(0, 0, 0, 0.45);
-  padding: 20px;
-}
-
+/*
+ * `.dialog` / `.overlay` 落在 antd 自己的元素上（分别是 `.ant-modal`
+ * 与 `.ant-modal-wrap`），所以这里只写**我们额外需要**的那几条；
+ * 遮罩的颜色、居中的布局、圆角全部由 antd 负责（见 `shared.css` 的全局收紧）。
+ */
 .dialog {
-  width: 100%;
-  max-width: 320px;
-  /* 覆盖 `.mp-card` 的默认间距：弹窗内部要自己控制节奏 */
-  margin: 0;
+  /* 覆盖 antd 的默认宽度上限：弹窗本体宽度由 `:width` 给，这里只保证不撑破小屏 */
+  max-width: calc(100vw - 24px);
 }
 
 .title {
-  margin: 0 0 6px;
+  margin: 0;
   font-size: 13px;
   font-weight: 600;
   color: var(--mp-text);
@@ -168,7 +200,7 @@ onUnmounted(() => {
 .message {
   margin: 0;
   font-size: 12px;
-  line-height: 1.5;
+  line-height: 1.6;
   color: var(--mp-text-dim);
   /* 长文案（例如带邮件标题）要能换行，不能撑破弹窗 */
   overflow-wrap: anywhere;
@@ -178,6 +210,6 @@ onUnmounted(() => {
   display: flex;
   justify-content: flex-end;
   gap: 8px;
-  margin-top: 14px;
+  margin-top: 16px;
 }
 </style>

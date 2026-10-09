@@ -106,19 +106,19 @@ export function pickRule(mail: Pick<Mail, 'from'>, rules: PromptRule[]): PromptR
  *
  * `autoCopy = settings.autoCopyCode || rule.alwaysCopyCode`
  *
- * ⚠ 极简模式下这里恒为 `true`（设计文档 Q18：「极简模式下 autoCopyCode 强制为 true」）。
- *   把这条判定收在这里而不是让调用方各写一遍：极简模式的整个价值就是自动复制，
- *   漏掉这条特判的地方会表现为「极简模式下验证码不自动复制」—— 功能等于废了。
+ * ⚠ 极简模式**不再恒为 true**（产品决定）：极简模式里的「验证码自动复制」也是一个
+ *   普通开关。关掉之后极简模式**照旧提取并入库**验证码，只是不写剪贴板，
+ *   toast 上给「点击复制」按钮 —— 与完整模式关掉时的行为完全一致。
+ *
+ * ⚠ 判据里**不再看 `minimalMode`**：这里只回答「该不该写剪贴板」，
+ *   而模式决定的是「走哪条处理链」（见 `pipeline.ts` 的 `process`）。
+ *   两件事混在一起时，极简模式就没法单独关掉自动复制了。
  */
 export function shouldAutoCopyCode(
-  app: Pick<AppSettings, 'minimalMode' | 'autoCopyCode'>,
+  app: Pick<AppSettings, 'autoCopyCode'>,
   rule: Pick<PromptRule, 'alwaysCopyCode'> | null,
 ): boolean {
-  if (app.minimalMode)
-    return true
-  if (app.autoCopyCode)
-    return true
-  return rule?.alwaysCopyCode === true
+  return app.autoCopyCode || rule?.alwaysCopyCode === true
 }
 
 /**

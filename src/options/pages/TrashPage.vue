@@ -4,6 +4,7 @@ import { computed, ref } from 'vue'
 import { formatSender } from '~/adapters/mail/parser'
 import ConfirmDialog from '~/components/ConfirmDialog.vue'
 import { useSettings, useTrash } from '~/logic/bridge'
+import { useConfirmAction } from '~/logic/confirm-action'
 import { formatTimestamp } from '~/logic/notification/format-time'
 import { t } from '~/logic/strings'
 
@@ -25,6 +26,9 @@ import { t } from '~/logic/strings'
  * 「失效验证码自动删除」默认开着，而它会把邮件**移进这里**。如果极简模式下
  * 藏掉这一页，用户就找不到那些自动消失的验证码了 —— 那正是最需要回收站的时候。
  * 这与「提示词 / 屏蔽列表」不同：那两页是**完整模式的功能**，这一页是**数据出口**。
+ *
+ * 列表用 antd 的 `a-table`（原来是一张手写的 `<table>`）：表头吸顶、单元格
+ * 溢出省略、横向滚动都是它自带的，不用再维护一套 `.table th/td` 的样式。
  */
 
 const { app, setApp } = useSettings()
@@ -37,99 +41,58 @@ const notice = ref('')
 const busy = ref(false)
 
 /**
+ * 表格列定义。
+ *
+ * ⚠ `width` 只给「窄」的那几列，发件人与主题交给表格自己分配剩余宽度 ——
+ *   全给死宽度的话，窄窗口下横向滚动条会一直挂着。
+ */
+const columns = [
+  { title: t('trash.colFrom'), dataIndex: 'from', key: 'from', ellipsis: true },
+  { title: t('trash.colSubject'), dataIndex: 'subject', key: 'subject', ellipsis: true },
+  { title: t('trash.colCode'), key: 'code', width: 96 },
+  { title: t('trash.colTrashedAt'), key: 'trashedAt', width: 140 },
+  { title: t('trash.colActions'), key: 'actions', width: 200 },
+]
+
+/**
  * 待确认的动作。
  *
  * ⚠ 三处删除（单条彻底删除、单条移入回收站、清空回收站）**都**要确认，
- *   但它们的文案与后果不同，所以这里存「用户想做什么」而不是一个布尔量 ——
- *   一个 `confirming: boolean` 表达不了「确认哪一条」。
+ *   但它们的文案与后果不同，所以 `useConfirmAction` 存的是「用户想做什么」
+ *   而不是一个布尔量 —— 一个 `confirming: boolean` 表达不了「确认哪一条」。
  *
- * ⚠ 弹窗的确认按钮回调里**不能再 await 弹窗**：它是纯 UI，
- *   只回答「点了哪个按钮」。真正的动作在 `runPending()` 里做。
+ * ⚠ 必须**解构**返回值（理由见 `confirm-action.ts`）。
  */
-type PendingAction
-  = | { kind: 'delete-forever', mail: Mail }
-    | { kind: 'trash', mail: Mail }
-    | { kind: 'empty' }
+const { pending, ask: askConfirm, cancel: cancelConfirm, confirm: runPending } = useConfirmAction()
 
-const pending = ref<PendingAction | null>(null)
-
-/** 弹窗文案与按钮文案随动作变化 */
-const dialog = computed(() => {
-  const action = pending.value
-  if (!action)
-    return { title: '', message: '', confirmText: '' }
-
-  if (action.kind === 'empty') {
-    const count = mails.value.length
-    return {
-      title: t('trash.confirmEmptyTitle'),
-      message: t('trash.confirmEmptyMessage', { n: count }),
-      confirmText: t('trash.emptyAction'),
-    }
-  }
-
-  const subject = action.mail.subject || t('common.noSubject')
-  if (action.kind === 'delete-forever') {
-    return {
-      title: t('trash.confirmDeleteTitle'),
-      message: t('trash.confirmDeleteMessage', { subject }),
-      confirmText: t('trash.deleteForever'),
-    }
-  }
-
-  return {
-    title: t('trash.confirmTrashTitle'),
-    message: t('trash.confirmTrashMessage', { subject }),
-    confirmText: t('mail.trash'),
-  }
-})
-
-/** 用户点了确认 —— 执行那个动作 */
-async function runPending() {
-  const action = pending.value
-  pending.value = null
-  if (!action)
-    return
-
+/** 用户点了确认 —— `useConfirmAction` 已经执行了那个动作，这里只负责收尾提示 */
+async function withBusy<T>(run: () => Promise<T>, done: (result: T) => string) {
   busy.value = true
   notice.value = ''
   try {
-    if (action.kind === 'empty') {
-      notice.value = t('trash.emptyDone', { n: await empty() })
-      return
-    }
-
-    if (action.kind === 'delete-forever') {
-      notice.value = (await deleteForever(action.mail)) ? t('trash.deleteDone') : t('trash.opFailed')
-      return
-    }
-
-    notice.value = (await trash(action.mail)) ? t('trash.trashDone') : t('trash.opFailed')
+    notice.value = done(await run())
   }
   finally {
     busy.value = false
   }
-}
-
-function cancelPending() {
-  pending.value = null
 }
 
 /** 恢复不需要确认：它是**非破坏性**的，而且一键就能撤销 */
 async function onRestore(mail: Mail) {
-  busy.value = true
-  notice.value = ''
-  try {
-    notice.value = (await restore(mail)) ? t('trash.restoreDone') : t('trash.opFailed')
-  }
-  finally {
-    busy.value = false
-  }
+  await withBusy(() => restore(mail), ok => (ok ? t('trash.restoreDone') : t('trash.opFailed')))
 }
 
 /** 单条彻底删除 —— 不可撤销，要确认 */
 function onDeleteForever(mail: Mail) {
-  pending.value = { kind: 'delete-forever', mail }
+  askConfirm({
+    title: t('trash.confirmDeleteTitle'),
+    message: t('trash.confirmDeleteMessage', { subject: mail.subject || t('common.noSubject') }),
+    confirmText: t('trash.deleteForever'),
+    run: () => withBusy(
+      () => deleteForever(mail),
+      ok => (ok ? t('trash.deleteDone') : t('trash.opFailed')),
+    ),
+  })
 }
 
 /**
@@ -140,7 +103,12 @@ function onDeleteForever(mail: Mail) {
  *   它与「彻底删除」的区别正是本页的核心语义，所以两个按钮都要有。
  */
 function onTrash(mail: Mail) {
-  pending.value = { kind: 'trash', mail }
+  askConfirm({
+    title: t('trash.confirmTrashTitle'),
+    message: t('trash.confirmTrashMessage', { subject: mail.subject || t('common.noSubject') }),
+    confirmText: t('mail.trash'),
+    run: () => withBusy(() => trash(mail), ok => (ok ? t('trash.trashDone') : t('trash.opFailed'))),
+  })
 }
 
 /** 清空回收站 —— 不可撤销的批量操作，要确认 */
@@ -149,7 +117,13 @@ function onEmpty() {
     notice.value = t('trash.emptyAlready')
     return
   }
-  pending.value = { kind: 'empty' }
+  const count = mails.value.length
+  askConfirm({
+    title: t('trash.confirmEmptyTitle'),
+    message: t('trash.confirmEmptyMessage', { n: count }),
+    confirmText: t('trash.emptyAction'),
+    run: () => withBusy(() => empty(), n => t('trash.emptyDone', { n })),
+  })
 }
 
 /**
@@ -176,108 +150,100 @@ function trashedAtOf(mail: Mail): string {
 
 <template>
   <section class="page">
-    <h2 class="mp-page-title">
-      {{ t('trash.title') }}
-    </h2>
-    <p class="mp-hint intro">
-      {{ t('trash.intro') }}
-    </p>
+    <div class="head">
+      <a-typography-title class="title" :level="4">
+        {{ t('trash.title') }}
+      </a-typography-title>
+      <p class="mp-hint intro">
+        {{ t('trash.intro') }}
+      </p>
+    </div>
 
     <!-- 自动删除开关：与回收站放同一页，因为它是「邮件为什么会自己到这里」的答案 -->
-    <div class="mp-card">
-      <label class="mp-checkbox">
-        <input
-          type="checkbox"
-          :checked="app?.autoDeleteExpiredCode ?? true"
-          @change="setApp({ autoDeleteExpiredCode: ($event.target as HTMLInputElement).checked })"
-        >
-        <span>{{ t('trash.autoDelete') }}</span>
-      </label>
+    <a-card size="small">
+      <a-checkbox
+        :checked="app?.autoDeleteExpiredCode ?? true"
+        @update:checked="(value: boolean) => setApp({ autoDeleteExpiredCode: value })"
+      >
+        {{ t('trash.autoDelete') }}
+      </a-checkbox>
       <p class="mp-hint indent">
         {{ t('trash.autoDeleteHint') }}
       </p>
-    </div>
+    </a-card>
 
-    <div class="mp-card toolbar">
-      <span class="count">
-        {{ mails.length }} 封
-      </span>
-      <span v-if="notice" class="notice">{{ notice }}</span>
-      <button
-        class="mp-btn mp-btn-danger"
-        type="button"
-        :disabled="busy || !hasMails"
-        @click="onEmpty"
+    <a-card size="small">
+      <div class="toolbar">
+        <span class="count">{{ mails.length }} 封</span>
+        <span v-if="notice" class="notice">{{ notice }}</span>
+        <a-button danger :disabled="busy || !hasMails" @click="onEmpty">
+          {{ t('trash.emptyAction') }}
+        </a-button>
+      </div>
+    </a-card>
+
+    <!--
+      `body-style` 把卡片内边距归零：里面装的是一张**通栏**表格（表格自己管单元格
+      内边距），留一圈卡片内边距会让表头与卡片边缘之间空出一条。
+      空态与加载态各自带内边距（见 `shared.css` 与 `.loading`），不依赖它。
+    -->
+    <a-card size="small" :body-style="{ padding: '0' }">
+      <a-spin v-if="loading" class="loading" size="small" />
+
+      <a-empty v-else-if="!hasMails">
+        <template #description>
+          <p class="empty-title">
+            {{ t('trash.emptyList') }}
+          </p>
+          <p class="mp-hint">
+            {{ t('trash.emptyListHint') }}
+          </p>
+        </template>
+      </a-empty>
+
+      <a-table
+        v-else
+        :columns="columns"
+        :data-source="mails"
+        :pagination="false"
+        :scroll="{ x: 720 }"
+        row-key="id"
+        size="small"
       >
-        {{ t('trash.emptyAction') }}
-      </button>
-    </div>
+        <template #bodyCell="{ column, record }">
+          <template v-if="column.key === 'from'">
+            <span :title="senderOf(record)">{{ senderOf(record) }}</span>
+          </template>
 
-    <p v-if="loading" class="mp-hint">
-      {{ t('trash.loading') }}
-    </p>
+          <template v-else-if="column.key === 'subject'">
+            <span :title="record.subject">{{ record.subject || t('common.noSubject') }}</span>
+          </template>
 
-    <div v-else-if="!hasMails" class="mp-card empty">
-      <p class="empty-title">
-        {{ t('trash.emptyList') }}
-      </p>
-      <p class="mp-hint">
-        {{ t('trash.emptyListHint') }}
-      </p>
-    </div>
+          <template v-else-if="column.key === 'code'">
+            <code v-if="record.code || record.ai?.code" class="code">{{ record.code ?? record.ai?.code }}</code>
+            <span v-else class="faint">—</span>
+          </template>
 
-    <div v-else class="mp-card table-wrap">
-      <table class="table">
-        <thead>
-          <tr>
-            <th>{{ t('trash.colFrom') }}</th>
-            <th>{{ t('trash.colSubject') }}</th>
-            <th class="narrow">
-              {{ t('trash.colCode') }}
-            </th>
-            <th class="narrow">
-              {{ t('trash.colTrashedAt') }}
-            </th>
-            <th class="actions-col">
-              {{ t('trash.colActions') }}
-            </th>
-          </tr>
-        </thead>
-        <tbody>
-          <!--
-            ⚠ `v-for` 与 `v-if` **不能写在同一元素上** —— Vue 会警告
-            （`vue/no-use-v-if-with-v-for`），而且谁先求值取决于编译顺序。
-            包一层 `<template>` 后意图毫无歧义。
-          -->
-          <tr v-for="mail in mails" :key="mail.id">
-            <td class="from" :title="senderOf(mail)">
-              {{ senderOf(mail) }}
-            </td>
-            <td class="subject" :title="mail.subject">
-              {{ mail.subject || t('common.noSubject') }}
-            </td>
-            <td class="narrow">
-              <code v-if="mail.code || mail.ai?.code" class="code">{{ mail.code ?? mail.ai?.code }}</code>
-              <span v-else class="faint">—</span>
-            </td>
-            <td class="narrow faint">
-              {{ trashedAtOf(mail) }}
-            </td>
-            <td class="actions-col">
-              <button class="mp-btn btn-mini" type="button" :disabled="busy" @click="onRestore(mail)">
+          <template v-else-if="column.key === 'trashedAt'">
+            <span class="faint">{{ trashedAtOf(record) }}</span>
+          </template>
+
+          <template v-else-if="column.key === 'actions'">
+            <a-space :size="6">
+              <a-button size="small" :disabled="busy" @click="onRestore(record)">
                 {{ t('trash.restore') }}
-              </button>
-              <button class="mp-btn btn-mini" type="button" :disabled="busy" @click="onTrash(mail)">
+              </a-button>
+              <a-button size="small" :disabled="busy" @click="onTrash(record)">
                 {{ t('mail.trash') }}
-              </button>
-              <button class="mp-btn mp-btn-danger btn-mini" type="button" :disabled="busy" @click="onDeleteForever(mail)">
+              </a-button>
+              <a-button size="small" danger :disabled="busy" @click="onDeleteForever(record)">
                 {{ t('trash.deleteForever') }}
-              </button>
-            </td>
-          </tr>
-        </tbody>
-      </table>
-    </div>
+              </a-button>
+            </a-space>
+          </template>
+        </template>
+      </a-table>
+    </a-card>
 
     <!--
       确认弹窗（**三处删除共用**一个实例）。
@@ -288,23 +254,42 @@ function trashedAtOf(mail: Mail): string {
     -->
     <ConfirmDialog
       :open="pending !== null"
-      :title="dialog.title"
-      :message="dialog.message"
-      :confirm-text="dialog.confirmText"
+      :title="pending?.title ?? ''"
+      :message="pending?.message ?? ''"
+      :confirm-text="pending?.confirmText ?? t('common.confirm')"
       danger
       @confirm="runPending"
-      @cancel="cancelPending"
+      @cancel="cancelConfirm"
     />
   </section>
 </template>
 
 <style scoped>
+.page {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  max-width: 900px;
+}
+
+.head {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+/* `a-typography-title` 默认带一大截上下外边距，这里只留标题本身的高度 */
+.title {
+  margin: 0;
+  font-size: 16px;
+}
+
 .intro {
-  margin-bottom: 12px;
+  margin: 0;
 }
 
 .indent {
-  margin-left: 22px;
+  margin: 6px 0 0 24px;
 }
 
 .toolbar {
@@ -328,9 +313,9 @@ function trashedAtOf(mail: Mail): string {
   color: var(--mp-text-dim);
 }
 
-.empty {
-  text-align: center;
-  padding: 24px;
+.loading {
+  display: block;
+  margin: 24px auto;
 }
 
 .empty-title {
@@ -339,72 +324,8 @@ function trashedAtOf(mail: Mail): string {
   color: var(--mp-text);
 }
 
-/*
- * 表格容器：窄窗口下横向滚动而不是挤压列宽。
- * `min-width: 0` 是父级 flex 里的必需项（见弹窗列表那处的说明）。
- */
-.table-wrap {
-  overflow-x: auto;
-  padding: 0;
-}
-
-.table {
-  width: 100%;
-  border-collapse: collapse;
-  font-size: 12px;
-}
-
-.table th,
-.table td {
-  text-align: left;
-  padding: 8px 10px;
-  border-bottom: 1px solid var(--mp-border);
-}
-
-.table th {
-  font-weight: 600;
-  color: var(--mp-text-dim);
-  /*
-   * 表头吸顶：回收站可能很长，滚动时不知道哪列是什么。
-   * `background` 必须给，否则吸顶的表头会透出下面的行。
-   */
-  position: sticky;
-  top: 0;
-  background: var(--mp-surface);
-}
-
-.table tbody tr:last-child td {
-  border-bottom: 0;
-}
-
-.table tbody tr:hover {
-  background: var(--mp-hover);
-}
-
-/* 发件人与主题都可能很长：省略号，完整值放 `title` */
-.from,
-.subject {
-  max-width: 220px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.narrow {
-  white-space: nowrap;
-}
-
-.actions-col {
-  width: 1%;
-  white-space: nowrap;
-}
-
-.actions-col .btn-mini + .btn-mini {
-  margin-left: 6px;
-}
-
 .code {
-  font-family: var(--mp-font-mono, monospace);
+  font-family: var(--mp-font-mono);
   font-size: 12px;
   letter-spacing: 0.5px;
 }

@@ -205,7 +205,7 @@ export function createMailPipeline(deps: MailPipelineDeps): MailPipeline {
   const limiter = createLimiter(AI_CONCURRENCY)
   const { notifier } = deps
 
-  async function processMinimal(mail: Mail): Promise<MailOutcome> {
+  async function processMinimal(mail: Mail, app: AppSettings): Promise<MailOutcome> {
     /*
      * 1. 预筛：不像有验证码的**直接丢弃**，连 AI 都不调。
      *
@@ -254,7 +254,11 @@ export function createMailPipeline(deps: MailPipelineDeps): MailPipeline {
     )
 
     /*
-     * 自动复制（极简模式恒为 true，见 `shouldAutoCopyCode`）。
+     * 自动复制（`autoCopyCode` 在极简模式里也是一个**普通开关**，不再是恒 true）。
+     *
+     * ⚠ 关掉时不是「什么都不做」：验证码照旧提取、照旧入库，只是不写剪贴板，
+     *   而 toast 给一个「点击复制」按钮（`status: 'manual'`）—— 与完整模式
+     *   关掉自动复制时的行为一致（见 `processFull` 里的同一段）。
      *
      * ⚠ 走 `copyWithTimeout` 而不是直接 `await notifier.copyToClipboard(code)`。
      *
@@ -268,7 +272,10 @@ export function createMailPipeline(deps: MailPipelineDeps): MailPipeline {
      *   剪贴板是锦上添花，**任何 notifier 实现都不该有能力阻塞入库**。
      *   把保证写在调用点上，将来换实现（offscreen document 等）也不会重犯。
      */
-    const copied = await copyWithTimeout(notifier, code)
+    const autoCopy = shouldAutoCopyCode(app, null)
+    const copied = autoCopy ? await copyWithTimeout(notifier, code) : false
+    const toastStatus: 'copied' | 'failed' | 'manual'
+      = autoCopy ? (copied ? 'copied' : 'failed') : 'manual'
 
     /*
      * 极简模式的记录是**瘦身**的（`design/minimal-mode.md § 3.2`）：正文根本不存。
@@ -294,7 +301,7 @@ export function createMailPipeline(deps: MailPipelineDeps): MailPipeline {
         validForSeconds,
         urgency: 'high',
       },
-      copyStatus: copied ? 'copied' : 'failed',
+      copyStatus: autoCopy ? (copied ? 'copied' : 'failed') : 'none',
     }
 
     // 极简模式写死 50 条（不暴露设置项）
@@ -319,7 +326,7 @@ export function createMailPipeline(deps: MailPipelineDeps): MailPipeline {
       mailId: minimalMail.id,
       from: toastCaption(minimalMail.from),
       code,
-      status: copied ? 'copied' : 'failed',
+      status: toastStatus,
     })
 
     notifier.notifyMailUpdated(minimalMail.id)
@@ -409,7 +416,7 @@ export function createMailPipeline(deps: MailPipelineDeps): MailPipeline {
     async process(mail, account, retention) {
       const app = await readAppSettings()
       if (app.minimalMode)
-        return processMinimal(mail)
+        return processMinimal(mail, app)
       return processFull(mail, app, retention)
     },
   }

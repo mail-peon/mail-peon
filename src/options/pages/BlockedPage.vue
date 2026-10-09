@@ -41,6 +41,14 @@ const selected = computed<MailAccount | undefined>(() =>
   accounts.value.find(account => account.id === selectedId.value),
 )
 
+/** 账号下拉的选项 */
+const accountOptions = computed(() =>
+  accounts.value.map(account => ({
+    value: account.id,
+    label: `${account.label || account.email}（${account.email}）`,
+  })),
+)
+
 const blockedList = computed<BlockedEntry[]>(() => selected.value?.blockedList ?? [])
 
 async function persist(list: BlockedEntry[]) {
@@ -99,91 +107,88 @@ function kindLabel(entry: BlockedEntry): string {
 
 <template>
   <section class="page">
-    <div class="mp-card">
-      <label class="mp-checkbox">
-        <input
-          type="checkbox"
-          :checked="app?.blockedEnabled ?? true"
-          @change="setApp({ blockedEnabled: ($event.target as HTMLInputElement).checked })"
-        >
-        <span>{{ t('blocked.enabled') }}</span>
-      </label>
+    <a-card size="small">
+      <a-checkbox
+        :checked="app?.blockedEnabled ?? true"
+        @update:checked="(value: boolean) => setApp({ blockedEnabled: value })"
+      >
+        {{ t('blocked.enabled') }}
+      </a-checkbox>
       <p class="mp-hint indent">
         {{ t('blocked.hint') }}
       </p>
-    </div>
+    </a-card>
 
-    <div v-if="!accounts.length" class="mp-card empty">
-      还没有邮箱账号；请先在「账号」页添加。
-    </div>
+    <a-card v-if="!accounts.length" size="small">
+      <a-empty description="还没有邮箱账号；请先在「账号」页添加。" />
+    </a-card>
 
     <template v-else>
-      <div class="mp-card">
-        <label class="mp-field">
-          <span class="mp-field-label">{{ t('blocked.account') }}</span>
-          <select v-model="selectedId" class="mp-select">
-            <option v-for="account in accounts" :key="account.id" :value="account.id">
-              {{ account.label || account.email }}（{{ account.email }}）
-            </option>
-          </select>
-        </label>
-      </div>
+      <a-card size="small">
+        <a-form layout="vertical">
+          <a-form-item :label="t('blocked.account')">
+            <a-select
+              v-model:value="selectedId"
+              class="control"
+              :options="accountOptions"
+            />
+          </a-form-item>
+        </a-form>
+      </a-card>
 
-      <div class="mp-card">
+      <a-card size="small">
         <div class="add-row">
-          <input
-            v-model="input"
-            class="mp-input"
+          <a-input
+            v-model:value="input"
             :placeholder="t('blocked.addPlaceholder')"
             spellcheck="false"
-            @keydown.enter="onAdd"
-          >
-          <button class="mp-btn mp-btn-primary" type="button" @click="onAdd">
+            @press-enter="onAdd"
+          />
+          <a-button type="primary" @click="onAdd">
             {{ t('blocked.add') }}
-          </button>
-          <button class="mp-btn" type="button" @click="batchVisible = !batchVisible">
+          </a-button>
+          <a-button @click="batchVisible = !batchVisible">
             {{ t('blocked.batch') }}
-          </button>
+          </a-button>
         </div>
 
-        <p v-if="error" class="mp-error">
-          {{ error }}
-        </p>
+        <a-alert v-if="error" class="add-error" type="error" show-icon :message="error" />
 
         <div v-if="batchVisible" class="batch">
-          <textarea
-            v-model="batchText"
-            class="mp-textarea"
-            rows="6"
+          <a-textarea
+            v-model:value="batchText"
+            :rows="6"
             :placeholder="t('blocked.batchPlaceholder')"
             spellcheck="false"
           />
-          <div class="actions">
-            <button class="mp-btn mp-btn-primary" type="button" @click="onApplyBatch">
+          <a-space :size="8">
+            <a-button type="primary" @click="onApplyBatch">
               {{ t('blocked.batchApply') }}
-            </button>
-            <button class="mp-btn" type="button" @click="batchVisible = false">
+            </a-button>
+            <a-button @click="batchVisible = false">
               {{ t('common.cancel') }}
-            </button>
-          </div>
+            </a-button>
+          </a-space>
         </div>
 
-        <hr class="mp-divider">
+        <a-divider class="divider" />
 
-        <p v-if="!blockedList.length" class="empty-inline">
-          {{ t('blocked.empty') }}
-        </p>
+        <a-empty v-if="!blockedList.length" :description="t('blocked.empty')" />
 
-        <ul v-else class="list">
-          <li v-for="entry in blockedList" :key="`${entry.kind}:${entry.value}`" class="item">
-            <span class="mp-badge">{{ kindLabel(entry) }}</span>
+        <a-list v-else size="small">
+          <a-list-item v-for="entry in blockedList" :key="`${entry.kind}:${entry.value}`">
+            <a-tag :bordered="false">
+              {{ kindLabel(entry) }}
+            </a-tag>
             <code class="value">{{ label(entry) }}</code>
-            <button class="mp-btn remove" type="button" @click="onRemove(entry)">
-              {{ t('common.delete') }}
-            </button>
-          </li>
-        </ul>
-      </div>
+            <template #actions>
+              <a-button size="small" type="text" danger @click="onRemove(entry)">
+                {{ t('common.delete') }}
+              </a-button>
+            </template>
+          </a-list-item>
+        </a-list>
+      </a-card>
     </template>
   </section>
 </template>
@@ -197,26 +202,21 @@ function kindLabel(entry: BlockedEntry): string {
 }
 
 .indent {
-  margin: 6px 0 0 20px;
+  margin: 6px 0 0 24px;
 }
 
-.empty {
-  color: var(--mp-text-faint);
-  font-size: 12px;
-  text-align: center;
-  padding: 24px;
-}
-
-.empty-inline {
-  margin: 0;
-  font-size: 12px;
-  color: var(--mp-text-faint);
+.control {
+  max-width: 320px;
 }
 
 .add-row {
   display: flex;
   gap: 8px;
   align-items: center;
+}
+
+.add-error {
+  margin-top: 10px;
 }
 
 .batch {
@@ -226,36 +226,24 @@ function kindLabel(entry: BlockedEntry): string {
   gap: 8px;
 }
 
-.list {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
+.divider {
+  margin: 14px 0;
 }
 
-.item {
-  display: flex;
-  align-items: center;
+/*
+ * `a-list-item` 的默认布局是「左侧内容 + 右侧 actions」两栏，
+ * 这里让左侧内容自己排成一行（标签 + 等宽字体的条目）。
+ */
+.page :deep(.ant-list-item) {
+  padding: 6px 0;
   gap: 8px;
-  padding: 4px 0;
 }
 
 .value {
   flex: 1 1 auto;
   min-width: 0;
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-family: var(--mp-font-mono);
   font-size: 12px;
   word-break: break-all;
-}
-
-.remove {
-  flex: 0 0 auto;
-}
-
-.actions {
-  display: flex;
-  gap: 8px;
 }
 </style>

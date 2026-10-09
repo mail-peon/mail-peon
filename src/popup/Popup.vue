@@ -24,6 +24,10 @@ import {
  * ⚠ 顶层按 `minimalMode` **分发**，而不是在同一个模板里到处写 `v-if`：
  *   两套模式的**信息架构**不同（极简只有一列验证码；完整有四个分区 + 摘要 + 展开），
  *   混在一个模板里会让两边都变得难改 —— 而它们本来是独立的两个产品面。
+ *
+ * 界面全部构件在 Ant Design Vue 上（`a-tabs` / `a-alert` / `a-button` / `a-spin`），
+ * 主题由 `mount-app.ts` 里的 `ConfigProvider` 注入。这里只写「antd 没提供的东西」
+ * 的样式：360×480 的窗口骨架、列表自身的滚动。
  */
 const { mails, loading, justCopied, copyCode, setRead, dismiss, trash, markAllRead } = useMails(200)
 const { app, ai, reload: reloadSettings } = useSettings()
@@ -154,24 +158,34 @@ function onOpen(mail: Mail) {
     <template v-if="minimalMode">
       <header class="head">
         <span class="brand">{{ t('app.name') }}</span>
-        <span class="mode">{{ t('app.minimalSuffix') }}</span>
+        <a-tag class="mode-tag" :bordered="false">
+          {{ t('app.minimalSuffix') }}
+        </a-tag>
       </header>
 
-      <div v-if="!hasAiKey" class="cta">
-        <span>⚠️ {{ t('general.aiKeyMissing') }}</span>
-        <button class="mp-btn" type="button" @click="openOptions">
-          {{ t('general.aiKeyMissingAction') }}
-        </button>
-      </div>
+      <!-- 缺 AI Key 时的行动号召：antd 的 Alert 自带图标与配色，比手写一个黄框稳 -->
+      <a-alert
+        v-if="!hasAiKey"
+        class="cta"
+        type="warning"
+        show-icon
+      >
+        <template #message>
+          <span class="cta-row">
+            <span>{{ t('general.aiKeyMissing') }}</span>
+            <a-button size="small" type="primary" @click="openOptions">
+              {{ t('general.aiKeyMissingAction') }}
+            </a-button>
+          </span>
+        </template>
+      </a-alert>
 
       <p class="section-label">
         {{ t('popup.codeHistory') }}
       </p>
 
       <div class="list">
-        <p v-if="loading" class="loading">
-          {{ t('common.loading') }}
-        </p>
+        <a-spin v-if="loading" class="loading" size="small" />
         <EmptyState v-else-if="!codeMails.length" :text="t('popup.codeEmpty')" />
         <!--
           ⚠ `v-if` 放在**外层 `<template>`** 上，而不是与 `v-for` 写在同一元素上。
@@ -194,53 +208,64 @@ function onOpen(mail: Mail) {
       </div>
 
       <footer class="foot">
-        <button class="mp-btn" type="button" @click="openOptions">
+        <a-button block @click="openOptions">
+          <span class="i-pixelarticons-settings-2" aria-hidden="true" />
           {{ t('popup.openOptions') }}
-        </button>
+        </a-button>
       </footer>
     </template>
 
     <!-- ============ 完整模式：四个分区 ============ -->
     <template v-else>
-      <nav class="tabs">
-        <button
-          v-for="tab in TAB_ORDER"
-          :key="tab"
-          class="tab"
-          type="button"
-          :class="{ active: activeTab === tab }"
-          @click="activeTab = tab"
-        >
-          {{ t(tabLabelKey(tab)) }}
-          <span v-if="displayCount(counts[tab])" class="mp-badge">{{ counts[tab] }}</span>
-        </button>
-      </nav>
+      <header class="head">
+        <span class="brand">{{ t('app.name') }}</span>
+      </header>
 
-      <div class="list">
-        <p v-if="loading" class="loading">
-          {{ t('common.loading') }}
-        </p>
-        <EmptyState v-else-if="!visibleMails.length" :text="t(tabEmptyKey(activeTab))" />
-        <!-- `v-if` 放在外层 `<template>` 上 —— 理由见上面极简模式那段 -->
-        <template v-if="visibleMails.length">
-          <MailListItem
-            v-for="mail in visibleMails"
-            :key="mail.id"
-            :mail="mail"
-            :just-copied="justCopied.has(mail.id)"
-            @copy="onCopy"
-            @read="onRead"
-            @dismiss="onDismiss"
-            @trash="onTrash"
-            @open="onOpen"
-          />
-        </template>
-      </div>
+      <!--
+        ⚠ 分区的**列表放在 tab 面板里**（而不是像手写 tab 那样把列表挂在外面）：
+          antd 的 Tabs 自己管面板的切换与保留。代价是要把「面板高度」一路撑到
+          列表上（下面的 `:deep` 那几行），否则 480px 的弹窗里列表不会滚动
+          —— 见 `.tabs` 的样式说明。
+      -->
+      <a-tabs v-model:active-key="activeTab" class="tabs" size="small">
+        <a-tab-pane v-for="tab in TAB_ORDER" :key="tab">
+          <template #tab>
+            <span class="tab-label">
+              {{ t(tabLabelKey(tab)) }}
+              <a-badge
+                v-if="displayCount(counts[tab])"
+                :count="counts[tab]"
+                :overflow-count="99"
+              />
+            </span>
+          </template>
+
+          <div class="list">
+            <a-spin v-if="loading" class="loading" size="small" />
+            <EmptyState v-else-if="!visibleMails.length" :text="t(tabEmptyKey(activeTab))" />
+            <!-- `v-if` 放在外层 `<template>` 上 —— 理由见上面极简模式那段 -->
+            <template v-if="visibleMails.length">
+              <MailListItem
+                v-for="mail in visibleMails"
+                :key="mail.id"
+                :mail="mail"
+                :just-copied="justCopied.has(mail.id)"
+                @copy="onCopy"
+                @read="onRead"
+                @dismiss="onDismiss"
+                @trash="onTrash"
+                @open="onOpen"
+              />
+            </template>
+          </div>
+        </a-tab-pane>
+      </a-tabs>
 
       <footer class="foot">
-        <button class="mp-btn" type="button" @click="openOptions">
+        <a-button block @click="openOptions">
+          <span class="i-pixelarticons-settings-2" aria-hidden="true" />
           {{ t('popup.openOptions') }}
-        </button>
+        </a-button>
       </footer>
     </template>
 
@@ -273,8 +298,9 @@ function onOpen(mail: Mail) {
 }
 
 .head {
+  flex: 0 0 auto;
   display: flex;
-  align-items: baseline;
+  align-items: center;
   gap: 6px;
   padding: 10px 12px 6px;
 }
@@ -284,66 +310,104 @@ function onOpen(mail: Mail) {
   font-weight: 600;
 }
 
-.mode {
+.mode-tag {
+  margin: 0;
   font-size: 11px;
-  color: var(--mp-text-faint);
+  line-height: 18px;
 }
 
 .cta {
+  flex: 0 0 auto;
+  margin: 0 12px 8px;
+  padding: 6px 8px;
+}
+
+/* Alert 的 message 里塞了「文案 + 按钮」一行：antd 的 Alert 没有 action 插槽，
+   所以自己排一下 */
+.cta-row {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 8px;
-  margin: 0 12px 6px;
-  padding: 8px 10px;
-  border: 1px solid color-mix(in srgb, var(--mp-warn) 40%, transparent);
-  border-radius: 8px;
-  background: color-mix(in srgb, var(--mp-warn) 10%, transparent);
+}
+
+.cta :deep(.ant-alert-message) {
+  flex: 1 1 auto;
+  min-width: 0;
   font-size: 11px;
   line-height: 1.5;
 }
 
+.cta :deep(.ant-alert-icon) {
+  margin-inline-end: 6px;
+}
+
 .section-label {
+  flex: 0 0 auto;
   margin: 4px 12px 6px;
   font-size: 11px;
   color: var(--mp-text-faint);
 }
 
+/*
+ * tab 条与面板：整块占满中间的高度。
+ *
+ * ⚠ 这几行 `:deep` 是**必需**的，不是修饰 —— antd 的 Tabs 默认高度是内容撑开的，
+ *   而列表必须在**固定 480px** 的窗口里滚动。链条是：
+ *
+ *     .tabs（flex 1，min-height 0）        ← 占满 head / foot 之间
+ *       └ .ant-tabs-content-holder（同样 flex 1 + min-height 0）
+ *           └ .ant-tabs-content / .ant-tabs-tabpane（100% 高）
+ *               └ .list（自己的 overflow-y: auto）
+ *
+ *   任何一环缺了 `min-height: 0`，flex 子项的默认 `min-height: auto`
+ *   都会让它「至少有内容那么高」⇒ 列表**撑开容器**而不是滚动，
+ *   表现为「弹窗内容被推到看不见的地方，滚也滚不动」。
+ */
 .tabs {
+  flex: 1 1 auto;
+  min-height: 0;
   display: flex;
-  gap: 2px;
-  padding: 8px 8px 0;
-  border-bottom: 1px solid var(--mp-border);
+  flex-direction: column;
 }
 
-.tab {
+.tabs :deep(.ant-tabs-nav) {
+  flex: 0 0 auto;
+  margin: 0;
+  padding: 0 8px;
+}
+
+.tabs :deep(.ant-tabs-content-holder) {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.tabs :deep(.ant-tabs-content) {
+  height: 100%;
+}
+
+.tabs :deep(.ant-tabs-tabpane) {
+  height: 100%;
+}
+
+/* 计数角标：默认那个 20px 的胶囊比 tab 文字还高，压到 16px 才像「附属信息」 */
+.tabs :deep(.ant-badge-count) {
+  height: 16px;
+  min-width: 16px;
+  padding: 0 4px;
+  font-size: 10px;
+  line-height: 16px;
+  box-shadow: none;
+}
+
+.tab-label {
   display: inline-flex;
   align-items: center;
   gap: 4px;
-  appearance: none;
-  border: 0;
-  border-bottom: 2px solid transparent;
-  background: transparent;
-  color: var(--mp-text-dim);
-  font-size: 12px;
-  font-family: inherit;
-  padding: 6px 8px 7px;
-  cursor: pointer;
-  white-space: nowrap;
-}
-
-.tab:hover {
-  color: var(--mp-text);
-}
-
-.tab.active {
-  color: var(--mp-text);
-  border-bottom-color: var(--mp-accent);
-  font-weight: 600;
 }
 
 .list {
-  flex: 1 1 auto;
+  height: 100%;
   /*
    * ⚠ `min-height: 0` —— **不能删**，它与 `overflow-y: auto` 是一对。
    *
@@ -365,17 +429,12 @@ function onOpen(mail: Mail) {
 }
 
 .loading {
-  margin: 0;
-  padding: 24px 0;
-  text-align: center;
-  font-size: 12px;
-  color: var(--mp-text-faint);
+  align-self: center;
+  margin: 24px 0;
 }
 
 .foot {
   flex: 0 0 auto;
-  display: flex;
-  justify-content: center;
   padding: 8px;
   border-top: 1px solid var(--mp-border);
 }

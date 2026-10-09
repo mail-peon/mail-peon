@@ -94,8 +94,10 @@ async function processMinimal(mail: Mail, app: AppSettings): Promise<MailOutcome
     return 'skipped'          // 拿不到验证码 → 丢弃，**不写库**
   const { code, validForSeconds } = extracted
 
-  // 3. 自动复制（极简模式恒为 true；带超时，失败不影响入库）
-  const copied = await copyWithTimeout(notifier, code)
+  // 3. 自动复制（尊重全局 autoCopyCode —— 极简模式**不**强制开启；
+  //    带超时，失败不影响入库）
+  const autoCopy = shouldAutoCopyCode(app, null)
+  const copied = autoCopy ? await copyWithTimeout(notifier, code) : false
 
   // 4. 写**瘦身**记录：同一个 Mail 表，未用字段留空
   const minimalMail: Mail = {
@@ -115,10 +117,11 @@ async function processMinimal(mail: Mail, app: AppSettings): Promise<MailOutcome
       validForSeconds,
       urgency: 'high',
     },
-    copyStatus: copied ? 'copied' : 'failed',
+    copyStatus: autoCopy ? (copied ? 'copied' : 'failed') : 'none',
   }
   await upsertMail(minimalMail, MINIMAL_RETENTION)   // 50
-  await notifySafe(notifier, { kind: 'code', … })
+  // 关掉自动复制时 status = 'manual'（toast 上给「点击复制」）
+  await notifySafe(notifier, { kind: 'code', …, status: autoCopy ? (copied ? 'copied' : 'failed') : 'manual' })
   return 'saved'
 }
 ```
@@ -131,6 +134,7 @@ async function processMinimal(mail: Mail, app: AppSettings): Promise<MailOutcome
 | 提取 | `extractCodeOnly(parsed, account)` → `{ code }` | `extractCodeOnly(mail, settings)` → `MinimalExtraction \| null`，含 `validForSeconds` |
 | `ai` 字段 | `undefined` | **真的写一个 `ai` 对象**（`minimal` / `code` / `validForSeconds` / `urgency: 'high'`） |
 | 保留数量 | `upsertMail(mail, retention = 50)` | `upsertMail(mail, MINIMAL_RETENTION)` |
+| 自动复制 | 「恒为 true」 | **尊重全局 `autoCopyCode`** —— 关掉时照旧提取入库，只是不写剪贴板，toast 给「点击复制」 |
 | AI 失败 | 「走与完整模式相同的降级」 | **直接丢弃** —— 极简模式没有 `degraded` 记录，因为它的价值只有验证码 |
 
 ### 3.3 预筛（不调 AI 也能省）
