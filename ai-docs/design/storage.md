@@ -25,11 +25,30 @@
 | --- | --- | --- | --- |
 | `accounts` | `null`（外部键 `accountId`） | `by-email`, `by-enabled` | 邮箱账号（含 per-account blockedList） |
 | `rules` | `null`（外部键 `ruleId`） | `by-enabled`, `by-priority` | PromptRule |
-| `mails` | `null`（外部键 `<accountId>:<messageId>`） | `by-accountId`, `by-receivedAt` | 邮件；按 receivedAt 保留最近 100 封 |
+| `mails` | `null`（外部键 `<accountId>:<messageId>`） | `by-accountId`, `by-receivedAt`, `by-trashedAt` | 邮件；按 receivedAt 保留最近 N 封（回收站里的不占名额） |
 | `settings` | `'id'` | — | 单文档：`app` / `ai` |
 | `meta` | `'key'` | — | 迁移标记、初始化标记 |
 
 > **仓库形状不可变**：`name` / `keyPath` / 索引名都是契约。
+
+### `by-trashedAt`（v2 新增）
+
+`trashedAt` 只在邮件**进了回收站之后**才有值，而 IndexedDB 的索引
+**不收录字段缺失的记录** —— 所以这个索引天然只包含「在回收站里」的邮件，
+拿它的游标倒序遍历就是回收站列表（最近删的在最前），不需要全表扫再过滤。
+
+```
+⚠ 这正是用**时间戳**而不是布尔量 `trashed: true` 的收益：
+  布尔量要么建不出「只有 true」的索引（IndexedDB 不支持部分索引），
+  要么得把整表都收进索引再过滤。
+```
+
+`upgrade()` 里它必须是 **`else if (oldVersion < 2)`**，不是独立的 `if (oldVersion < 2)`：
+全新安装时 `oldVersion === 0`，第一个分支已经按 `STORES` 建好了**全部**索引
+（`STORES` 是当前结构的唯一真相，已含 `by-trashedAt`），
+再 `createIndex` 一次会抛 `ConstraintError`，而 `onupgradeneeded` 里的异常会让
+**整个升级事务 abort** —— 表现是 `AbortError`、库根本打不开，
+错误信息完全不提索引重名。（实测踩过：全套 store 测试挂掉 27 条。）
 
 ---
 
@@ -40,7 +59,7 @@ interface MailAccount {
   id: string // = accountId（外部键）
   label: string
   email: string
-  provider: 'imap' // MVP 仅 imap；M3+ 加 'gmail-oauth' / 'outlook-graph'
+  provider: string // 'imap' | 'gmail' | …（开放字符串，加 provider 不用改类型）
   config: ProviderConfig // 协议相关配置
   blockedList: BlockedEntry[] // per-account 排除邮箱
   enabled: boolean
@@ -48,10 +67,19 @@ interface MailAccount {
   lastSyncedAt?: number
   lastError?: string
 
-  /** 增量同步游标：上次同步过的最高 UID；null = 从未同步过（首次 sync 只记这个，不拉历史） */
-  lastSeenUid?: number | null
-  /** 该账号上次同步的 UIDVALIDITY（IMAP 邮箱重建时可能变） */
-  uidValidity?: number | null
+  /**
+   * 增量同步游标：形状由 **provider 自己定**。
+   *
+   * ⚠ 早期文档把它写死成 IMAP 的 `lastSeenUid` —— 那是个**必要推广**：
+   *   Gmail 用的是 `historyId` 而不是 UID，把 UID 概念硬编码进同步编排
+   *   会让加第二个 provider 时改不动。所以编排层只传一个不透明的 `cursor`。
+   *
+   *   - IMAP：`{ uid, uidValidity }`（UIDVALIDITY 变了说明邮箱重建，游标失效）
+   *   - Gmail：`{ historyId }`
+   *
+   * `undefined` = 从未同步过（首次同步**只记游标、不拉历史**）。
+   */
+  cursor?: SyncCursor
 }
 
 interface ProviderConfig {
@@ -128,7 +156,25 @@ interface Mail {
   ai?: AiOutput
   copyStatus: 'none' | 'copied' | 'failed'
   read: boolean
+  /**
+   * 用户标记「不再显示」。
+   * 入口：卡片展开后的操作行里那个「不再显示」按钮（`MailListItem` 的
+   * `dismiss` 事件 → Popup / Sidepanel → `mail:dismiss`）。
+   * 所有 tab 与 badge 都会跳过它（`list-filter.ts` 的 `filterMails`）。
+   */
   dismissed?: boolean
+  /** 验证码失效时刻（epoch ms）；AI 读出 `validForSeconds` 后由 pipeline 推算 */
+  codeExpiresAt?: number
+  /**
+   * 验证码的**总有效期秒数**（进度条的分母）。
+   *
+   * ⚠ 与 `codeExpiresAt` **同生同灭**（见 `deriveCodeExpiry`）。
+   *   只存失效时刻的话前端算不出比例 —— 那会让进度条每次打开弹窗都从 100%
+   *   重新往下走（真机 bug：分母错用了「挂载那一刻的剩余量」）。
+   */
+  codeValidForSeconds?: number
+  /** 进入回收站的时刻；有值 = 在回收站里（不进主列表、不占保留名额） */
+  trashedAt?: number
   messageId?: string
   listUnsubscribe?: string
   ruleId?: string // 命中的规则 id（调试 / 跳转）
@@ -139,6 +185,11 @@ interface AiOutput {
   summary: string // ≤600 字
   isAd: boolean
   code?: string | null
+  /**
+   * AI 从邮件里读到的有效期（**秒**）。
+   * ⚠ 模型看不到当前时间，所以只能给相对时长；换算成绝对时刻是 pipeline 的事。
+   */
+  validForSeconds?: number | null
   urgency: 'low' | 'normal' | 'high'
   degraded?: boolean
   error?: string
@@ -259,12 +310,23 @@ interface SettingDoc<T> {
 interface AppSettings {
   excludeAds: boolean // 默认 true
   autoCopyCode: boolean // 默认 true
-  blockedEnabled: boolean // 默认 true（MVP 永远 true；per-account blockedList 在 accounts）
+  /**
+   * 排除邮箱总开关；默认 true。
+   * 完整模式「通用」页可关（关掉后 `isBlocked` 短路，per-account 的
+   * `blockedList` 仍在 `accounts` 里）。
+   */
+  blockedEnabled: boolean
   notifyOnNew: boolean // master switch；默认 true
   popupDefaultTab: 'important' | 'all' | 'code' | 'ad' // 默认 'important'
   mailRetentionDays: number // M3+：默认 0 = 不按时间清理
-  /** IDB 内邮件保留份数；滚动淘汰。`'unlimited'` = 不淘汰 */
+  /** IDB 内邮件保留份数；滚动淘汰。`'unlimited'` = 不淘汰。回收站里的不占名额 */
   mailRetention: 100 | 200 | 500 | 1000 | 'unlimited' // 默认 100
+  /**
+   * 失效验证码自动删除；**默认 true**。
+   * 到了失效时刻**再等 30 秒**才移入回收站 —— 30 秒是给推算误差留的宽限，
+   * 免得误删其实还有效的验证码（详见 features/07-trash.md § 4）。
+   */
+  autoDeleteExpiredCode: boolean // 默认 true
   /** 两套运行模式：极简（只验证码） / 完整（全部功能） */
   minimalMode: boolean // 默认 true
   schemaVersion: number
@@ -286,7 +348,8 @@ interface AiSettings {
 ## 7. `meta`
 
 ```ts
-type MetaKey = 'migration' | 'init'
+/** ⚠️ 实际只写过 'migration' 一个键 —— 没有 'init' */
+type MetaKey = 'migration'
 
 interface MetaDoc<T> {
   key: MetaKey
@@ -298,16 +361,16 @@ interface MigrationMeta {
   from: 'chrome.storage.local'
   at: string // ISO
   checksums: Record<string, string> // FNV-1a 摘要，参考 offer-hunter
+  /** 迁移过来的条数（目前只有 settings 这一路） */
+  counts: { settings: number }
+  /** 首次运行时为 true（没有旧数据可迁） */
   fresh?: boolean
-  conflictMergedAt?: string
-}
-
-interface InitMeta {
-  state: 'done'
-  version: number
-  at: string
 }
 ```
+
+> ⚠️ 早期文档里还有 `MetaKey = 'migration' | 'init'` 与一个 `InitMeta`，
+> 以及 `conflictMergedAt` 字段 —— **代码里都不存在**（grep 不到）。
+> 初始化状态不存在 `meta` 里，它只活在 `ready.ts` 那个模块级 promise 里。
 
 ---
 
@@ -360,7 +423,7 @@ async function init(): Promise<void> {
 
 ```ts
 export const DB_NAME = 'mail-peon'
-export const DB_VERSION = 1
+export const DB_VERSION = 2
 
 export type StoreName = 'accounts' | 'rules' | 'mails' | 'settings' | 'meta'
 
@@ -382,6 +445,7 @@ export const STORES: readonly StoreSchema[] = [
   { name: 'mails', keyPath: null, indexes: [
     { name: 'by-accountId', keyPath: 'accountId' },
     { name: 'by-receivedAt', keyPath: 'receivedAt' },
+    { name: 'by-trashedAt', keyPath: 'trashedAt' }, // v2：回收站
   ] },
   { name: 'settings', keyPath: 'id', indexes: [] },
   { name: 'meta', keyPath: 'key', indexes: [] },
@@ -398,8 +462,19 @@ export function upgrade(db: IDBDatabase, oldVersion: number, tx: IDBTransaction)
     }
   }
 
-  // 未来追加：
-  // if (oldVersion < 2) { tx.objectStore('mails').createIndex('by-accountId', 'accountId') }
+  /*
+   * v2：回收站。
+   *
+   * ⚠⚠ 必须是 `else if`，不是独立的 `if (oldVersion < 2)` ——
+   *   全新安装时 oldVersion === 0，上面那个分支已经按 STORES 建好了全部索引
+   *   （STORES 含 by-trashedAt），再 createIndex 会抛 ConstraintError，
+   *   而 onupgradeneeded 里的异常让**整个升级事务 abort** ⇒ 库打不开。
+   */
+  else if (oldVersion < 2) {
+    const mails = tx.objectStore('mails')
+    if (!mails.indexNames.contains('by-trashedAt'))
+      mails.createIndex('by-trashedAt', 'trashedAt')
+  }
 }
 ```
 

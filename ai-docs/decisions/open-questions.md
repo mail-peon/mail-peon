@@ -94,12 +94,19 @@ type MailRetention = 100 | 200 | 500 | 1000 | 'unlimited'
 
 interface MailAccount {
   // ... 其它字段
-  lastSeenUid: number | null      // null = 从未同步过；首次连上后存当前 UIDNEXT
+  /**
+   * ⚠️ 实际落地时这里**改了**：不再是 `lastSeenUid: number | null`，
+   *   而是一个 provider 自定的不透明游标 `cursor?: SyncCursor`
+   *   （IMAP 放 `{ uid, uidValidity }`，Gmail 放 `{ historyId }`）。
+   *   原因：把 IMAP 的 UID 概念写死进账号模型，加第二个 provider 时改不动。
+   */
+  cursor?: SyncCursor
 }
 
 interface AppSettings {
   // ... 其它字段
   mailRetention: MailRetention    // 默认 100
+  autoDeleteExpiredCode: boolean  // 默认 true：失效验证码 30 秒后进回收站
 }
 ```
 
@@ -107,19 +114,22 @@ interface AppSettings {
 
 ```
 首次 sync：
-  1. account.lastSeenUid == null
-  2. 拿 server UIDNEXT → 存为 account.lastSeenUid
+  1. account.cursor == null
+  2. 拿「当前游标」（IMAP 是 UIDNEXT - 1）→ 存为 account.cursor
   3. 不拉任何邮件
   4. ✅
 
-后续 sync：
-  1. search UID ${lastSeenUid + 1}:*
-  2. 只处理 raws；upsertMail 后更新 lastSeenUid
-  3. ✅
+后续 sync（一轮一批）：
+  1. UID SEARCH UID ${cursor.uid + 1}:*
+  2. 取**最旧的** 50 封 → UID FETCH <首>:<尾>
+  3. 逐封处理；整批成功后 cursor = nextCursor
+  4. ✅   ← 积压由后续心跳一轮轮吃完（不在轮内循环）
 ```
 
-> 邮箱服务器**不会**回收已发邮件的 UID；只要 lastSeenUid 持续推进，就能拿到所有增量。
-> 注意：IMAP 服务器**可以**重置 UIDVALIDITY（极少见，发生在邮箱重建时）。生产代码要存 `UIDVALIDITY`，若变化 → 重置 `lastSeenUid` 并**提示"该账号历史可能丢失"**。MVP 可以先只 warning，不做完整恢复。
+> 邮箱服务器**不会**回收已发邮件的 UID；只要游标持续推进，就能拿到所有增量。
+> 注意：IMAP 服务器**可以**重置 UIDVALIDITY（极少见，发生在邮箱重建时）。
+> 生产代码把 `UIDVALIDITY` 一起存在游标里，变化时把游标重置到最新并**提示用户**
+> —— 不做「恢复」（UID 全部重新分配，没有可靠映射）。
 
 ### UI
 
@@ -423,24 +433,26 @@ interface AiSettings {
 
 ---
 
-## 仍未关闭的（Q14 / Q15 是 toast 改动带出来的）
+## 已关闭（Q14 / Q15 是 toast 改动带出来的）
 
 ### Q14. Toast 位置：顶部居中 / 右下角 / 底部居中？
 
-**默认建议**：**顶部居中堆叠**（用户已认可）。
+**已定：顶部居中堆叠**（用户已认可），**且已实现**：
+最多同时 3 条、5 秒自动消失、鼠标悬停时暂停计时。
 
 详见 [`../design/page-toast.md` § 3](../design/page-toast.md)。
 
 ### Q15. Toast 注入方式：常驻 Content Script / `chrome.scripting.executeScript` 按需？
 
-**默认建议**：**常驻 Content Script**（模板已配 `<!-- <all_urls> -->`，零额外成本）。
+**已定：常驻 Content Script**，**且已实现**（`manifest.ts` 的 content script 配置）。
 
 | 方案 | 优点 | 缺点 |
 | --- | --- | --- |
-| 常驻 Content Script | 零运行时开销；写起来简单 | 会在所有页面挂 content script |
-| `chrome.scripting.executeScript` 按需 | 审查更友好（不申请 `charset`） | 需要 `scripting` 权限；每次注入时机复杂；MVP 阶段开发成本高 |
+| **常驻 Content Script**（采用） | 零运行时开销；写起来简单 | 会在所有页面挂 content script |
+| `chrome.scripting.executeScript` 按需 | 审查更友好（不申请 `scripting`） | 需要 `scripting` 权限；每次注入时机复杂 |
 
-> **MVP 走常驻**。M3 上架前若 CRX Store 审查要求缩小 host_permissions，再切换到 `scripting`。
+> ⚠️ `scripting` 权限**刻意没有申请**（见 `manifest.ts` 的权限注释）。
+> 如果将来 CRX Store 审查要求缩小 `host_permissions`，再切到 `scripting`。
 
 ---
 

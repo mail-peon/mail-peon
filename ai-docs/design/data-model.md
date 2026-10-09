@@ -9,10 +9,10 @@
 ## 0. 总览
 
 ```
-DB: mail-peon (v1)
+DB: mail-peon (v2)
 ├─ accounts (外键 accountId)            → MailAccount[]
 ├─ rules    (外键 ruleId)               → PromptRule[]
-├─ mails    (外键 <accountId>:<messageId>) → Mail[]
+├─ mails    (外键 <accountId>:<messageId>) → Mail[]   索引含 by-trashedAt（v2）
 ├─ settings (内键 id: 'app' | 'ai')     → 单文档
 └─ meta     (内键 key)                  → 迁移标记
 ```
@@ -28,7 +28,7 @@ interface MailAccount {
   id: string                          // = accountId（外键）
   label: string
   email: string
-  provider: 'imap'                    // MVP 仅 imap；M3+ 加 'gmail-oauth' / 'outlook-graph'
+  provider: MailProviderId            // 开放字符串；已实现 'imap' / 'gmail'
   config: ProviderConfig
   blockedList: BlockedEntry[]         // per-account 排除邮箱
   enabled: boolean
@@ -36,21 +36,31 @@ interface MailAccount {
   lastSyncedAt?: number
   lastError?: string
 
-  /** 增量同步游标：上次同步过的最高 UID；null = 从未同步过（首次 sync 只记这个，不拉历史） */
-  lastSeenUid?: number | null
-  /** IMAP UIDVALIDITY：邮箱重建时服务器会让它变，变化时需要清零 lastSeenUid 并提示 */
-  uidValidity?: number | null
+  /**
+   * 增量同步游标，**形状由 provider 自己定**（`SyncCursor`）。
+   *
+   * ⚠ 早期文档把它写成 `lastSeenUid` + `uidValidity` 两个顶层字段 ——
+   *   那对 Gmail 不成立（它用 `historyId`），所以提到了一个不透明的 `cursor` 里：
+   *   IMAP 放 `{ uid, uidValidity }`，Gmail 放 `{ historyId }`。
+   *
+   * `undefined` = 从未同步过（首次同步**只记游标、不拉历史**）。
+   */
+  cursor?: SyncCursor
 }
 
 interface ProviderConfig {
-  // IMAP（MVP）
+  // IMAP
   host?: string
   port?: number                       // 993
   tls?: boolean                       // true
   user?: string
-  pass?: string                       // ⚠ 明文 MVP（M3+ 加口令保护）
+  pass?: string                       // ⚠ 明文存 IndexedDB
+  /** ⚠ IMAP 的**必需**项：浏览器没有裸 TCP，要经本机中继，见 adr-0005 */
+  relayUrl?: string
 
-  // OAuth（M3+）
+  // OAuth（Gmail 已实现）
+  clientId?: string
+  tenantId?: string
   accessToken?: string
   refreshToken?: string
   expiresAt?: number
@@ -106,25 +116,40 @@ interface Mail {
   // 内容
   snippet: string                   // text 前 240 字
   bodyText?: string                  // 全文（避免 HTML 全部入库）
-  bodyHtml?: string                  // 仅在用户点开时按 messageId 重拉（可选）
+  bodyHtml?: string                  // ⚠ 实际不存：归一化时被置为 undefined（MVP 不存 HTML）
 
   // 时间
-  receivedAt: number                 // ts
+  receivedAt: number                 // ts（数字；by-receivedAt 索引的升序游标即时间序）
 
   // 状态
   processing: 'pending' | 'sent' | 'skipped'
   ai?: AiOutput
   copyStatus: 'none' | 'copied' | 'failed'
   read: boolean
-  dismissed?: boolean                // 用户标记不再显示
+  dismissed?: boolean                // 用户标记不再显示（卡片展开后的「不再显示」按钮）
+
+  // 验证码（极简模式的核心产出）
+  /** 顶层 `code`：UI 与 badge 用的便宜判据，避免每处都去翻 `ai` */
+  code?: string | null
+  /** 失效时刻（epoch ms）；由 AI 读到的时长 + 入库时刻推算 */
+  codeExpiresAt?: number
+  /** 总有效期秒数 —— 进度条的**分母**（与 codeExpiresAt 同生同灭） */
+  codeValidForSeconds?: number
+
+  // 回收站
+  /** 有值 = 在回收站里（不进主列表、不占保留名额）。状态变更，不是软删除 */
+  trashedAt?: number
 
   // 原始（可丢弃）
   messageId?: string
   listUnsubscribe?: string
+  ruleId?: string                    // 命中的规则 id（调试 / 跳转）
 }
 ```
 
-`useWebExtensionStorage('mail-peon:mails', [])`，**只保留最近 100 封**。
+**存储**：IndexedDB 的 `mails` 仓库（不是 `chrome.storage`）。
+保留数量由 `AppSettings.mailRetention` 决定（`{100, 200, 500, 1000, 'unlimited'}`，默认 100），
+**极简模式写死 50**（`MINIMAL_RETENTION`）；**回收站里的不占名额、也不被淘汰**。
 
 ### AiOutput
 
@@ -134,6 +159,12 @@ interface AiOutput {
   summary: string                   // ≤600 字
   isAd: boolean
   code?: string | null
+  /**
+   * AI 从邮件里读到的有效期（**秒**）。
+   * ⚠ 模型看不到当前时间，所以只能给相对时长；换算成绝对时刻是 pipeline 的事。
+   * ⚠ 只在邮件**明确写了**有效期时才给值 —— 不许猜一个「常见值」。
+   */
+  validForSeconds?: number | null
   urgency: 'low' | 'normal' | 'high'
   degraded?: boolean                // AI 失败走降级时为 true
   error?: string                    // 降级原因
@@ -160,6 +191,8 @@ interface AppSettings {
   /** IDB 内邮件保留份数；滚动淘汰。`'unlimited'` = 不淘汰（仅完整模式生效；极简模式写死 50） */
   mailRetention: 100 | 200 | 500 | 1000 | 'unlimited'   // 默认 100
   mailRetentionDays?: number         // M3+：默认 0 = 不按时间清理
+  /** 失效验证码自动删除（默认 true）：失效后 30 秒移入回收站 */
+  autoDeleteExpiredCode: boolean
   schemaVersion: number              // 1
 }
 
@@ -168,7 +201,7 @@ type OutputLanguage =
   | 'auto-email'                     // 跟邮件本身（prompt 注入"按邮件语言"）
 
 interface AiSettings {
-  platform: 'openai' | 'deepseek' | 'anthropic' | 'custom'
+  platform: AiPlatformName            // 开放字符串；已实现 openai / deepseek / anthropic
   baseUrl?: string                   // 空 = 用平台默认
   apiKey: string
   model?: string                     // 空 = 用平台默认
@@ -185,7 +218,7 @@ interface AiSettings {
 ## 5. 默认值
 
 ```ts
-// src/logic/store/settings-defaults.ts
+// src/logic/types.ts —— createDefaultAppSettings() / createDefaultAiSettings()
 export const defaultAppSettings: AppSettings = {
   minimalMode: true,                // 默认极简
   excludeAds: true,
@@ -195,11 +228,12 @@ export const defaultAppSettings: AppSettings = {
   popupDefaultTab: 'important',
   mailRetention: 100,
   mailRetentionDays: 0,
+  autoDeleteExpiredCode: true,      // 失效验证码自动清走
   schemaVersion: 1,
 }
 
 export const defaultAiSettings: AiSettings = {
-  platform: 'openai',
+  platform: 'deepseek',             // ⚠ 默认平台是 deepseek，不是 openai
   apiKey: '',
   outputLanguage: 'auto-browser',
 }
@@ -213,34 +247,29 @@ export const defaultAiSettings: AiSettings = {
 
 | 字段 | 计算 |
 | --- | --- |
-| `_visibility: 'normal' \| 'ad' \| 'code' \| 'pending' \| 'blocked'` | 见各 features 文档 |
-| `_urgencyRank` | `high=2, normal=1, low=0` |
+| `_visibility: 'normal' \| 'ad' \| 'code' \| 'pending'` | `mailVisibility()`（见 `popup/list-filter.ts`）。⚠ 被屏蔽的邮件**根本不入库**，所以没有 `'blocked'` 这一档 |
+| `_urgencyRank` | `urgencyRank()`：`high=2, normal=1, low=0` |
 | `_isFromRule(rule)` | `pickRule(mail, rules) === rule` |
 
 ---
 
 ## 7. 消息体（`webext-bridge`）
 
-| Channel | Request | Response |
-| --- | --- | --- |
-| `mail:list` | `void` | `{ mails: Mail[] }` |
-| `mail:get` | `{ mailId }` | `{ mail: Mail \| null }` |
-| `mail:dismiss` | `{ mailId }` | `{ ok: true }` |
-| `mail:copy-code` | `{ mailId, code }` | `{ ok: boolean }` |
-| `mail:focus` | `{ mailId }` | (broadcasting) |
-| `mail:updated` | `{ mailId }` | (broadcasting) |
-| `accounts:list` | `void` | `{ accounts: MailAccount[] }` |
-| `accounts:upsert` | `{ account: MailAccount }` | `{ ok: true }` |
-| `accounts:delete` | `{ id }` | `{ ok: true }` |
-| `accounts:test` | `{ account: MailAccount }` | `{ ok: boolean, error?: string }` |
-| `rules:list` | `void` | `{ rules: PromptRule[] }` |
-| `rules:upsert` | `{ rule: PromptRule }` | `{ ok: true }` |
-| `rules:delete` | `{ id }` | `{ ok: true }` |
-| `settings:get` | `void` | `{ settings: Settings }` |
-| `settings:set` | `{ patch: Partial<Settings> }` | `{ ok: true }` |
-| `ai:test` | `{ ai: AiConfig }` | `{ ok: boolean, error?: string }` |
+> **单一真相是 [`shim.d.ts`](../../shim.d.ts) 里的 `ProtocolMap`** ——
+> 通道名、请求 / 响应形状都由它声明，`send` / `onMessage` 靠类型检查保证拼写正确。
+>
+> 这里**不再维护一份副本**：早期那张表只有十几个通道，而实际有 40 多个
+> （`trash:*` 5 个、`accounts:sync-now` / `sync-status`、`data:changed`、
+> `sync:done`、`settings:set-app` / `set-ai`、`rules:move`…），
+> 而且 `settings:set` 这种**已经不存在**的通道还留在表里 ——
+> 复制一份必然会分叉，所以直接看那份声明。
 
-> 在 `shim.d.ts` 里给 `EventNameMap` 加签名，避免拼写错。
+几个容易记错的点：
+
+- 设置是**两个**通道：`settings:set-app` 与 `settings:set-ai`（没有 `settings:set`）；
+- `settings:get` 返回 `{ app, ai }` 两份设置；
+- `mail:list` 的请求是 `{ limit? }`，不是 `void`；
+- 广播类（没有返回值）用 `broadcastToExtension` 发，见 `logic/messaging.ts`。
 
 ---
 

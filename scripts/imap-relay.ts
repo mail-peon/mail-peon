@@ -62,11 +62,15 @@ import { WebSocketServer } from 'ws'
  *
  * 只有环境变量的话，换个端口就得写 `PORT=8788 pnpm relay` —— 那是 **bash 语法**，
  * 在 PowerShell 里会被当成命令名去找，报「术语 'PORT=8788' 不会被识别为 cmdlet」。
- * 而走 `cross-env-shell` 又接不住 `pnpm relay:port 8788` 这种位置参数
+ * 而走 `cross-env-shell` 又接不住位置参数
  * （实测 `$npm_config_port` 拿不到值，还附送一条 DEP0190 弃用警告）。
  *
  * 命令行参数三个平台语法**完全一致**，所以它是最省事的那条路：
- * `pnpm relay:port 8788`。
+ * `pnpm relay --port 8788`。
+ *
+ * ⚠️ 早期这里写的是 `pnpm relay:port 8788`，但 package.json 里**从来没有**那个
+ *   script（`relay:port-test` 是测试，不是传参入口）。照文档敲会直接报
+ *   「Missing script」，所以别把它当成存在的命令。
  *
  * 环境变量保留不变 —— 后台服务形态（见 `relay-deployment.md`）就是靠它注入配置的。
  *

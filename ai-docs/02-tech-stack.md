@@ -11,10 +11,10 @@
 ### 框架 / 语言
 
 - **Vue 3**（Composition API + `<script setup>`）
-- **Vite 6.x** 多入口构建（background / popup / options / sidepanel / contentScript）
-- **TypeScript**
-- **UnoCSS**（原子化 CSS）
-- **VueUse**（含 `useStorage` 系列 → 我们已基于它包装 `useWebExtensionStorage`）
+- **Vite 8.x** 多入口构建（background / popup / options / sidepanel / contentScript）
+- **TypeScript**（5.9，`strict`）
+- **UnoCSS**（原子化 CSS + `presetIcons`，图标用 `i-pixelarticons-*`）
+- **VueUse**（`@vueuse/core`；`useWebExtensionStorage` 已不再使用）
 
 ### 扩展能力
 
@@ -40,7 +40,7 @@
 
 - 通用封装：`src/platform/idb/database.ts`（参考 `offer-hunter/src/platform/idb/database.ts`）
   - `openDb()` 单例懒开
-  - `withTx()` 事务包装（事务里不准 await 非 IDB 的 promise）
+  - `runTx(stores, mode, fn)` 事务包装（事务里不准 await 非 IDB 的 promise；`withTx` 是它内部的私有实现）
   - `put / putMany / get / del / iterate / count / clearStore` 原语
   - `retryable()` 限重试（AbortError / UnknownError / InvalidStateError）
 - Schema：`src/platform/idb/schema.ts`（stores + 索引 + `upgrade()` 一次性迁移）
@@ -56,13 +56,24 @@
 
 ### 3.1 邮箱协议层
 
-| 包 | 用途 | 选择理由 |
-| --- | --- | --- |
-| `emailjs-imap-client` | **MVP 候选**：纯 JS IMAP4 客户端，浏览器里能跑 | 体积小、API 干净、支持 IDLE 监听 |
-| `mailparser` | 解析 MIME（RFC822） | 把 raw email 解析成 `from/subject/html/text/attachments` |
-| `node-imap` | 备选：更成熟但 Node 习气重，浏览器需 polyfill | 仅在 `emailjs-imap-client` 不够时考虑 |
+**已落地**：
 
-> **决策**：MailProvider 适配器抽象（参考 offer-hunter 的 `adapters/sites/`），MVP 只实现 IMAP+密码。
+| 包 | 用途 | 为什么是它 |
+| --- | --- | --- |
+| **自研 `ImapClient`**（`src/adapters/mail/providers/imap/client.ts`） | IMAP4 客户端 | 现成库都绑死 Node 的 `net`（浏览器里跑不了，见 §4）。自研只需 `LOGIN` / `SELECT` / `UID SEARCH` / `UID FETCH` / `IDLE` + 字面量解析，代价可控。传输层抽象成 `MailSocket`，于是同一份客户端既能走中继、也能在 Node 里直连 |
+| `postal-mime` | 解析 MIME（RFC822） | 零依赖、纯浏览器。产出 `from/subject/bodyText/…` |
+| `ws`（仅中继 / 测试） | 中继的 WebSocket 服务端与测试客户端 | 中继是独立 Node 进程，不在浏览器里 |
+
+**已否决**（早期计划里列过）：
+
+| 包 | 否决原因 |
+| --- | --- |
+| `emailjs-imap-client` | 同样绑 Node `net`；而且它替我们做了太多（我们要的是「能精确控制命令与字面量」） |
+| `mailparser` | 基于 Node `stream`，浏览器里要一堆 polyfill。已被 `postal-mime` 取代 |
+| `node-imap` | Node 习气最重，polyfill 成本最高 |
+
+> **决策**：`MailProvider` 适配器抽象（参考 offer-hunter 的 `adapters/sites/`）。
+> 已实现 `imap`（用户名密码 + 中继）与 `gmail`（REST + OAuth）；`outlook` 待实现。
 
 ### 3.2 AI 层
 
@@ -79,7 +90,10 @@
 | --- | --- |
 | `nanoid` | 生成 mail id / rule id（比 UUID 短） |
 | `zod` | AI 输出 schema 校验（关键：AI 格式可能错） |
-| `dayjs` | 邮件时间格式化（"5 分钟前"） |
+| `esno`（开发期） | 跑 `scripts/*.ts`（中继与运维脚本是 TypeScript） |
+
+> ⚠️ `dayjs` **没有引入**：只有「相对时间」一个函数需要，
+> 所以手写在 `MailListItem.vue` 的 `formatRelative` 里 —— 多一个依赖不划算。
 
 ---
 
@@ -100,7 +114,7 @@
 ## 5. 类型与代码风格
 
 - `auto-imports.d.ts` 模板已生成；新增 API（如 `chrome.alarms`）需在 `shim.d.ts` 加类型签名。
-- `webext-bridge` 的消息名在 `src/logic/messaging.ts` 中维护，并在 `shim.d.ts` 通过 `EventNameMap` 扩展，避免拼写错。
+- `webext-bridge` 的消息名在 `src/logic/messaging.ts` 中维护，并在 `shim.d.ts` 通过 `ProtocolMap` 扩展，避免拼写错。**那份声明是通道形状的单一真相**。
 - ESLint：`single quotes` + `no semi`（沿用模板）。
 - 所有 **AI 输出** 必须经 `zod` 校验后才落库。
 - **i18n**：所有 UI 文案集中 `src/logic/strings.ts`，不在 `.vue` 里硬编码中文字符串。

@@ -2,7 +2,7 @@
 
 > 对应里程碑：**MVP**。目标：接入邮箱账号（通过 MailProvider 适配器），拉取并解析新邮件，把 Mail 落到 IndexedDB。
 >
-> **极简 + 完整两种模式都共用此层**——区别在拿到 Mail 后走哪个分支（`purseMinimal` vs `summarize`），详见 [`02-ai-summary.md`](./02-ai-summary.md) 与 [`../design/minimal-mode.md`](../design/minimal-mode.md)。
+> **极简 + 完整两种模式都共用此层**——区别在拿到邮件后走哪个分支（`processMinimal` vs `processFull`），详见 [`02-ai-summary.md`](./02-ai-summary.md) 与 [`../design/minimal-mode.md`](../design/minimal-mode.md)。
 >
 > 架构完全镜像 `offer-hunter/src/adapters/sites/` 与 `offer-hunter/src/logic/store/`。
 
@@ -53,33 +53,54 @@ import type { MailAccount } from '~/logic/types'
 
 export interface MailProviderDefinition {
   /** 协议 id，必须等于 `src/adapters/mail/providers/<id>/index.ts` 目录名 */
-  id: 'imap' | 'gmail-oauth' | 'outlook-graph'
+  id: string                          // ⚠ 开放字符串；已实现 'imap' / 'gmail'
   /** 用户在 Options 看到的名字 */
   label: string
   hint: string
-  /** 这家协议是否需要密码字段 */
-  needsPassword: boolean
+  /** 表单字段定义（不是 `needsPassword` 布尔量 —— 各 provider 字段完全不同） */
+  fields: MailProviderField[]
+  /** 能否直接用：'ready' = 现在就能连 */
+  availability: 'ready' | 'needs-relay' | 'planned'
+  availabilityNote?: string
 }
 
 export interface MailProvider {
   /** 连接一个账号，返回可用的 MailConnection */
-  connect: (account: MailAccount) => Promise<MailConnection>
+  connect: (account: MailAccount, hooks?: MailConnectionHooks) => Promise<MailConnection>
+  /** 「测试连接」用它 —— 与 connect 分开，因为测试不需要留着连接 */
+  testConnection: (account: MailAccount) => Promise<TestResult>
 }
 
+/**
+ * ⚠️ 游标是**不透明**的（`SyncCursor`），不是「一个 UID 数字」。
+ *   IMAP 放 `{ uid, uidValidity }`，Gmail 放 `{ historyId }` ——
+ *   把 UID 概念写死进接口，加第二个 provider 时就得改编排层。
+ */
 export interface MailConnection {
   /**
-   * 拿服务器当前的 UIDNEXT（即将被分配的下一个 UID）。
-   * 首次同步：拿这个值后存到 `account.lastSeenUid`，**不拉任何邮件**。
+   * 首次同步用：拿「现在的游标」，**不拉任何邮件**。
+   * IMAP 实现是 `UIDNEXT - 1`（不是 `UIDNEXT` —— 否则会漏掉最后一封）。
    */
-  getNextUid: () => Promise<number>
+  getInitialCursor: () => Promise<SyncCursor>
   /**
-   * 拉 UID 大于 sinceUid 的所有新邮件。
-   * 后续同步：传 account.lastSeenUid，拿到增量。
+   * 从 `cursor` 之后拉**一批**（≤ `MAX_MESSAGES_PER_SYNC = 50`）。
+   *
+   * ⚠️ 一轮只调一次，不做轮内循环 —— 积压由后续心跳一轮轮吃完
+   *   （见 `design/sync-flow.md § 6`）。
    */
-  listSince: (sinceUid: number) => Promise<RawMail[]>
-  /** 当前邮箱的 UIDVALIDITY（用于检测邮箱是否重建） */
-  getUidValidity: () => Promise<number>
+  fetchSince: (cursor?: SyncCursor) => Promise<FetchResult>
   logout: () => Promise<void>
+}
+
+export interface FetchResult {
+  mails: RawMail[]
+  /**
+   * ⚠️ `nextCursor` 与 `mails` **一起**返回，而不是让编排层自己从 mails 里取 max：
+   *   它只能推进到**本批确实处理过的**位置 —— 否则中途失败会丢件。
+   */
+  nextCursor: SyncCursor
+  /** 邮箱被重建（UIDVALIDITY 变了）时为 true —— 此时游标作废，不清零会拉不到任何东西 */
+  uidValidityChanged?: boolean
 }
 
 export interface RawMail {
@@ -87,7 +108,7 @@ export interface RawMail {
   source: Uint8Array
   /** 服务器给的 messageId（用于去重） */
   messageId?: string
-  /** 该邮件的 IMAP UID（用来推进 lastSeenUid） */
+  /** 该邮件的 IMAP UID（IMAP provider 用它推进游标） */
   uid: number
 }
 ```
@@ -123,74 +144,44 @@ export function createMailProvider(id: MailProviderDefinition['id']): MailProvid
 
 > **新增 Provider = 加一个 `src/adapters/mail/providers/<id>/index.ts`**。注册表自动发现，**不需改** `registry.ts`。
 
-### 3.3 MVP 实现：IMAP
+### 3.3 实现：IMAP（自研客户端）
 
-`src/adapters/mail/providers/imap/index.ts`：
+**不是用现成库** —— `imapflow` / `emailjs-imap-client` / `node-imap` 都绑死 Node 的
+`net`，而 MV3 的 Service Worker 里**没有裸 TCP**（见
+[`adr-0005`](../decisions/adr-0005-imap-needs-relay.md)）。所以：
 
-```ts
-import type { MailProvider, MailProviderDefinition } from '../../types'
-import { ImapFlow } from 'imapflow'
-import { simpleParser } from 'mailparser'
-
-export default {
-  definition: {
-    id: 'imap',
-    label: 'IMAP（用户名密码）',
-    hint: '通用；M3+ 再补 OAuth',
-    needsPassword: true,
-  } as MailProviderDefinition,
-
-  create(): MailProvider {
-    return {
-      async connect(account) {
-        const client = new ImapFlow({
-          host: account.config.host!,
-          port: account.config.port ?? 993,
-          secure: account.config.tls ?? true,
-          auth: { user: account.config.user!, pass: account.config.pass! },
-          logger: false,
-        })
-        await client.connect()
-        return {
-          async listRecent(limit) {
-            const lock = await client.getMailboxLock('INBOX')
-            try {
-              // 取最近 limit 封（按 UID 降序）
-              const uids = await client.search({ all: true }, { uid: true })
-              const recent = uids.slice(-limit).reverse()
-              const out: RawMail[] = []
-              for (const uid of recent) {
-                const msg = await client.fetchOne(
-                  String(uid),
-                  { source: true, envelope: true, internalDate: true },
-                  { uid: true },
-                )
-                if (!msg?.source)
-                  continue
-                out.push({
-                  source: msg.source,
-                  messageId: msg.envelope?.messageId ?? undefined,
-                  uid,
-                })
-              }
-              return out
-            }
-            finally { lock.release() }
-          },
-          async logout() { await client.logout() },
-        }
-      },
-    }
-  },
-}
+```
+src/adapters/mail/providers/imap/
+├── client.ts   ← 自研 IMAP4 客户端（LOGIN / SELECT / UID SEARCH / UID FETCH / IDLE）
+├── socket.ts   ← MailSocket 抽象：同一份客户端既能走中继，也能在 Node 里直连
+└── index.ts    ← 实现 MailProvider（getInitialCursor / fetchSince）
 ```
 
-> **注意**：`emailjs-imap-client` 较老，新代码建议直接用 [`imapflow`](https://github.com/postalsys/imapflow)（虽然在 Node-only，但 MV3 SW 也能跑——SW 实际是 Node-like 环境）。实际选型时再 PoC；如果跑不通再退回 `emailjs-imap-client`。
+只做需要的命令与解析，不做语法树：**字面量**（`{N}` 后的精确 N 字节）+ 行内扫描。
+MIME 解析交给 `postal-mime`（零依赖、纯浏览器），**不是** `mailparser`
+（它基于 Node `stream`，浏览器里要一堆 polyfill）。
 
-### 3.4 后续 Provider（占位）
+取「最近 N 封」的实际做法（`getInitialCursor` 的兄弟路径）：
+
+```
+UID SEARCH ALL            → 得到全部 UID
+slice(0, 50)              → 取**最旧的** 50 封（不是最新的！）
+UID FETCH <首>:<尾>       → 只传这一批的正文
+游标推进到本批最大 UID
+```
+
+> ⚠️「取最旧的 50 封」是个真机修出来的结论：最初取「最新 50 封」并把游标
+> 直接跳到 `UIDNEXT - 1`，于是**中间几万封被静默跳过** ——
+> 用户邮箱有 3.5 万封时表现为「同步很快完成，但老邮件全没了」。
+> 正确做法是**按顺序一批批吃完**，游标只推进到确实处理过的地方。
+
+### 3.4 后续 Provider
 
 | `id` | 来源 | 状态 |
 | --- | --- | --- |
+| `imap` | 用户名密码 + 本机中继 | ✅ 已实现 |
+| `gmail` | Gmail REST API + OAuth | ✅ 已实现（不需要中继） |
+| `outlook` | Microsoft Graph | ⬜ 待实现 |
 | `gmail-oauth` | Gmail API | M3+ |
 | `outlook-graph` | Microsoft Graph | M3+ |
 
@@ -205,97 +196,80 @@ export default {
   • 用户点「立即同步增量」
         │
         ▼
-syncAccount(account, appSettings)
+syncAccount(account, pipeline, options)          ← 签名见 mailbox.ts
         │
         ├─ 1. provider = createMailProvider(account.provider)
-        ├─ 2. connection = provider.connect(account)
+        ├─ 2. connection = provider.connect(account, hooks)
         │
-        ├─ 3. 检查 UIDVALIDITY
-        │     如果变了 → 警告 + 清零 account.lastSeenUid（详见 §4.2）
+        ├─ 3. 拉增量（**一轮只一批**）：
+        │     if account.cursor == null                 ← 首次同步
+        │         account.cursor = await connection.getInitialCursor()
+        │         return                                ← 只记游标，不拉任何邮件
         │
-        ├─ 4. 拉增量：
-        │     if account.lastSeenUid == null
-        │         account.lastSeenUid = connection.getNextUid() - 1   ← 不拉任何邮件
-        │         return                                              ← 首次只记游标
-        │     else
-        │         raws = connection.listSince(account.lastSeenUid)
+        │     result = await connection.fetchSince(account.cursor)
+        │     if result.uidValidityChanged → 游标重置到最新（详见 §4.2）
         │
-        ├─ 5. for each raw:
-        │     parsed = simpleParser(raw.source)
+        ├─ 4. for each raw in result.mails:
+        │     parsed = await parseMail(raw.source)      ← postal-mime
         │
         │     if appSettings.minimalMode:
-        │         await purseMinimal(raw, parsed, account)        ← §4.1 极简分支
+        │         await pipeline.processMinimal(mail)   ← §4.1 极简分支
         │     else:
-        │         mail = normalize(parsed, account.id)            ← §5
+        │         mail = normalize(parsed, account.id)  ← §5
         │         if isBlocked(mail, account.blockedList): continue   ← §6
-        │         await upsertMail(mail)                           ← §7 (含滚动)
-        │         await enqueueAi(mail)
+        │         await pipeline.process(mail)          ← AI + 入库 + 滚动淘汰
         │
-        ├─ 6. account.lastSeenUid = max(old, max raws.uid)
-        ├─ 7. account.lastSyncedAt = Date.now(); account.lastError = undefined; await put(...)
-        └─ 8. connection.logout()
+        ├─ 5. account.cursor = result.nextCursor        ← **本批**的最大位置
+        ├─ 6. account.lastSyncedAt = Date.now(); account.lastError = undefined
+        └─ 7. connection.logout()
 ```
 
-### 4.1 极简模式分支（`purseMinimal`）
+> ⚠️ 与早期流程图的差别（都是改过的）：
+> - 签名是 `syncAccount(account, pipeline, options)`，不是 `(account, appSettings)`；
+> - **没有 `enqueueAi`** —— AI 调用在 `pipeline.process()` 里；
+> - 游标是 `account.cursor`（不透明对象），不是 `lastSeenUid`；
+> - 第 5 步只在**整批成功**后才推进；中途抛错就写 `lastError` 且**不动游标**。
 
-> **极简模式 = 邮件根本不存，仅保留含验证码的邮件 + 头部信息**。详见 [`../design/minimal-mode.md` § 3](../design/minimal-mode.md)。
+### 4.1 极简模式分支
 
-```ts
-async function purseMinimal(raw: RawMail, parsed: ParsedMail, account: MailAccount) {
-  // 预筛：不像有验证码 → 丢弃
-  if (!looksLikeCodeEmail(parsed))
-    return
+**极简模式 = 含验证码的邮件保留（瘦身），其余根本不入库**。
 
-  // 极简 AI：只取 code
-  const { code } = await extractCodeOnly(parsed, account)
+实现是 `logic/ai/pipeline.ts` 的 `processMinimal(mail)` ——
+**函数体不在这里重复**（早期两处各写一份，改了这边忘了那边）。
+看 [`../design/minimal-mode.md § 3.2`](../design/minimal-mode.md)，
+那里有一份与代码同步的版本。
 
-  // 没提到 → 丢弃
-  if (!code)
-    return
+三点这里要记住的：
 
-  // 自动复制
-  const copied = await copyToClipboard(code)
-
-  // 写最小记录
-  await upsertMinimalMail({
-    id: mailKey(account.id, raw.messageId ?? nanoid()),
-    accountId: account.id,
-    from: parsed.from?.value ?? [],
-    subject: parsed.subject ?? '',
-    code,
-    receivedAt: (parsed.date as Date)?.getTime() ?? Date.now(),
-    copyStatus: copied ? 'copied' : 'failed',
-  })
-
-  // 顶部 toast
-  await sendMessage('mail:toast', {
-    kind: 'code',
-    mailId: minimalMail.id,
-    from: parsed.from?.value?.[0]?.address ?? '',
-    code,
-    status: copied ? 'copied' : 'failed',
-  }, { context: 'content-script', tabId: await getActiveTabId() })
-}
-```
-
+1. 它按**同一张 `Mail` 表**写记录（未用字段留空），不是第二套 schema；
+2. 保留数量**写死 50**（`MINIMAL_RETENTION`），不读用户的 `mailRetention`；
+3. **没有降级**：AI 没提取到验证码就丢弃该邮件，不入库、不弹 toast。
 ### 4.2 UIDVALIDITY 处理
 
-> IMAP 邮箱在某些情况下（重建、迁移、磁盘故障恢复）会让 `UIDVALIDITY` 改变；这意味着之前记录的 `lastSeenUid` **不再有意义**。
+> IMAP 邮箱在某些情况下（重建、迁移、磁盘故障恢复）会让 `UIDVALIDITY` 改变；
+> 这意味着之前记录的游标 **不再有意义**。
+
+游标是 `{ uid, uidValidity }` 一起存的，所以检测就是比一下：
 
 ```ts
-async function syncAccount(account, settings) {
-  const connection = await provider.connect(account)
-  const validity = await connection.getUidValidity()
+const connection = await provider.connect(account)
 
-  if (account.uidValidity && account.uidValidity !== validity) {
-    // UIDVALIDITY 变了：清零游标，下次同步只记 UIDNEXT 不拉邮件；用户去邮箱自己看
-    console.warn(`[mail-peon] 账号 ${account.label} 的 UIDVALIDITY 变了（${account.uidValidity} → ${validity}），已清零 lastSeenUid`)
-    account.uidValidity = validity
-    account.lastSeenUid = null
-    account.lastError = '邮箱 UIDVALIDITY 变化；下次同步将从最新邮件开始（不再保留历史）'
-    await put('accounts', account, account.id)
-  }
-  // ...正常同步
+// fetchSince 内部读到 UIDVALIDITY 与游标里的不一致 → 置 uidValidityChanged
+const result = await connection.fetchSince(account.cursor)
+
+if (result.uidValidityChanged) {
+  /*
+   * ⚠️ 做法是**把游标换成「现在」**（UIDNEXT - 1），不是清零成 undefined。
+   *   清零的话下一轮会走「首次同步」分支，也就是**只记游标不拉邮件** ——
+   *   结果一样，但要多一轮心跳才追平。
+   *
+   * ⚠️ 刻意**不做恢复**：UID 已经全部重新分配，没有可靠的映射能把旧 UID
+   *   对应到新 UID。试图「恢复」只会拉到一堆无关邮件。
+   */
+  console.warn(`[mail-peon] ${account.label} 的 UIDVALIDITY 变了 → 游标重置到最新`)
+  account.cursor = await connection.getInitialCursor()
+  account.lastError = '邮箱 UIDVALIDITY 变化；已从最新邮件重新开始'
+  await upsertAccount(account)
 }
 ```
 
@@ -303,11 +277,11 @@ async function syncAccount(account, settings) {
 
 ## 5. Normalize（`src/adapters/mail/parser.ts`）
 
-`simpleParser` 输出 → `Mail`：
+`postal-mime` 解析结果 → `Mail`：
 
 | 字段 | 来源 |
 | --- | --- |
-| `id` | `<accountId>:<messageId>`，**健**为 messageId 缺失时退化为 `nanoid()` |
+| `id` | `<accountId>:<messageId>`，**键**为 messageId 缺失时退化为 `nanoid()` |
 | `accountId` | 当前 account |
 | `from` / `to` / `cc` | `{ name, address }[]` |
 | `subject` | text |
@@ -410,10 +384,10 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
 
 | 错误 | 现象 | 处理 |
 | --- | --- | --- |
-| 账号 / 密码错 | `LOGIN Failed` | 写 `account.lastError`；下次同步跳过（直到用户重测） |
+| 账号 / 密码错 | `LOGIN Failed` | 写 `account.lastError` 并在 Options 展示。**不做跳过** —— 下一轮仍会重试同一段游标（用户改对密码后自动恢复） |
 | TLS 失败 | `ECONNRESET` | 同上 |
-| 解析某封失败 | `simpleParser` throw | 跳过该封，继续处理其余 |
-| 网络抖动 | `ETIMEDOUT` | 单封失败不写 lastError；3 次连续失败才写 |
+| 解析某封失败 | `postal-mime` throw | 跳过该封并计入 `failed`，继续处理其余 |
+| 网络抖动 | `ETIMEDOUT` | 账号级失败立即写 `account.lastError`（**没有** 3 次阈值）；单封失败只计入 `failed` |
 | IDB 事务回滚 | `TransactionInactiveError` | 调整 IDB 调用模式（参见 `design/storage.md` 头部规矩） |
 
 ---

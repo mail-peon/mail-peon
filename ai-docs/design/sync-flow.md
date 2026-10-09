@@ -50,8 +50,12 @@
 ## 2. 中继的 watch 状态机
 
 ```
-   收到 watch 请求 {__watch:1, host, port, tls, user, pass}
+   收到 watch 请求 {__watch:1, accountId, host, port, tls, user, pass, token}
               │
+              │  ⚠️ 这些字段是**不可信输入**：中继侧把 host/port/user/pass
+              │     一律当 unknown 收下，再 String() / Number() 转换 ——
+              │     转换那一层就是信任边界（见 relay 的 isWatchRequest）
+              ▼
               ▼
        连 TCP + TLS
               │
@@ -247,10 +251,17 @@
 **关键**：游标永远只推进到「本批确实处理过的最后一个」。
 任何一批失败都不丢件 —— 游标没动，下次重拉同一批。
 
-积压时**不需要**等下一轮推送：中继在连接期间已经推过一次「有新邮件」，
-插件抓完一批后如果发现「还有积压」会自己接着抓，直到 `SEARCH` 返回空。
-（`MAX_MESSAGES_PER_SYNC = 50` 限的是**单次 FETCH 传输量**，不是单轮总量 ——
-一次 `UID FETCH` 拉几千封正文必然撞爆 IMAP 的 30 秒命令超时。）
+⚠️ **一轮同步只处理一批**（≤50 封），**没有轮内循环**：
+`syncAccount` 只调一次 `fetchSince`，`runSyncCycle` 只跑一次 `syncAllAccounts`。
+所以积压是**由后续心跳一轮轮吃完的**，不是在某一轮里循环到追平。
+
+（`MAX_MESSAGES_PER_SYNC = 50` 限的是**单次 FETCH 传输量** ——
+一次 `UID FETCH` 拉几千封正文必然撞爆 IMAP 的 30 秒命令超时。
+早期文档写「抓完一批后自己接着抓，直到 SEARCH 返回空」，那是**没实现**的。）
+
+> 代价是追平 3 万封积压要几百轮心跳（≈ 数天）。这是可接受的：
+> 用户关心的是**新**邮件 —— 而新邮件由中继推送即时触发同步，
+> 积压只是历史，慢慢补即可，且补的过程中新邮件始终优先。
 
 ---
 
@@ -260,7 +271,7 @@
 连接没恢复、网络切换），所以插件保留一个**低频**的 `chrome.alarms`：
 
 ```
-   每 10 分钟（可配）
+   每 10 分钟（**写死**，`SYNC_PERIOD_MINUTES`）
         │
         ▼
    走同一条 runSyncCycle
@@ -286,8 +297,11 @@
           │
           ▼
    ① UI → background：accounts:sync-now
-      ◀── 立刻返回 { started, startedAt }      ← 不持有长消息
+      ◀── 立刻返回 { started: true }           ← 不持有长消息
           │                                      （MV3 worker 30 秒会回收）
+          │  ⚠️ `startedAt` 是 **UI 侧**记的（`bridge.ts`），
+          │     background 只回 `started`。用它跟 `finishedAt` 比对，
+          │     判断「这是不是我这次点击的结果」
           ▼
       background 在后台跑同步
           │

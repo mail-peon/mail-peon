@@ -16,7 +16,7 @@
 │   中继推送（常驻 IDLE）                              │
 │      │                                            │
 │      ▼                                            │
-│   拉新邮件 (UID > lastSeenUid)                     │
+│   拉新邮件 (UID > cursor.uid)                      │
 │      │                                            │
 │      ▼                                            │
 │   预筛 (subject 含 验证码 / code / OTP?            │
@@ -62,12 +62,15 @@
 | **多 PromptRule 匹配** | ❌ | ✅ |
 | **排除邮箱列表** | ❌ | ✅ |
 | **排除广告开关** | ❌ | ✅ |
-| **Popup 邮件流（重要 / 全部 / 营销）** | ❌ | ✅ |
+| **Popup 邮件流（重要 / 全部 / 验证码 / 营销）** | ❌ | ✅ |
 | **Popup 仅验证码列表** | ✅ | ✅ |
 | **icon badge 数字** | ❌ | ✅ |
 | **邮件正文 / 摘要 入库** | ❌ | ✅ |
-| **设置项：AI 配置 / 提示词 / 屏蔽** | ❌ 隐藏 | ✅ 全部 |
+| **设置项：AI 配置** | ✅ 保留（提取验证码的前提） | ✅ |
+| **设置项：提示词 / 屏蔽列表** | ❌ 隐藏（属于完整模式的功能） | ✅ 全部 |
+| **设置项：回收站** | ✅ 保留（自动删除往这里放东西） | ✅ |
 | **保留数量配置** | ❌（写死 50 条验证码） | ✅ 用户可配 |
+| **失效验证码自动删除** | ✅（默认开） | ✅ |
 
 ---
 
@@ -77,46 +80,58 @@
 
 ### 3.2 写入策略
 
+实现在 `src/logic/ai/pipeline.ts` 的 `processMinimal(mail)`：
+
 ```ts
-async function purseMinimal(raw: RawMail, account: MailAccount): Promise<void> {
-  const parsed = await simpleParser(raw.source)
+async function processMinimal(mail: Mail, app: AppSettings): Promise<MailOutcome> {
+  // 1. 预筛：不明显有验证码的 → 直接丢弃（省一次 AI 调用）
+  if (!looksLikeCodeEmail(mail))
+    return 'skipped'
 
-  // 预筛：不明显有验证码的 → 丢弃
-  if (!looksLikeCodeEmail(parsed)) return
+  // 2. AI 极简 prompt 提取。⚠ 没配 Key 也丢弃（记 warn，不报错）
+  const extracted = await extractCodeOnly(mail, await readAiSettings())
+  if (!extracted)
+    return 'skipped'          // 拿不到验证码 → 丢弃，**不写库**
+  const { code, validForSeconds } = extracted
 
-  // AI 极简 prompt 提取
-  const { code } = await extractCodeOnly(parsed, account)
+  // 3. 自动复制（极简模式恒为 true；带超时，失败不影响入库）
+  const copied = await copyWithTimeout(notifier, code)
 
-  // AI 没找到 → 丢弃
-  if (!code) return
-
-  // 自动复制
-  const copied = await copyToClipboard(code)
-
-  // 写最小记录
-  const mail: Mail = {
-    id: mailKey(account.id, raw.messageId ?? nanoid()),
-    accountId: account.id,
-    from: parsed.from?.value ?? [],
-    to: [],
-    subject: parsed.subject ?? '',
+  // 4. 写**瘦身**记录：同一个 Mail 表，未用字段留空
+  const minimalMail: Mail = {
+    ...mail,
     snippet: '',
     bodyText: undefined,
     bodyHtml: undefined,
-    receivedAt: (parsed.date as Date)?.getTime() ?? Date.now(),
     processing: 'skipped',
-    ai: undefined,
+    code,                                        // 顶层判据（UI / badge 用）
+    codeExpiresAt: deriveCodeExpiresAt(mail, validForSeconds),
+    codeValidForSeconds: validForSeconds ?? undefined,
+    ai: {
+      minimal: `验证码：${code}`,
+      summary: '',
+      isAd: false,
+      code,
+      validForSeconds,
+      urgency: 'high',
+    },
     copyStatus: copied ? 'copied' : 'failed',
-    read: false,
-    dismissed: undefined,
-    messageId: raw.messageId,
-    listUnsubscribe: undefined,
-    ruleId: undefined,
   }
-  await upsertMail(mail, retention = 50)
-  await toastCodeCaptured(mail)
+  await upsertMail(minimalMail, MINIMAL_RETENTION)   // 50
+  await notifySafe(notifier, { kind: 'code', … })
+  return 'saved'
 }
 ```
+
+与早期草图的差别（都是改过的）：
+
+| | 早期草图 | 现在 |
+| --- | --- | --- |
+| 函数名 | `purseMinimal(raw, account)` | `processMinimal(mail)` |
+| 提取 | `extractCodeOnly(parsed, account)` → `{ code }` | `extractCodeOnly(mail, settings)` → `MinimalExtraction \| null`，含 `validForSeconds` |
+| `ai` 字段 | `undefined` | **真的写一个 `ai` 对象**（`minimal` / `code` / `validForSeconds` / `urgency: 'high'`） |
+| 保留数量 | `upsertMail(mail, retention = 50)` | `upsertMail(mail, MINIMAL_RETENTION)` |
+| AI 失败 | 「走与完整模式相同的降级」 | **直接丢弃** —— 极简模式没有 `degraded` 记录，因为它的价值只有验证码 |
 
 ### 3.3 预筛（不调 AI 也能省）
 
@@ -179,7 +194,11 @@ const MINIMAL_RETENTION = 50
 > **⚠️ 已修正**：极简模式隐藏的是**属于完整模式功能的页面**（提示词 / 屏蔽列表），
 > 而**配置前提**必须保留 —— 没有「账号」页加不了邮箱，没有「AI 配置」提取不了验证码。
 > 原文写「只显示这一页」时把「配置项」和「功能」混为一谈了，照原文实现的极简模式
-> **根本没法用**。极简模式实际保留 4 页：通用 / 账号 / AI 配置 / 关于。
+> **根本没法用**。极简模式实际保留 **5** 页：通用 / 账号 / AI 配置 / **回收站** / 关于。
+>
+> ⚠️ 「回收站」是后来加的，它**在两种模式下都显示**，因为它不是「功能」而是**数据出口**：
+> 「失效验证码自动删除」默认开着，会往回收站里放东西；极简模式藏掉这一页，
+> 用户就找不到那些自动消失的验证码了 —— 而那正是最需要回收站的时候。
 >
 > 另外「通用」页里的开关也要按模式过滤：极简模式只留「验证码自动复制」，
 > 广告排除 / Badge / 弹窗默认 Tab / 保留数量都不显示（它们对极简模式无意义）。
@@ -227,9 +246,8 @@ const MINIMAL_RETENTION = 50
 
 | 场景 | 行为 |
 | --- | --- |
-| 用户没配 AI Key（极简模式下也得有 AI 才能提取 code） | Options 顶部显示"⚠️ 验证码提取需要先配置 AI Key（点击设置）" |
-| AI 调用失败 | 走与完整模式相同的降级（落 `mail.ai = { degraded: true, error }`），但因为极简模式下 AI 输出是 `{ code }`，降级意味着这条验证码**没拿到**——记录不入库，toast 也不弹；建议改成"记下来但标红"，让用户去 Sidepanel 找 |
-| 用户切到极简但 AI Key 空 | Popup 顶部给出 CTA："需要先在设置里配 AI Key 才能工作" |
+| 用户没配 AI Key | **Popup 顶部**显示 CTA「⚠️ 验证码提取需要先配置 AI Key」+ 按钮跳设置。<br>⚠️ 早期文档说这个 CTA 在 **Options** 顶部，实际在 **Popup** 顶部（`popup/Popup.vue`） |
+| AI 调用失败 / 没提取到验证码 | **直接丢弃**该邮件：不入库、不弹 toast。极简模式**没有** `degraded` 记录 —— 它的价值只有验证码，留一条没验证码的记录没有意义（完整模式才有降级记录） |
 | 邮件含多个验证码（罕见） | 取第一个；记到 `mail.code` |
 
 ---
@@ -249,13 +267,13 @@ const MINIMAL_RETENTION = 50
 ## 8. 实施清单
 
 - [ ] `AppSettings.minimalMode: boolean` 默认 `true`
-- [ ] `purseMinimal(raw, account)` 函数（含预筛 + 极简 AI + 自动复制 + toast）
+- [x] `processMinimal(mail)` 函数（含预筛 + 极简 AI + 自动复制 + toast）
 - [ ] `extractCodeOnly(parsed, account)` 用极简 prompt
 - [ ] Popup / Sidepanel 根据 `minimalMode` 切布局
 - [x] Options 路由：极简模式隐藏**功能页**（提示词 / 屏蔽列表），保留**配置页**
       （账号 / AI 配置）—— 见上文 § 4.1 的修正说明
 - [ ] 切换模式时不需清数据
-- [ ] 单测覆盖 `looksLikeCodeEmail` / `purseMinimal` 决策路径
+- [x] 单测覆盖 `looksLikeCodeEmail` / `processMinimal` 决策路径
 
 ---
 

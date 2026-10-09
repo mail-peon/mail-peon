@@ -77,13 +77,17 @@
 
 ### 2.3 扩展 ↔ 中继 的约定
 
-| 项 | 决定 |
+> ⚠️ 本表混了**两种状态**：已经落地的（Node 版中继）与**Rust 版/安装器的目标**。
+> 前者按实际代码写，后者明确标 `(待实现)` —— 早期版本把目标写成了既成事实，
+> 结果照着文档找不到任何对应实现。
+
+| 项 | 现状 / 目标 |
 | --- | --- |
-| 中继地址 | 固定 `ws://127.0.0.1:<port>`，**配置字段对用户隐藏** |
-| 端口 | 中继监听 `127.0.0.1:0` 由系统分配，把实际端口写进发现文件（见下）；扩展读它，读不到则回退到固定默认端口 |
-| 发现文件 | Windows `%LOCALAPPDATA%\mail-peon\port`；macOS `~/Library/Application Support/mail-peon/port`；Linux `~/.local/share/mail-peon/port` |
-| 版本协商 | 中继在 WebSocket 握手后上报版本；扩展发现不兼容时提示更新（避免「扩展更新了但 exe 没更新」） |
-| 扩展连不上时 | 文案必须是「**请先运行 mail-peon 助手**」，**不能**是「网络错误」 |
+| 中继地址 | **现状**：账号表单里的**必填可见字段**（`providers/imap/index.ts` 的 `relayUrl`，默认值 `ws://127.0.0.1:8787/`）。<br>目标：装好后固定为 `ws://127.0.0.1:<port>`，字段对用户隐藏 `(待实现)` |
+| 端口 | **现状**：固定默认 **8787**（`--port` / `PORT` 可改）。占用则报 `EADDRINUSE` → 用 `netstat` / `lsof` 找出占用者 → 问 `[Y/n]` 是否杀掉它再启动。<br>目标：监听 `127.0.0.1:0` 由系统分配 + 写发现文件 `(待实现)` |
+| 发现文件 | **现状**：不存在。<br>目标：Windows `%LOCALAPPDATA%\mail-peon\port`；macOS `~/Library/Application Support/mail-peon/port`；Linux `~/.local/share/mail-peon/port` `(待实现)` |
+| 版本协商 | **现状**：watch 协议里**没有**版本字段。<br>目标：握手后上报版本，扩展发现不兼容时提示更新（避免「扩展更新了但 exe 没更新」）`(待实现)` |
+| 扩展连不上时 | **现状**：文案是「当前环境没有裸 TCP，IMAP 需要配置一个 WebSocket↔TCP 中继地址…要么在账号里填中继，要么改用 Gmail（OAuth）协议」（`transport/relay.ts`），以及账号页的「需要先在本机运行中继（`pnpm relay`）」。<br>目标：统一成「请先运行 mail-peon 助手」——**产品名未定**，定下来再改文案 |
 
 ---
 
@@ -92,7 +96,7 @@
 | 坑 | 处理 |
 | --- | --- |
 | **代码签名（最贵的一步）** | Windows：无签名 → SmartScreen 拦截「Windows 已保护你的电脑」（OV/EV 证书，EV 可立刻免警告）。macOS：**必须签名 + notarize**，否则 Gatekeeper 直接拒绝运行（Apple Developer $99/年）。Linux：不需要 |
-| **端口冲突** | 见 §2.3，靠 `:0` + 发现文件 |
+| **端口冲突** | 现状：固定 8787，`EADDRINUSE` 时用 `netstat`/`lsof` 找占用者并问 `[Y/n]`。目标（Rust 版）：靠 `:0` + 发现文件，见 §2.3 |
 | **多账号并发** | 每条 WebSocket 连接开独立 TCP，**不能复用**（IMAP 是有状态协议） |
 | **三平台打包** | Windows `.exe`(Inno/NSIS 或自研)；macOS `.pkg`/`.dmg`；Linux `.deb`/`.rpm`/AppImage。三套都要维护 |
 | **后台无界面 → 排查难** | 中继写日志到固定路径；扩展侧给出可操作文案 |
@@ -113,9 +117,10 @@
 
 ```
 装好扩展
-  ├─ Gmail / Outlook ──▶ 点一次 OAuth ──▶ 完成        零额外安装
-  └─ 其它邮箱（IMAP）──▶ 提示「需安装 mail-peon 助手」
+  ├─ Gmail ──▶ 点一次 OAuth ──▶ 完成                  零额外安装（Outlook 待实现）
+  └─ 其它邮箱（IMAP）──▶ 提示「需安装 mail-peon 助手」   ← 助手/安装器待实现
                             └─▶ 运行一个安装器 ──▶ 之后全自动
+                                目前：手动 `pnpm relay`
 ```
 
 两条路在代码里**已经共用** `MailProvider` 抽象与同一个 `parser.ts`，
@@ -135,7 +140,7 @@
 | --- | --- | --- |
 | 1 | 修 Node 中继的 `tls`（原用裸 `connect()` 连 993，IMAP 根本连不上） | ✅ 已完成 |
 | 2 | 修背压 / `ALLOWED_HOSTS` 通配 / 关闭帧崩溃 | ✅ 已完成 |
-| 3 | **用户用真邮箱（QQ 邮箱）验证协议正确** → [`imap-testing.md`](./imap-testing.md) | ⬜ **当前阶段** |
+| 3 | **用户用真邮箱（QQ 邮箱）验证协议正确** → [`imap-testing.md`](./imap-testing.md) | 🟡 进行中 —— 已跑通真实邮箱，并因此修掉一批真机问题（3 万封积压的静默丢件、MV3 30 秒回收导致「同步中」卡死、广播丢失、复制降级挂死入库）。**尚未逐条走完** `imap-testing.md § 4` 的验收清单 |
 | 4 | 照抄成 Rust（此时有参照实现与测试用例，是机械工作） | ⬜ |
 | 5 | 安装器 + 服务注册 + 三平台打包 | ⬜ |
 | 6 | 代码签名 / notarize | ⬜ |
@@ -167,10 +172,15 @@
 
 现在：
 
-- 新增 `tsconfig.scripts.json`（`types: ["node"]`，`include` 覆盖 `scripts/**/*.ts`）
+- 新增 `tsconfig.scripts.json`（`types: ["node"]`，`include` 是 `scripts/**/*.ts` + `scripts/**/*.mts`）
 - `pnpm typecheck` = `tsc --noEmit && tsc -p tsconfig.scripts.json` —— **脚本和产品代码同一道门禁**
 - 加了 `@types/ws`
-- 删掉了全部 `eslint-disable`
+- 删掉了当初为 `unused-imports/no-unused-vars` 误报加的那些 `eslint-disable`
+
+> ⚠️ **还有 3 处 `eslint-disable` 是有意保留的**（都是 `no-control-regex`）：
+> `imap-relay.ts`、`relay-console.test.ts`、`relay-port-prompt.test.ts`。
+> 那条规则的本意是「别在正则里塞控制字符」，而那三处**就是要**匹配控制字符
+> （ANSI 转义以 ESC 开头）。它们不属于「盖问题」，所以留着。
 
 补类型的过程中**真的抓出两个 bug**（都是运行期才会炸的）：
 

@@ -109,7 +109,8 @@ onMessage('mail:toast', (payload) => showToast(payload))
 - 若无验证码：code 字段填 null
 ```
 
-> **关键**：要求 AI **只输出验证码字符串**，不要带"您的验证码是"等中文。MVP 用正则 `[A-Z0-9]{4,8}` 兜底提取，保证即便 AI 给一句话也能匹配出来。
+> **关键**：要求 AI **只输出验证码字符串**，不要带"您的验证码是"等中文。
+> 合法形状是 `[A-Za-z0-9]{4,12}`（`CODE_PATTERN`），超出即当作没有验证码。
 
 ---
 
@@ -140,38 +141,86 @@ onMessage('mail:toast', (payload) => showToast(payload))
 
 ### 5.2 Popup / Sidepanel 邮件卡片（含验证码）
 
+实际的样子（`MailListItem.vue`）：
+
 ```
 ┌────────────────────────────────────┐
-│ GitHub · noreply@github.com  ✕    │
+│ GitHub · noreply@github.com   2 分钟前 │   ← 悬停卡片时时间换成右上角的垃圾桶
 ├────────────────────────────────────┤
-│ Subject                             │
 │ 你的验证码：123456                  │
 │                                     │
-│ Code                                │
-│ 123456                [复制]       │
+│ 验证码  123456            复制      │   ← 「复制」是文字按钮
 │                                     │
-│ Summary                             │
-│ （无）                              │
+│ 摘要                                │
+│ AI 给的一句话                       │
 │                                     │
-│ [在邮箱中打开]  [标记已读]         │
+│ [标记已读]  [不再显示]              │   ← 展开后才出现
+├────────────────────────────────────┤
+│ 4:32                        有效    │   ← 倒计时条（仅在邮件写了有效期时）
 └────────────────────────────────────┘
 ```
 
-### 5.3 Sidepanel「验证码」分区
+⚠️ **卡片上没有「在邮箱中打开」**，也没有「复制摘要」—— 设计过但没做。
+卡片能做的四件事：复制验证码、标记已读/未读、不再显示、删除（悬停右上角）。
 
-- 顶部一行提示："最近 X 小时内收到的验证码，点击复制"
-- 列表项：邮件标题 + code + 复制按钮 + 时间
+### 5.3 有效期倒计时
+
+只在**邮件明确写了有效期**时出现。
+
+```
+AI（读邮件）──▶ validForSeconds（秒）
+                      │
+               pipeline 换算：codeExpiresAt = min(receivedAt, now) + validForSeconds × 1000
+                      │                  codeValidForSeconds = validForSeconds
+                      ▼
+              CodeCountdown.vue：M:SS + 进度条
+```
+
+```
+⚠ 有效期**必须由 AI 判断**，不许用正则去正文里找时间。
+  「5 分钟内有效」这种表述有几十种写法（中文 / 英文 / 「半小时」/「两小时」…），
+  正则覆盖不全，而**猜错比不显示更糟** —— 用户会据此决定要不要现在去用。
+
+⚠ 模型看不到当前时间，所以只能输出**相对秒数**；
+  换算成绝对时刻是 pipeline 的事（`deriveCodeExpiresAt`）。
+
+⚠ 基准取 `min(receivedAt, now)`：`receivedAt` 因时钟跳变落在未来时，
+  相加会给出虚高的失效时刻，用户会看到「还有 5 分钟」而其实早失效了。
+
+⚠ 进度条的分母是 `codeValidForSeconds`（总时长），**不是**「挂载时的剩余量」。
+  用后者的话它表达的是「这次打开弹窗之后过了多久」，
+  每次打开都从 100% 重来 —— 真机 bug，见 [`07-trash.md § 5.4`](./07-trash.md)。
+```
+
+配色与状态：剩余 >20% 绿色 → ≤20% 转黄 → 失效转灰。
+失效时**左侧显示失效的具体时间点**（当天 `HH:mm:ss`，跨天 `YYYY-MM-DD HH:mm:ss`）——
+只写「失效」两个字不告诉用户**什么时候**失效的，而那决定了还有没有救。
+
+### 5.4 Sidepanel「验证码」分区
+
+复用同一个卡片列表，过滤到含验证码的邮件。
+
+> ⚠️ 早期设计里有「顶部一行提示：最近 X 小时内收到的验证码」，
+> **没有实现**（`strings.ts` 里没有这条文案）。
 
 ---
 
 ## 6. 存储
 
-不新增字段，复用：
+复用 + **新增**（新增字段是为了「有效期倒计时」）：
 
-- `Mail.ai.code: string | null`
-- `Mail.copyStatus: 'none' | 'copied' | 'failed'`
-- `Settings.autoCopyCode: boolean`
-- `PromptRule.alwaysCopyCode?: boolean`
+| 字段 | 作用 |
+| --- | --- |
+| `Mail.code: string \| null` | 顶层判据 —— UI 与 badge 用它，避免每处都去翻 `ai` |
+| `Mail.codeExpiresAt?: number` | 失效**时刻**（epoch ms） |
+| `Mail.codeValidForSeconds?: number` | 总有效期**秒数**（进度条的分母） |
+| `Mail.ai.validForSeconds?: number \| null` | AI 读到的原始时长（秒） |
+| `Mail.copyStatus` | 只由**自动复制**写；手动复制的反馈是纯前端瞬时的，不落库 |
+| `Settings.autoCopyCode` / `Settings.autoDeleteExpiredCode` | 两个开关 |
+| `PromptRule.alwaysCopyCode?: boolean` | 规则级覆盖 |
+
+> ⚠️ `codeExpiresAt` 与 `codeValidForSeconds` **同生同灭**（见 `deriveCodeExpiry`）。
+> 只存失效时刻的话前端算不出比例 —— 那会让进度条每次打开弹窗都从 100% 重来。
 
 ---
 
@@ -179,12 +228,14 @@ onMessage('mail:toast', (payload) => showToast(payload))
 
 | 场景 | 处理 |
 | --- | --- |
-| AI 输出 code 但长度异常（>20 / 含非数字字母） | 当作 `code = null`，走普通邮件流（不弹 toast） |
+| AI 输出 code 但长度异常（`>12` / 含非字母数字） | 当作 `code = null`，走普通邮件流（不弹 toast）。合法形状是 `[A-Za-z0-9]{4,12}` |
+| **邮件里没写有效期** | **不显示倒计时**，也不给默认值 —— 猜一个「常见 5 分钟」比不显示更糟（用户会据此判断能不能用） |
 | 用户焦点不在任何窗口 | SW 中 `writeText` 失败 → 推到 content_script 重试 |
-| 同一封邮件多次到达（重发 / 重试） | 已复制过的不再复制；toast 不重复弹；`copyStatus` 保留 |
+| 同一封邮件多次到达（重发 / 重试） | toast 按 `mailId` 去重，不重复弹；`copyStatus` 保留 |
 | 用户改全局开关 | 不重处理已发邮件；新邮件走新规则 |
 | 内容脚本未注入（chrome:// 页面） | 跳过 toast；`mail.copyStatus = 'failed'`；用户去 Popup 复制 |
 | 无激活 tab（所有窗口最小化） | 跳过 toast；不报错；badge 数字照常更新 |
+| 验证码已失效 | 再过 30 秒自动移入回收站（可恢复），见 [`07-trash.md § 4`](./07-trash.md) |
 
 ---
 

@@ -202,30 +202,38 @@ src/
 
 ## 3. 跨上下文通信
 
-模板已使用 [`webext-bridge`](https://github.com/serversideup/webext-bridge)，约定**消息命名**如下：
+用 [`webext-bridge`](https://github.com/serversideup/webext-bridge)。
 
-| Channel | 方向 | 用途 |
-| --- | --- | --- |
-| `mail:new` | bg → popup/sidepanel | 新邮件到达 |
-| `mail:updated` | bg → popup/sidepanel | 邮件 AI 处理完成 |
-| `mail:list` | popup/sidepanel → bg | 取最近邮件列表 |
-| `mail:get` | popup/sidepanel → bg | 取单封邮件 + 摘要 |
-| `mail:copy-code` | bg → content_script | 验证码重试复制（在页面 focus 上下文里执行 writeText） |
-| `mail:toast` | bg → content_script | 在当前页面顶部弹 toast（详见 [`design/page-toast.md`](./design/page-toast.md)） |
-| `mail:dismiss` | popup/sidepanel → bg | 标记为已读 / 删除 |
-| `accounts:list` | options → bg | 取所有邮箱账号 |
-| `accounts:upsert` | options → bg | 新增 / 修改账号 |
-| `accounts:test` | options → bg | 测试连接 |
-| `accounts:delete` | options → bg | 删除账号 |
-| `rules:list` | options → bg | 取所有 PromptRule |
-| `rules:upsert` | options → bg | 增改规则 |
-| `rules:delete` | options → bg | 删除规则 |
-| `settings:get` / `settings:set` | options/popup → bg | 全局设置 |
-| `ai:test` | options → bg | 测试 AI 配置 |
+> **通道清单的单一真相是 [`shim.d.ts`](../shim.d.ts) 里的 `ProtocolMap`** ——
+> 它同时充当类型声明与文档，`send` / `onMessage` 靠它保证拼写正确。
+> 这里**不再维护一份副本**：早期那张表只有十几个通道，实际有 40 多个，
+> 而且 `mail:new` / `settings:set` 这种**不存在**的通道还留在表里。
+
+按用途分组（细节看 `ProtocolMap`）：
+
+| 组 | 通道 |
+| --- | --- |
+| 邮件 | `mail:list`、`mail:get`、`mail:dismiss`、`mail:mark-all-read`、`mail:updated`（广播） |
+| 验证码复制 | `mail:copy-code`（bg → content script 的重试通道）、`mail:manual-copy-result`、`mail:toast` |
+| 账号与同步 | `accounts:list` / `upsert` / `delete` / `test` / `reset-cursor` / `gmail-authorize`、`accounts:sync-now`、`accounts:sync-status`、`sync:done`（广播） |
+| 回收站 | `trash:list` / `trash` / `restore` / `delete` / `empty` |
+| 规则 | `rules:list` / `upsert` / `delete` / `move` |
+| 设置 | `settings:get`、`settings:set-app`、`settings:set-ai`、`settings:usage`、`settings:clear-mails`、`settings:clear-all` |
+| AI / Provider | `ai:platforms`、`ai:test`、`mail:providers` |
+| 通用广播 | `data:changed`（「别处数据变了，去重读」） |
 
 > **不再使用 `chrome.notifications`**，新邮件到达只用 `chrome.action.setBadgeText` 提示，详细见 [`features/02-ai-summary.md § 6`](./features/02-ai-summary.md)。
 
-消息体使用 TypeScript 类型（建议放在 `src/logic/types.ts`），并通过 `shim.d.ts` 给 `OnMessageEventNameMap` 加签名。
+几个容易踩的点：
+
+- **广播不保证送达**。`webext-bridge` 的 `connMap` 每个 context 名只留最后一个连接，
+  而三个界面（Popup / Options / Sidepanel）**都注册成 `popup`** ——
+  一个断开就把整个键删掉。所以「点同步」这类操作必须**同时**提供轮询兜底
+  （`accounts:sync-status`），不能只靠 `sync:done`。详见
+  [`decisions/imap-testing.md § 11`](./decisions/imap-testing.md)。
+- **`accounts:sync-now` 立刻返回、不等结果**：MV3 的 SW 空闲 30 秒被回收，
+  而「正在进行中的 `sendMessage`」**不算事件** —— 把一轮同步的耗时压在消息往返上，
+  超过 30 秒时 promise 永远不 settle（真机现象：一直停在「同步中」）。
 
 ---
 
@@ -285,7 +293,11 @@ src/
 | 后台 | `service_worker: 'dist/background/index.mjs'` | `scripts: ['dist/background/index.mjs'], type: 'module'`（互斥给键，不要并存） |
 | 侧栏 | `side_panel.default_path` | `sidebar_action.default_panel` |
 | 最低版本 | MV3 | `browser_specific_settings.gecko.strict_min_version = '109.0'` |
-| 隐私声明 | privacy policy | `data_collection_permissions.required = ['none']` |
+| 隐私声明 | privacy policy | ⬜ `data_collection_permissions.required = ['none']` **尚未加进 manifest** —— AMO 上架时补 |
+
+**权限**（`manifest.ts` 的 `permissions`）：`tabs`、`activeTab`、`alarms`、
+`sidePanel`、`identity`（Gmail OAuth）、`storage`（仅一次性迁移的兼容读取）。
+**刻意没有 `scripting`** —— content script 是常驻注入的（见 `design/page-toast.md`）。
 
 ---
 
@@ -296,16 +308,25 @@ src/
 - **插件保留一个低频 `alarms` 兜底**：推送依赖「中继在跑 + 连接活着」，两个前提都可能
   不成立（中继没起、睡眠后连接没恢复）。它是保险丝，不是主要手段。
 - **冷启动**：监听 `runtime.onInstalled` / `runtime.onStartup`，恢复中继 watch 连接与兜底定时器。
-- **onMessage**：Background 收消息时若 SW 刚启动，要先 `await dataReady`（基于 `useWebExtensionStorage` 的 `dataReady`）再做处理。
+- **onMessage**：每个 handler 的第一步都是 `await ensureStoreReady()` ——
+  SW 冷启动时 IDB 迁移可能还没跑完。**不要**写 `dataReady`（那是
+  `useWebExtensionStorage` 时代的东西，已不再使用）。
 
 ---
 
 ## 7. 安全原则
 
-1. **凭证最小化**：邮箱密码 / OAuth refresh token 写到 `storage.local`（加密待议）。MVP 明文 + 文档说明。
-2. **不上传邮件正文**：仅在调用 AI 时把**摘要用片段**（subject + 前 N 字）发到用户指定的 AI provider。
-3. **白盒提示词**：所有提示词用户可见、可改、可导入 / 导出。
-4. **网络白名单**：仅允许访问用户配置的 `AI BaseURL` 和邮箱 host。
+1. **凭证最小化**：邮箱密码 / OAuth refresh token / AI Key **明文存在本机
+   IndexedDB**（加密待议：没有「既方便又安全」的密钥来源）。「设置 · 通用」里
+   有「清空所有数据」按钮。
+2. **邮件正文会发给 AI**：调用 AI 时发送 `subject` + `from` + `date` +
+   `List-Unsubscribe` + **正文前 6000 字**（`MAX_BODY_CHARS`，截断处标注）。
+   不发送附件，HTML 不入库。
+   > ⚠️ 早期文档写的是「不上传邮件正文」——**那是错的**，AI 总结必须看到正文。
+3. **IMAP 需要中继**，而中继**能看到明文**（包括密码）—— 它自己终结 TLS。
+   默认只绑 `127.0.0.1`，且是用户自己跑的进程。见 [`adr-0005`](./decisions/adr-0005-imap-needs-relay.md)。
+4. **白盒提示词**：所有提示词用户可见、可改、可导入 / 导出。
+5. **网络白名单**：仅允许访问用户配置的 `AI BaseURL`、邮箱 host、以及中继地址。
 
 ---
 
