@@ -55,12 +55,12 @@ export const definition: MailProviderDefinition = {
       type: 'text',
       /*
        * ⚠ `default` 而不是只给 `placeholder`：本机中继是 99% 的场景，
-       *   给默认值让用户**不用填**（也避免他把 `https://` 或裸 `127.0.0.1:8787`
+       *   给默认值让用户**不用填**（也避免他把 `https://` 或裸 `127.0.0.1:41316`
        *   填进来 —— 那两种都不是合法的中继地址，而报错会出现在「测试连接」，
        *   用户很难联想到是地址格式问题）。
        */
-      default: 'ws://127.0.0.1:8787/',
-      placeholder: 'ws://127.0.0.1:8787/',
+      default: 'ws://127.0.0.1:41316/',
+      placeholder: 'ws://127.0.0.1:41316/',
       required: true,
     },
   ],
