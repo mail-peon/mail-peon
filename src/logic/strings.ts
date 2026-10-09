@@ -220,7 +220,12 @@ const zhCN: StringTable = {
     never: '从未同步',
     /** 卡片右上角的连接状态（颜色见 `options/pages/accounts-status.ts`） */
     statusConnected: '已连接',
-    statusConnecting: '连接中…',
+    /**
+     * 正在重置同步位置（黄灯）。
+     * 「正在测试连接」直接复用按钮上那个 `accounts.testing`（'测试中…'）——
+     * 同一件事在两个地方叫两个名字最容易误导。
+     */
+    resetting: '重置中…',
     /** 这一次「测试连接 / 重置同步位置」失败 */
     statusTestFailed: '连接失败',
     /** 上一次同步留下的错误（`MailAccount.lastError`） */

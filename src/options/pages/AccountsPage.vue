@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import type { AccountStatus } from './accounts-status'
+import type { AccountBusyKind, AccountProbeResult, AccountStatus } from './accounts-status'
 import type { MailAccount, SyncCursor } from '~/logic/types'
 import { computed, onMounted, ref } from 'vue'
 import ConfirmDialog from '~/components/ConfirmDialog.vue'
@@ -7,6 +7,7 @@ import SecretInput from '~/components/SecretInput.vue'
 import { send, useAccounts } from '~/logic/bridge'
 import { useConfirmAction } from '~/logic/confirm-action'
 import { t } from '~/logic/strings'
+import { ERROR_DURATION, useAppMessage } from '~/logic/ui-message'
 import { accountStatus } from './accounts-status'
 
 /**
@@ -41,9 +42,31 @@ const { accounts, reload, save, remove, test, resetCursor, authorizeGmail } = us
 
 const providers = ref<ProviderOption[]>([])
 const editing = ref<MailAccount | null>(null)
-const testState = ref<Record<string, { status: 'idle' | 'busy' | 'ok' | 'fail', text: string }>>({})
+
+/**
+ * 最近一次「测试连接」的结果（**只有这一个操作会写它**）。
+ *
+ * ⚠⚠ 它曾经还兼着「重置同步位置」的状态，于是模板里那句
+ *   `:loading="testState[id]?.status === 'busy'"` 在**重置**进行时命中了
+ *   **测试连接**那个按钮 —— 用户看到的是「点重置，测试连接转圈」，而真正的
+ *   重置按钮毫无反馈。根因是把「哪个操作在忙」和「上一个结果是什么」塞进了
+ *   同一个槽位，而 loading 判据只能看到后者。现在两者分开：
+ *   进行中在 `busyOps`，结果在 `probeState`。
+ */
+const probeState = ref<Record<string, AccountProbeResult | undefined>>({})
+
+/**
+ * 每个账号**正在跑**的耗时操作。
+ *
+ * 用途有三个，都要靠「种类」才说得清：按钮的 loading、另一个按钮要不要禁用
+ * （同一个账号上并发两个操作没有意义，而且结果会互相覆盖）、以及状态徽标上那句
+ * 「测试中… / 重置中…」。
+ */
+const busyOps = ref<Record<string, AccountBusyKind | undefined>>({})
+
 const pageError = ref('')
 const authorizing = ref(false)
+const uiMessage = useAppMessage()
 
 onMounted(async () => {
   await reload()
@@ -79,10 +102,57 @@ const editingStatus = computed(() =>
 )
 
 function statusOf(account: MailAccount): AccountStatus {
-  return accountStatus(account, testState.value[account.id], {
-    lastSyncText: relativeTime(account.lastSyncedAt),
-    cursorText: describeCursor(account.cursor),
+  return accountStatus({
+    account,
+    probe: probeState.value[account.id],
+    busy: busyOps.value[account.id],
+    meta: {
+      lastSyncText: relativeTime(account.lastSyncedAt),
+      cursorText: describeCursor(account.cursor),
+    },
   })
+}
+
+/**
+ * 这个账号上有没有耗时操作在跑（`kind` 给了就只问那一种）。
+ *
+ * ⚠ 按钮的 loading 与 disabled 都从这里取，**不要**再看别的状态量 ——
+ *   「转错按钮」那个 bug 就是因为在别处推断「谁在忙」。
+ */
+function isBusy(account: MailAccount | null | undefined, kind?: AccountBusyKind): boolean {
+  if (!account)
+    return false
+  const busy = busyOps.value[account.id]
+  return kind ? busy === kind : !!busy
+}
+
+/**
+ * 在账号上跑一个耗时操作（统一处理「标记忙 → 收尾」）。
+ *
+ * ⚠ `finally` 不能省：操作**抛错**（而不是返回 `{ ok:false }`）时，没有它
+ *   `busyOps` 会永远留着那一项 —— 按钮一直转、另一个按钮一直禁用，而界面上
+ *   没有任何报错可查。bridge 层虽然包了兜底返回值，但这里不该依赖那个假设。
+ *
+ * ⚠ 同一个账号上已有操作在跑时直接返回（按钮那边也会禁用，这里是第二道闸）。
+ *
+ * ⚠ 抛出的错**由各操作自己 catch 并报出去**，不要指望这里吞掉：吞掉会让
+ *   「点了一下什么都没发生」成为可能。这里只负责清忙。
+ */
+async function runOnAccount(account: MailAccount, kind: AccountBusyKind, run: () => Promise<void>) {
+  if (busyOps.value[account.id])
+    return
+  busyOps.value[account.id] = kind
+  try {
+    await run()
+  }
+  finally {
+    busyOps.value[account.id] = undefined
+  }
+}
+
+/** 把异常变成一句能给用户看的话 */
+function describeError(error: unknown): string {
+  return error instanceof Error ? error.message : String(error)
 }
 
 /**
@@ -281,15 +351,22 @@ async function onSave() {
 async function onTest(account: MailAccount) {
   const invalid = validateAccount(account)
   if (invalid) {
-    testState.value[account.id] = { status: 'fail', text: invalid }
+    probeState.value[account.id] = { ok: false, text: invalid }
     return
   }
 
-  testState.value[account.id] = { status: 'busy', text: t('accounts.testing') }
-  const result = await test(account)
-  testState.value[account.id] = result.ok
-    ? { status: 'ok', text: result.detail || t('accounts.testOk') }
-    : { status: 'fail', text: result.error || '测试失败' }
+  await runOnAccount(account, 'test', async () => {
+    try {
+      const result = await test(account)
+      probeState.value[account.id] = result.ok
+        ? { ok: true, text: result.detail || t('accounts.testOk') }
+        : { ok: false, text: result.error || '测试失败' }
+    }
+    catch (error) {
+      // 抛错也要给出结论：否则用户点了「测试连接」，界面上什么都没发生
+      probeState.value[account.id] = { ok: false, text: describeError(error) }
+    }
+  })
 }
 
 async function onTestEditing() {
@@ -315,13 +392,35 @@ function onDelete(account: MailAccount) {
   })
 }
 
+/**
+ * 重置同步位置。
+ *
+ * 语义：连一次、记下当前游标、**不拉历史**。
+ *
+ * ⚠ 它的结果走**全局 message**，不写进 `probeState`。
+ *   这是一次性操作的回执（与「通用」页的导出 / 导入 / 清空同一类），
+ *   而 `probeState` 表达的是「这个账号现在能不能连上」。两者混在一起的话，
+ *   一次成功的重置会让卡片一直顶着一条与维护动作有关的 tooltip。
+ *
+ * ⚠ 失败时**不需要**在这里写 `lastError`：background 的
+ *   `accounts:reset-cursor` 已经 `markAccountError` 了，所以下面那句 `reload()`
+ *   会让徽标自己变红（连不上就是连不上，和测试连接失败是同一档）。
+ */
 async function onResetCursor(account: MailAccount) {
-  testState.value[account.id] = { status: 'busy', text: '重置中…' }
-  const result = await resetCursor(account.id)
-  testState.value[account.id] = result.ok
-    ? { status: 'ok', text: t('accounts.resetCursorDone') }
-    : { status: 'fail', text: result.error || '重置失败' }
-  await reload()
+  await runOnAccount(account, 'reset', async () => {
+    try {
+      const result = await resetCursor(account.id)
+      if (result.ok)
+        uiMessage.success(t('accounts.resetCursorDone'))
+      else
+        uiMessage.error(result.error || '重置失败', ERROR_DURATION)
+    }
+    catch (error) {
+      uiMessage.error(describeError(error), ERROR_DURATION)
+    }
+    // 无论成败都重读一次：失败时后台刚写过 lastError，徽标要跟着变红
+    await reload()
+  })
 }
 
 /**
@@ -345,7 +444,8 @@ async function onAuthorizeGmail() {
     const result = await authorizeGmail(clientId)
     if (result.ok && result.refreshToken) {
       setField('refreshToken', result.refreshToken)
-      testState.value[editing.value.id] = { status: 'ok', text: '授权成功，refresh token 已填入' }
+      // 一次性回执走全局 message（与重置同步位置同理：它不是账号的连接状态）
+      uiMessage.success('授权成功，refresh token 已填入')
     }
     else {
       pageError.value = result.error || '授权失败'
@@ -428,16 +528,31 @@ const formTitle = computed(() =>
       </div>
 
       <a-space class="actions" :size="8" wrap>
-        <a-button size="small" :loading="testState[account.id]?.status === 'busy'" @click="onTest(account)">
+        <!--
+          ⚠ 每个按钮的 loading 都问「**我这个**操作在不在跑」（`isBusy(account, 'test')`），
+            而不是问「这个账号忙不忙」—— 后者正是「点重置却让测试连接转圈」那个 bug。
+            同一时刻只允许一个操作，所以另一个按钮禁用。
+        -->
+        <a-button
+          size="small"
+          :loading="isBusy(account, 'test')"
+          :disabled="isBusy(account, 'reset')"
+          @click="onTest(account)"
+        >
           {{ t('accounts.test') }}
         </a-button>
         <a-button size="small" @click="openEditor(account)">
           {{ t('common.edit') }}
         </a-button>
-        <a-button size="small" @click="onResetCursor(account)">
+        <a-button
+          size="small"
+          :loading="isBusy(account, 'reset')"
+          :disabled="isBusy(account, 'test')"
+          @click="onResetCursor(account)"
+        >
           {{ t('accounts.resetCursor') }}
         </a-button>
-        <a-button size="small" danger @click="onDelete(account)">
+        <a-button size="small" danger :disabled="isBusy(account)" @click="onDelete(account)">
           {{ t('common.delete') }}
         </a-button>
       </a-space>
@@ -579,7 +694,7 @@ const formTitle = computed(() =>
       -->
       <template #footer>
         <div class="editor-footer">
-          <a-button :loading="testState[editing.id]?.status === 'busy'" @click="onTestEditing">
+          <a-button :loading="isBusy(editing, 'test')" @click="onTestEditing">
             {{ t('accounts.test') }}
           </a-button>
           <span class="editor-footer-spacer" />
