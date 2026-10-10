@@ -37,7 +37,7 @@ export const MAX_RULE_PROMPT_CHARS = 4000
  * ⚠ 里面必须出现 "JSON" 字样：DeepSeek 要求 prompt 含该词才会启用 JSON 输出模式，
  *   否则可能返回一个空对象。这一点在 `buildSystemPrompt` 里有单测守着。
  */
-export const ZH_SYSTEM_PROMPT = `你是 mail-peon 的邮件处理助手。任务是把一封邮件转成结构化 JSON。
+export const ZH_SYSTEM_PROMPT = `你是 Mail Peon 的邮件处理助手。任务是把一封邮件转成结构化 JSON。
 
 # 输出 JSON Schema（不可省略任何字段）
 {
@@ -87,7 +87,7 @@ export const ZH_SYSTEM_PROMPT = `你是 mail-peon 的邮件处理助手。任务
  * 设计文档刻意**只维护两套模板** —— 其它语言都走英文 + 一句自适应指令，
  * 因为「为每种语言维护一套完整提示词」是永远追不上的维护负担。
  */
-export const EN_SYSTEM_PROMPT = `You are mail-peon's email-processing assistant. Convert an email into structured JSON.
+export const EN_SYSTEM_PROMPT = `You are Mail Peon's email-processing assistant. Convert an email into structured JSON.
 
 # Output JSON Schema (no field may be omitted)
 {

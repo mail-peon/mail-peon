@@ -49,6 +49,7 @@
 | [relay-deployment.md](./decisions/relay-deployment.md) | **中继的部署方案**：用户级自启 + Rust 单安装器（安装/卸载两个选项）；为什么「零额外安装」做不到 |
 | [imap-testing.md](./decisions/imap-testing.md) | **IMAP 验收指南（QQ 邮箱）**：QQ 侧授权码怎么拿、扩展怎么填、六条验收清单、故障定位表 |
 | [debugging-receiving.md](./decisions/debugging-receiving.md) | **排查：收到推送但界面没邮件** —— 两处控制台怎么开、日志断点对照表 |
+| [release-pipeline.md](./decisions/release-pipeline.md) | **发版流水线**：`pnpm release` → tag → CI 自动构建/打包/建 Release/发 Chrome Web Store；五个凭据从哪来、怎么填 |
 
 ---
 

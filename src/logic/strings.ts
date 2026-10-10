@@ -16,7 +16,8 @@ export interface StringTable {
 
 const zhCN: StringTable = {
   app: {
-    name: 'mail-peon',
+    /** 展示名（产品名），两侧的品牌条与各页标题都用它；包名仍是 `mail-peon` */
+    name: 'Mail Peon',
     minimalSuffix: '极简模式',
   },
 
@@ -113,7 +114,7 @@ const zhCN: StringTable = {
   },
 
   options: {
-    title: 'mail-peon · 设置',
+    title: 'Mail Peon · 设置',
     navGeneral: '通用',
     navAccounts: '账号',
     navRules: '提示词',
@@ -302,8 +303,8 @@ const zhCN: StringTable = {
   },
 
   about: {
-    title: '关于 mail-peon',
-    intro: '在你的浏览器里放一个常驻的「邮件 + AI 助理」：重要的邮件立刻知道，验证码自动复制，剩下的全是噪音。',
+    title: '关于 Mail Peon',
+    intro: '浏览器里的邮件助理，AI 挑出真正重要的邮件，验证码自动复制',
     modeTitle: '两种运行模式',
     modeMinimalDesc: '极简模式只在看到含验证码的邮件时自动复制并弹提示，其它邮件直接丢弃。',
     modeFullDesc: '完整模式提供 AI 总结、广告屏蔽、提示词规则与排除邮箱。',

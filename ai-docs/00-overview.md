@@ -1,6 +1,9 @@
 # 00 · 项目总览
 
-> 一句话：在你的浏览器里放一个常驻的「邮件 + AI 助理」，重要的邮件立刻知道，验证码自动复制，剩下的全是噪音——就别再烦你了。
+> 一句话（对外文案，与 `package.json#description` 一致）：AI mail assistant in your browser that surfaces the mail that matters and auto-copies verification codes
+> 中文：浏览器里的邮件助理，AI 挑出真正重要的邮件，验证码自动复制
+
+> 名字：**Mail Peon** = 产品名（manifest `name` / 界面标题 / 工具栏提示语）；**mail-peon** = 项目名（`package.json#name` / 仓库 / IndexedDB 库名 / 日志前缀）。
 
 ---
 

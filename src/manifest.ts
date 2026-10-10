@@ -24,7 +24,9 @@ export async function getManifest() {
     version: pkg.version,
     description: pkg.description,
     action: {
-      default_icon: 'assets/icon-512.png',
+      default_icon: 'assets/icon-128.png',
+      // 工具栏图标 hover 时的提示语：用产品名（pkg.displayName），不是包名
+      default_title: pkg.displayName || pkg.name,
       // 点 icon = 打开 Popup（Chrome 默认行为）。**不**开 sidePanel 的
       // openPanelOnActionClick —— 两者互斥，而 Popup 是极简模式的主要界面。
       default_popup: 'dist/popup/index.html',
@@ -42,10 +44,16 @@ export async function getManifest() {
       : {
           service_worker: 'dist/background/index.mjs',
         },
+    /**
+     * 四个尺寸各是一份独立文件（`pnpm icons` 生成，见 `scripts/icons.ts`）。
+     * 不要图省事全部指向 512 —— 16px 那份是缩放器直接抽的，比浏览器临时把
+     * 512 缩到 16 干净得多（工具栏上肉眼可见的差别）。
+     */
     icons: {
-      16: 'assets/icon-512.png',
-      48: 'assets/icon-512.png',
-      128: 'assets/icon-512.png',
+      16: 'assets/icon-16.png',
+      32: 'assets/icon-32.png',
+      48: 'assets/icon-48.png',
+      128: 'assets/icon-128.png',
     },
     permissions: [
       'tabs', // 查激活 tab（toast 投递）

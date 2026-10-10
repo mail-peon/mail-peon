@@ -1,0 +1,105 @@
+name: Release
+
+# 触发链路：
+#   本地 pnpm release   (bumpp: 选版本 → 改 package.json → commit → 打 vX.Y.Z tag → push)
+#     → tag 推上来触发本工作流
+#       → 构建 + 测试 + 打包 → changelogithub 建 GitHub Release → 挂上 extension.zip
+#         → （配了 CHROME_* secrets 才会执行）上传并发布到 Chrome Web Store
+#
+# 五个商店凭据怎么来、怎么填：见 ai-docs/decisions/release-pipeline.md
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    # ⚠ GitHub 不允许在 step 的 `if` 里直接读 secrets，只能先算出一个标记，
+    # 再用 `if: env.CWS_READY == 'true'` 判断「配没配商店凭据」。
+    # 没配时商店那两步自动跳过，release 依然成功 —— 所以这个 workflow
+    # 可以先合进来，凭据后补。
+    #
+    # 凭据本身只映射给真正需要它们的两个 step（见下方），不放到 job 级 ——
+    # 免得被 changelogithub 这类 `npx ...@latest` 的第三方代码读走。
+    env:
+      CWS_READY: ${{ secrets.CHROME_REFRESH_TOKEN != '' }}
+
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v6
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # 构建必须早于测试：`unplugin-auto-import` / `unplugin-vue-components`
+      # 在 `vite build` 期间写 src/auto-imports.d.ts 与 src/components.d.ts，
+      # 这两个文件是 git-ignored 的，不先构建的话类型与全局 API 都解析不到。
+      - name: Build
+        run: pnpm run build
+
+      - name: Test
+        run: pnpm run test
+
+      # ⚠ 不要在这里跑 `pnpm pack`：它 = `run-p pack:*`，其中的 pack:crx 需要
+      # 仓库根目录的 key.pem（.gitignore 掉的私钥，CI 上不存在），必定失败。
+      # Chrome 商店只吃 zip，所以只跑 pack:zip。
+      - name: Pack Chrome (zip)
+        run: pnpm run pack:zip
+
+      # 1) 依据 conventional commits 生成 changelog 并创建 GitHub Release
+      - name: Generate changelog & release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: npx changelogithub@latest
+
+      # 2) 把扩展包挂到上一步创建的 Release 上
+      - name: Attach artifact to release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release upload "$GITHUB_REF_NAME" extension.zip --clobber
+
+      # 3) 上传到 Chrome Web Store（草稿态，不自动铺开）
+      # 新条目的「首次发布」必须在 CWS 后台手动完成，API 只接受后续更新。
+      # 下面这五个环境变量名是 chrome-webstore-upload-cli 规定的，不能改
+      # （GitHub secret 叫什么随你，这里只是映射过来）。
+      - name: Upload to Chrome Web Store
+        if: env.CWS_READY == 'true'
+        env:
+          EXTENSION_ID: ${{ secrets.EXTENSION_ID }}
+          PUBLISHER_ID: ${{ secrets.PUBLISHER_ID }}
+          CLIENT_ID: ${{ secrets.CHROME_CLIENT_ID }}
+          CLIENT_SECRET: ${{ secrets.CHROME_CLIENT_SECRET }}
+          REFRESH_TOKEN: ${{ secrets.CHROME_REFRESH_TOKEN }}
+        run: npx --yes chrome-webstore-upload-cli@latest upload --source extension.zip --auto-publish=false
+
+      # 4) 提交审核 / 发布上一步上传的包
+      # 不想要「打 tag 就自动送审」的话，把这一步删掉 —— 包已经在商店后台等着，
+      # 你可以先去后台看一眼再手动点提交。
+      - name: Publish on Chrome Web Store
+        if: env.CWS_READY == 'true'
+        env:
+          EXTENSION_ID: ${{ secrets.EXTENSION_ID }}
+          PUBLISHER_ID: ${{ secrets.PUBLISHER_ID }}
+          CLIENT_ID: ${{ secrets.CHROME_CLIENT_ID }}
+          CLIENT_SECRET: ${{ secrets.CHROME_CLIENT_SECRET }}
+          REFRESH_TOKEN: ${{ secrets.CHROME_REFRESH_TOKEN }}
+        run: npx --yes chrome-webstore-upload-cli@latest publish
+
+      # Firefox（AMO）没接：本仓库还没有 offer-hunter 那样的 pack:firefox
+      # （Firefox 清单要重新构建一遍，pack:xpi 只负责把已建好的 extension/ 装进 xpi）。
+      # 要加的话先补脚本，再照 offer-hunter/.github/workflows/release.yaml 的
+      # 「pack Chrome → 挪出仓库 → pack Firefox」顺序写，否则 clear 会把 zip 删掉。

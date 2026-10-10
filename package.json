@@ -1,10 +1,10 @@
 {
   "name": "mail-peon",
-  "displayName": "mail-peon",
+  "displayName": "Mail Peon",
   "version": "0.1.0",
   "private": true,
   "packageManager": "pnpm@12.6.0",
-  "description": "浏览器里的常驻「邮件 + AI 助理」：重要的邮件立刻知道，验证码自动复制，剩下的全是噪音。",
+  "description": "AI mail assistant in your browser that surfaces the mail that matters and auto-copies verification codes",
   "scripts": {
     "dev": "pnpm run clear && cross-env NODE_ENV=development run-p dev:*",
     "dev-firefox": "pnpm run clear && cross-env NODE_ENV=development EXTENSION=firefox run-p dev:*",
@@ -24,7 +24,8 @@
     "start:chromium": "web-ext run --source-dir ./extension --target=chromium",
     "start:firefox": "web-ext run --source-dir ./extension --target=firefox-desktop",
     "clear": "esno scripts/clean.ts",
-    "lint": "eslint --cache .",
+    "icons": "esno scripts/icons.ts",
+    "lint": "eslint --cache --no-warn-ignored .",
     "test": "vitest run",
     "relay": "esno scripts/imap-relay.ts",
     "relay:trace": "cross-env RELAY_TRACE=1 esno scripts/imap-relay.ts",
@@ -33,7 +34,8 @@
     "relay:console-test": "esno scripts/relay-console.test.ts",
     "relay:port-test": "esno scripts/relay-port-prompt.test.ts",
     "postinstall": "simple-git-hooks",
-    "typecheck": "tsc --noEmit && tsc -p tsconfig.scripts.json"
+    "typecheck": "tsc --noEmit && tsc -p tsconfig.scripts.json",
+    "release": "bumpp"
   },
   "dependencies": {
     "ant-design-vue": "^4.2.6",
@@ -55,6 +57,7 @@
     "@vue/test-utils": "^2.5.1",
     "@vueuse/core": "^15.0.0",
     "@vueuse/shared": "^15.0.0",
+    "bumpp": "^12.3.0",
     "chokidar": "^5.0.0",
     "cross-env": "^10.1.0",
     "crx3": "^2.0.0",
@@ -65,6 +68,7 @@
     "kolorist": "^1.8.0",
     "lint-staged": "^16.0.0",
     "npm-run-all2": "^9.0.3",
+    "sharp": "0.35.5",
     "simple-git-hooks": "^2.14.0",
     "typescript": "^5.9.3",
     "unocss": "^66.10.5",
@@ -84,6 +88,6 @@
     "pre-commit": "pnpm lint-staged"
   },
   "lint-staged": {
-    "*": "eslint --fix"
+    "*.{js,mjs,cjs,ts,mts,cts,vue}": "eslint --fix"
   }
 }

@@ -1,9 +1,15 @@
-# mail-peon
+# Mail Peon
 
-> 在你的浏览器里放一个常驻的「邮件 + AI 助理」：**重要的邮件立刻知道，验证码自动复制，剩下的全是噪音。**
+> AI mail assistant in your browser that surfaces the mail that matters and auto-copies verification codes
+>
+> 中文：浏览器里的邮件助理，AI 挑出真正重要的邮件，验证码自动复制
 
 一个 Manifest V3 浏览器扩展（Chrome / Firefox）。基于
 [`antfu/vitesse-webext`](https://github.com/antfu/vitesse-webext) 模板。
+
+> 名字：**Mail Peon** 是产品名（界面标题、manifest `name`、工具栏提示语）；
+> `mail-peon` 是项目名（`package.json#name`、仓库名、IndexedDB 库名、日志前缀、消息通道）。
+> 改动时别混。
 
 设计文档在 [`ai-docs/`](./ai-docs/README.md)（先读那里，再读代码）。
 
@@ -98,6 +104,7 @@ pnpm lint           # ESLint
 pnpm typecheck      # tsc --noEmit + 脚本的类型检查（tsconfig.scripts.json）
 pnpm test           # Vitest（单元 / 组件测试）
 pnpm relay:test     # IMAP 中继的端到端冒烟测试
+pnpm icons          # 从 assets/icon-source.png 重新生成全套图标
 pnpm pack:zip       # 打包上架用
 ```
 
@@ -109,6 +116,14 @@ pnpm pack:zip       # 打包上架用
 [`relay-deployment.md`](./ai-docs/decisions/relay-deployment.md)。
 
 **提交门槛**：`pnpm lint && pnpm typecheck && pnpm test && pnpm build` 全绿。
+
+### 图标
+
+`extension/assets/icon-{16,32,48,128,512}.png` 由 `pnpm icons` 从
+[`assets/icon-source.png`](./assets/icon-source.png)（苦工头像原图）生成，**产物入库** ——
+扩展图标是静态资源、不参与构建，CI 里也不必装 `sharp`。
+`scripts/icons.ts` 先按四角背景色抠掉白底，再裁出头部构图，最后逐尺寸缩放 + 补边；
+换源图时裁剪框 `CROP` 基本一定要重调（文件头有说明）。
 
 ### 目录结构
 
