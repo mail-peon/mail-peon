@@ -102,7 +102,7 @@ export async function getManifest() {
     // Firefox 的隐私声明（AMO 要求）：本扩展不收集任何数据
     ;(manifest as unknown as Record<string, unknown>).browser_specific_settings = {
       gecko: {
-        id: 'mail-peon@local',
+        id: '{b3f9a2c7-5e41-4d0a-9f7b-6c82d1e45a30}',
         strict_min_version: '109.0',
       },
     }
