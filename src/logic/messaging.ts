@@ -69,11 +69,15 @@ export async function toActiveTab(channel: string, payload: unknown): Promise<bo
 
   try {
     const sent = sendMessage(channel as never, payload as never, { context: 'content-script', tabId })
-    const timeout = new Promise<null>((resolve) => {
-      setTimeout(resolve, TO_ACTIVE_TAB_TIMEOUT_MS, null)
+      // ⚠️ 把「被拒」也变成 `false`：`sendMessage` 失败时是 rejection，而超时那条路给的是
+      // `false` —— 两者都算「没送到」（见上面 ②）。从前这里 `await Promise.race(...)`
+      // 之后**无条件 `return true`**，于是调用方永远以为送到了，与这段注释承诺的
+      // 「用返回值判断」正好相反。
+      .then(() => true, () => false)
+    const timeout = new Promise<false>((resolve) => {
+      setTimeout(resolve, TO_ACTIVE_TAB_TIMEOUT_MS, false)
     })
-    await Promise.race([sent, timeout])
-    return true
+    return await Promise.race([sent, timeout])
   }
   catch {
     // 没有内容脚本（chrome:// / 设置页 / 商店页）或是 SW 刚醒 —— 都不是错误
