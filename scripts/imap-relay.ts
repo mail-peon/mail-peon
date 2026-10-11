@@ -54,6 +54,10 @@ import process from 'node:process'
 import * as readline from 'node:readline'
 import { connect as tlsConnect } from 'node:tls'
 import { WebSocketServer } from 'ws'
+import {
+  createWatchHandshakeWatchdog,
+  resolveWatchHandshakeTimeoutMs,
+} from './watch-handshake'
 
 /**
  * 读一个配置项：**命令行参数优先，其次环境变量，最后默认值**。
@@ -96,8 +100,14 @@ const PORT = Number.parseInt(PORT_RAW, 10)
  * 交给 `new WebSocketServer({ port: NaN })` 的后果不是一条清晰的报错，而是
  * `options.port should be >= 0 and < 65536` 加上一个 **unhandled 'error' event**
  * 把进程打崩 —— 用户看到的是 Node 的堆栈，而不是「你端口写错了」。
+ *
+ * ⚠ 判据里排除 Vitest：这个文件的顶层语句在测试进程里也会被求值，而测试进程的
+ *   端口不归本脚本管 —— `process.exit(1)` 会把整个测试进程带走（症状是「测试文件
+ *   莫名其妙退出、没有任何断言失败」）。目前没有测试 import 本文件（看门狗已经被
+ *   抽到无副作用的 `scripts/watch-handshake.ts`），但 `PORT` 是**环境变量**：
+ *   谁在跑测试的 shell 里留了一个坏值，就会踩到这个 —— 所以留着这道护栏。
  */
-if (!Number.isInteger(PORT) || PORT < 0 || PORT > 65535) {
+if (!process.env.VITEST && (!Number.isInteger(PORT) || PORT < 0 || PORT > 65535)) {
   process.stderr.write(`[imap-relay] 端口无效：「${PORT_RAW}」（应为 0–65535 的整数）\n`)
   process.exit(1)
 }
@@ -149,6 +159,22 @@ const TRACE = process.env.RELAY_TRACE === '1'
  *   但这是协议建议，不能赌某个服务器一直容忍。）
  */
 const WATCH_REIDLE_MS = 25 * 60 * 1000
+
+/**
+ * watch 模式下**握手阶段**的上限（连上 + 收问候语 + `LOGIN` + `SELECT`）。
+ *
+ * ⚠ 这个看门狗是必需的，不是保险 —— 完整论证（TCP 半开时 promise 永不 settle、
+ *   退避重连永不触发、日志一条错误都没有）在它自己的模块里：
+ *   `scripts/watch-handshake.ts`。
+ *
+ * ⚠ 单独一个模块而不是写在这里，是因为**这个文件 import 不得**：文件末尾的
+ *   `void main()` 会真的把中继服务起起来（实测：测试里一 import 就占用了 8787）。
+ *   而看门狗是这段逻辑里唯一「有状态、会记时、错了只能靠真机复现」的部分，
+ *   必须可测。所以它被抽出去，这里只负责把环境变量喂给它。
+ */
+const WATCH_HANDSHAKE_TIMEOUT = resolveWatchHandshakeTimeoutMs(
+  readOption('watch-handshake-timeout', 'WATCH_HANDSHAKE_TIMEOUT_MS', ''),
+)
 
 /**
  * 断开后重连的退避阶梯（毫秒）。
@@ -1025,6 +1051,10 @@ function createRelayServer(): RelayServer {
       /*
        * ⚠ IDLE 会长期静默（可能几十分钟没有任何字节），所以**不能**沿用普通连接的
        *   15 分钟空闲超时 —— 那会把一条健康的连接当成超时踢掉。
+       *
+       * ⚠ 但这样一来握手阶段就**完全没有**时间上限了（这段静默与 IDLE 的静默在
+       *   socket 层面长得一模一样，没法用同一个超时值区分）。所以下面另挂一个
+       *   握手看门狗，进入 IDLE 时停表 —— 见 `scripts/watch-handshake.ts` 的文件头。
        */
       socket.setTimeout(0)
 
@@ -1041,12 +1071,39 @@ function createRelayServer(): RelayServer {
        */
       let reidleTimer: NodeJS.Timeout | undefined
 
+      /**
+       * 握手超时的原因（看门狗写、`close` 读）。
+       *
+       * 存在的唯一目的：把「握手挂了（TCP 半开）」与「服务器正常关了连接」区分开。
+       * 前者必须报错（用户要知道推送为什么停了），后者按原设计是静默 resolve
+       * （服务器踢掉空闲连接是常态）。
+       */
+      let handshakeTimeoutReason: string | undefined
+
+      const handshakeWatchdog = createWatchHandshakeWatchdog({
+        timeoutMs: WATCH_HANDSHAKE_TIMEOUT,
+        /*
+         * ⚠ 只有 `onKill` 里那个 `socket.destroy()` 能让 `watchOnce` 的 promise
+         *   收尾（`close` → `finish`）—— 看门狗自己只负责「到点了、该动手了」。
+         *   原因写进局部变量，由 `close` 处理成「握手超时」而不是静默 resolve。
+         */
+        onKill: (reason) => {
+          handshakeTimeoutReason = reason
+          try {
+            socket.destroy()
+          }
+          catch {}
+        },
+        log: message => log(`WATCH ${host}:${port} ${message}`),
+      })
+
       /** @param reason 断开原因；不传 = 服务器正常关了连接（resolve 而不是 reject） */
       const finish = (reason?: string): void => {
         if (done)
           return
         done = true
         clearTimeout(reidleTimer)
+        handshakeWatchdog.close()
         try {
           socket.destroy()
         }
@@ -1197,6 +1254,12 @@ function createRelayServer(): RelayServer {
            */
           notified = exists >= 0 ? exists : 0
           phase = 'idle'
+          /*
+           * ⚠ 握手看门狗到这里必须**停表**：`SELECT` 成功意味着「连上了、登录了、
+           *   收件箱也打开了」，之后的静默是 IDLE 的正常静默（可能几十分钟），
+           *   不属于「握手卡住」。
+           */
+          handshakeWatchdog.enterIdle()
           log(`WATCH ${host}:${port} 已挂上 IDLE（当前 ${notified} 封）`)
           sendToClient(ws, { type: 'state', state: 'watching', exists: notified })
           idle()
@@ -1249,7 +1312,25 @@ function createRelayServer(): RelayServer {
       })
 
       socket.on('close', () => {
-        finish()
+        /*
+         * ⚠ 握手看门狗把半开连接踢掉时走的也是这条路（它只负责报告 + `destroy()`）。
+         *   不带原因的话 `finish()` 会**静默 resolve** —— 上层会把它当成
+         *   「服务器正常关了连接」直接退避重连，日志里只剩一条「WATCH 断开」，
+         *   于是「为什么推送停了」又变成不可排查的。
+         */
+        finish(handshakeTimeoutReason)
+      })
+
+      /*
+       * socket 自己的超时事件也接到同一套判断上。
+       *
+       * ⚠ 主手段是看门狗里的 `setTimeout`（见 `scripts/watch-handshake.ts` 的说明：
+       *   半开连接的 socket 永远不会有事件，只有定时器靠得住）。这条是**防御性**的：
+       *   它覆盖「将来有人给 watch 连接重新启用 socket 超时」的情况 ——
+       *   那时超时必须按同一个判据（握手阶段才踢）处理，而不是被忽略。
+       */
+      socket.on('timeout', () => {
+        handshakeWatchdog.onSocketTimeout()
       })
 
       socket.on('connect', () => {

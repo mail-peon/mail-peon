@@ -34,6 +34,7 @@ import { ensureStoreReady, resetStoreReadyForTests } from '~/logic/store/ready'
 import { countRules, deleteRule, listRules, moveRule, upsertRule } from '~/logic/store/rules'
 import { patchAiSettings, patchAppSettings, readAiSettings, readAppSettings } from '~/logic/store/settings'
 import { deleteDb } from '~/platform/idb/database'
+import { createSingleFlight } from '~/platform/single-flight'
 import { copyViaContentScript } from './clipboard'
 import { authorizeGmail } from './gmail-oauth'
 import { createBrowserNotifier } from './notifier'
@@ -177,6 +178,24 @@ async function ensureAlarm(): Promise<void> {
 }
 
 /**
+ * 同步周期的**单飞闸门**（见 `platform/single-flight.ts`）。
+ *
+ * ⚠ 为什么必须有它：同步周期有三个**互不协调**的入口 —— watch 推送（`openWatchChannel`
+ *   的回调）、兜底 `alarm`、手动「立即同步」—— 而 `runSyncCycle` 每轮都会**重新从库里
+ *   读游标**（`adapters/mail/mailbox.ts`），整条链路上也没有「这封已经处理过」的判据。
+ *   两轮重叠的后果是具体的：
+ *
+ *     1. 两轮读到同一个游标 → 同一批邮件被拉两次；
+ *     2. 每封邮件各调一次 AI（`logic/ai/pipeline.ts`）→ **重复计费**；
+ *     3. 同一封邮件重复弹 toast。
+ *
+ *   而这不是边界情况：推送是「新邮件一到立刻发」的，一轮同步又可能跑几十秒
+ *   （真机上有 3 万多封的邮箱跑过 32 秒），所以「推送撞上在途同步」是常态。
+ *   同一份文件里 `watchRestartInFlight` 处理的是同一类竞态（见它的说明）。
+ */
+const syncFlight = createSingleFlight()
+
+/**
  * 跑一轮同步（心跳与「立即同步」按钮共用）。
  *
  * 共用是有意的：分成两条路径的话，差别会表现为「手动同步能拉到、自动同步拉不到」，
@@ -184,6 +203,37 @@ async function ensureAlarm(): Promise<void> {
  */
 async function runSyncCycleNow() {
   return runSyncCycle({ pipeline: buildPipeline(), hooksFor })
+}
+
+/**
+ * 跑一轮同步，且**不与在途的那一轮重叠**（搭车复用）。
+ *
+ * 推送与手动「立即同步」都用它。`started === false` 表示本次没有真的跑 ——
+ * 已经有一轮在途，而那一轮的抓取范围（游标之后的所有邮件）本来就覆盖了本次的诉求。
+ *
+ * @returns 那一轮的结果，以及本次是否真的执行了
+ */
+async function syncOnce() {
+  return syncFlight.run(runSyncCycleNow)
+}
+
+/**
+ * 跑一轮同步，并且保证**至少有一轮是在「现在」之后开始的**。
+ *
+ * 只给兜底 `alarm` 用：它是周期性的保险丝，语义是「每一跳都必须真的去问一次邮箱」，
+ * 于是它排到在途那一轮**之后**按顺序执行。
+ *
+ * ⚠ 刻意**不**给 watch 推送用：推送的诉求（游标之后的邮件）已经被在途那一轮覆盖，
+ *   再排一轮只是白连一次邮箱（腾讯对同账号的并发 / 频率连接数有限制，见
+ *   `ai-docs/decisions/imap-testing.md § 11`）。真在那一瞬间到的邮件由下一跳兜底 ——
+ *   而它本来就是这个定时器存在的意义（推送失效时的保险丝）。
+ *
+ * ⚠ 也不给手动「立即同步」用：那会让 `sendMessage` 的 promise 挂上两整轮同步的时间，
+ *   而「一条未完成的 `sendMessage` 不算事件」会让 MV3 的 SW 在 30 秒后被回收 ——
+ *   这正是 `accounts:sync-now` 立刻返回、结果走轮询的原因（见它的说明）。
+ */
+async function syncAfterCurrent() {
+  return syncFlight.chain(runSyncCycleNow)
 }
 
 // ---------------------------------------------------------------------------
@@ -282,8 +332,13 @@ async function rebuildWatchChannels(): Promise<void> {
          *   它抓的是游标之后的所有邮件，不依赖推送里带的数字。
          *
          *   不用 `await`：watch 的回调要尽快返回，否则后续推送会排在它后面。
+         *
+         * ⚠ 走 `syncOnce()` 而不是直接跑：推送可能在**一轮同步跑到一半**时到达
+         *   （真机上很常见），那时直接再跑一轮会和在途那轮读到同一个游标、
+         *   把同一批邮件重复喂给 AI。在途时的诉求已经被那一轮的抓取范围覆盖，
+         *   所以这里搭车复用即可 —— 详见 `syncFlight` 的说明。
          */
-        void runSyncCycleNow().catch(error => console.warn('[mail-peon] 推送触发的同步失败', error))
+        void syncOnce().catch(error => console.warn('[mail-peon] 推送触发的同步失败', error))
         return
       }
 
@@ -579,13 +634,19 @@ onMessage('accounts:reset-cursor', async ({ data }) => {
  * ⚠ 结果**同时**走两条路（见 `lastSync` 的说明）：
  *   1. 广播 `sync:done` —— 快，但不保证送到；
  *   2. 存进 `lastSync` 供 UI **轮询**取回 —— 兜底，保证「同步中」一定会结束。
+ *
+ * ⚠ 用 `syncOnce()`（搭车复用）而不是 `syncAfterCurrent()`（排到本轮之后）：
+ *   后者会让这条 `sendMessage` 的 promise 挂上两整轮同步的时间，而那正是上面
+ *   那个 MV3 故障的成因。点下去时若已有一轮在途，它抓的同样是「游标之后的所有
+ *   邮件」，结果照样会写进 `lastSync`（`finishedAt` 一定晚于本次点击），
+ *   UI 的轮询兜底能拿到 —— 见 `pages/GeneralPage.vue` 的 `startSyncWatchdog`。
  */
 onMessage('accounts:sync-now', async () => {
   await ensureStoreReady()
 
   void (async () => {
     try {
-      const results = await runSyncCycleNow()
+      const { value: results } = await syncOnce()
       lastSync = { ok: true, results, finishedAt: Date.now() }
       broadcastToExtension('data:changed', { reason: 'accounts' })
       broadcastToExtension('sync:done', { ok: true, results, finishedAt: lastSync.finishedAt })
@@ -816,8 +877,11 @@ if (browser.alarms?.onAlarm) {
       /*
        * ⚠ 这里的任何异常都必须吞掉：`onAlarm` 的监听器抛错会让 Chrome 把这个
        *   监听器标成不可靠（历史上表现为「alarm 还在响，但 handler 不再被调用」）。
+       *
+       * ⚠ 走 `syncAfterCurrent()` 而不是 `syncOnce()`：这一跳的语义是「必须真的
+       *   问一次邮箱」，所以它在途时排到那一轮之后（不会和在途那轮抢同一批邮件）。
        */
-      void runSyncCycleNow().catch(error => console.warn('[mail-peon] 定时抓取异常', error))
+      void syncAfterCurrent().catch(error => console.warn('[mail-peon] 定时抓取异常', error))
 
       /*
        * 顺带跑一次失效验证码清理。
