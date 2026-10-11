@@ -165,4 +165,60 @@ describe('createSingleFlight', () => {
     await expect(tail).resolves.toBe('tail')
     expect(tailTask).toHaveBeenCalledTimes(1)
   })
+
+  /*
+   * ⚠ 这条是复核时补的：`run` 从前只把 `inFlight` 当在途，于是**兜底 alarm 排出的尾巴
+   *   正在跑**时（那一刻 `inFlight` 已经清空、`chained` 还在）来的推送会与它**并行**
+   *   再跑一轮 —— 又回到「同一批邮件处理两次 + 重复计费」。
+   */
+  it('尾巴在跑时 run 搭车复用，不再并行开一轮', async () => {
+    const flight = createSingleFlight()
+    const firstGate = deferred()
+    const tailGate = deferred()
+    const pushTask = vi.fn(async () => 'push')
+    let firstDone = false
+
+    const firstTask = vi.fn(async () => {
+      await firstGate.promise
+      firstDone = true
+      return 'first'
+    })
+    const tailTask = vi.fn(async () => {
+      // 尾巴必须在**第一轮结束之后**才开始（这正是「排到本轮之后」）
+      expect(firstDone).toBe(true)
+      await tailGate.promise
+      return 'tail'
+    })
+
+    const running = flight.run(firstTask)
+    const tail = flight.chain(tailTask)
+    firstGate.resolve()
+    await running
+    await flush() // 让尾巴真的开始跑
+    // ⚠ 必须确认这时**只有尾巴**在跑（`inFlight` 已清空）—— 否则这条用例可能
+    //   只是走了「搭当前轮的车」那条老路，根本没有覆盖尾巴
+    expect(flight.active).toBe(false)
+
+    const pushed = flight.run(pushTask)
+
+    tailGate.resolve()
+    // ⚠ `run` 返回的是 `{ value, started }`（`chain` 直接返回任务结果），别弄混
+    const [tailValue, pushResult] = await Promise.all([tail, pushed])
+
+    expect(pushTask).not.toHaveBeenCalled()
+    expect(tailValue).toBe('tail')
+    expect(pushResult).toEqual({ value: 'tail', started: false })
+  })
+
+  it('尾巴跑完之后，run 立刻又能真的开一轮', async () => {
+    const flight = createSingleFlight()
+    const tailTask = vi.fn(async () => 'tail')
+    const laterTask = vi.fn(async () => 'later')
+
+    await flight.chain(tailTask)
+    await flush()
+
+    await expect(flight.run(laterTask)).resolves.toEqual({ value: 'later', started: true })
+    expect(laterTask).toHaveBeenCalledTimes(1)
+  })
 })

@@ -94,8 +94,21 @@ export function createSingleFlight(): SingleFlight {
   }
 
   async function run<T>(task: () => Promise<T>): Promise<SingleFlightResult<T>> {
-    if (inFlight)
-      return { value: await (inFlight as Promise<T>), started: false }
+    /*
+     * ⚠ 在途的一轮**和排在后面的尾巴**都算「在途」。
+     *
+     *   只判 `inFlight` 会漏掉一种重叠：兜底 `alarm` 排出的尾巴正在跑时
+     *   （那一刻 `inFlight` 已经清空、`chained` 还没结束），推送进来的 `run`
+     *   会**与它并行**再跑一轮 —— 正是这个模块要消灭的东西
+     *   （同一批邮件被拉两次 → 每封各调一次 AI → 重复计费）。
+     *
+     *   搭车（而不是再排一轮）是照 `background/main.ts` 里 `syncAfterCurrent` 的说明来的：
+     *   「推送的诉求（游标之后的邮件）已经被在途那一轮覆盖，再排一轮只是白连一次邮箱」；
+     *   真在那一瞬间到的邮件由下一跳兜底 —— 兜底 `alarm` 本来就是这个定时器的意义。
+     */
+    const active = (inFlight ?? chained) as Promise<T> | null
+    if (active)
+      return { value: await active, started: false }
 
     const promise = task()
     inFlight = promise
