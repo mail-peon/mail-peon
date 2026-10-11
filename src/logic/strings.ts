@@ -204,7 +204,11 @@ const zhCN: StringTable = {
   },
 
   accounts: {
-    add: '+ 新增账号',
+    /**
+     * ⚠ 文案里**不带 `+`**：加号由按钮里那个 UnoCSS 图标（`i-pixelarticons-plus`）出。
+     *   两边都写，按钮上就是「两个加号」——加号只保留 icon 那一份。
+     */
+    add: '新增账号',
     empty: '还没有添加邮箱账号',
     label: '备注名',
     labelPlaceholder: '工作邮箱',
@@ -243,7 +247,8 @@ const zhCN: StringTable = {
   },
 
   rules: {
-    add: '+ 新增规则',
+    /** 同 `accounts.add`：`+` 交给按钮的图标，文案里不再自带（它还是弹窗标题） */
+    add: '新增规则',
     empty: '还没有自定义规则；所有邮件会使用内置默认规则',
     defaultRule: '默认规则（内置）',
     defaultRuleHint: '没有任何自定义规则命中时使用；按主题给出基础 system prompt。',
