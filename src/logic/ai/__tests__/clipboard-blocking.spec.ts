@@ -42,6 +42,17 @@ const mocks = vi.hoisted(() => ({
   upsertMail: vi.fn(async (_mail: Mail, _retention?: unknown) => {}),
   readAiSettings: vi.fn(async () => ({ apiKey: 'k', platform: 'openai', model: 'm' })),
   extractCodeOnly: vi.fn(async (_mail: Mail, _settings: unknown, _options?: unknown) => ({ code: '34949', validForSeconds: 300 })),
+  /*
+   * 完整模式（`minimalMode: false`）走 `summarize` 而不是 `extractCodeOnly`。
+   * 它必须能被**单条测试**改（下面那条完整模式的用例），所以放进 `mocks`。
+   */
+  summarize: vi.fn(async (_mail: Mail, _rule: unknown, _settings: unknown, _options?: unknown) => ({
+    minimal: '验证码',
+    summary: '要点',
+    isAd: false,
+    code: '34949',
+    validForSeconds: 300,
+  })),
   copyToClipboard: vi.fn(async (_code: string) => true),
   showToast: vi.fn(async (_payload: unknown) => {}),
   notifyMailUpdated: vi.fn((_mailId: string) => {}),
@@ -72,7 +83,7 @@ vi.mock('~/logic/store/settings', () => ({
 
 vi.mock('~/logic/ai/summarize', () => ({
   extractCodeOnly: mocks.extractCodeOnly,
-  summarize: vi.fn(),
+  summarize: mocks.summarize,
   testAiConnection: vi.fn(),
 }))
 
@@ -171,6 +182,44 @@ describe('剪贴板不阻塞入库', () => {
     const stored = mocks.upsertMail.mock.calls[0][0] as unknown as Mail
     expect(stored.copyStatus).toBe('failed')
     expect(stored.code).toBe('34949')
+  }, 10000)
+
+  /*
+   * ⚠ 完整模式（`minimalMode: false`）走的是 `processFull` —— 它从前是**直接**
+   *   `await notifier.copyToClipboard(...)`，没有超时。也就是说这一组守的那个故障
+   *   在完整模式下**一直还在**（只是极简模式先被发现、先修了那一半）。
+   *   两条路径必须同一套保护，这条用例就是钉住这一点。
+   */
+  it('完整模式下复制永不返回时也入库', async () => {
+    const { readAppSettings } = await import('~/logic/store/settings')
+    vi.mocked(readAppSettings).mockResolvedValueOnce({
+      minimalMode: false,
+      autoCopyCode: true,
+      blockedEnabled: false,
+    } as never)
+    mocks.summarize.mockResolvedValue({
+      minimal: '验证码',
+      summary: '要点',
+      isAd: false,
+      code: '34949',
+      validForSeconds: 300,
+    })
+    // 同样是一个永不 settle 的 promise（真机上挂在 content script 那条 sendMessage 上）
+    mocks.copyToClipboard.mockImplementation(() => new Promise<boolean>(() => {}))
+
+    const pipeline = createMailPipeline({ notifier: notifier() })
+    const result = await Promise.race([
+      pipeline.process(mail(), account()),
+      new Promise<'timeout'>(resolve => setTimeout(resolve, 5000, 'timeout')),
+    ])
+
+    expect(result).not.toBe('timeout')
+    expect(result).toBe('saved')
+    expect(mocks.upsertMail).toHaveBeenCalledTimes(1)
+    const stored = mocks.upsertMail.mock.calls[0][0] as unknown as Mail
+    expect(stored.copyStatus).toBe('failed')
+    // 完整模式把验证码放在 `ai` 上（极简模式才落在 `mail.code`）
+    expect((stored.ai as { code?: string } | undefined)?.code).toBe('34949')
   }, 10000)
 
   it('复制抛错时也入库（复制失败不该导致收不到验证码）', async () => {

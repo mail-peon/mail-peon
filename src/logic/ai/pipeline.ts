@@ -370,7 +370,12 @@ export function createMailPipeline(deps: MailPipelineDeps): MailPipeline {
 
     if (resolved.code) {
       const autoCopy = shouldAutoCopyCode(app, rule)
-      copied = autoCopy ? await notifier.copyToClipboard(resolved.code) : false
+      // ⚠ 走 `copyWithTimeout`，与 `processMinimal` 同一条保护：完整模式下
+      // `notifier.copyToClipboard` 的第二级降级（交给 content script 写）在
+      // 「目标 tab 有、但内容脚本没连上」时会**永不 settle** —— 直接 await 会把
+      // 入库与 toast 一起挂死（真机踩过：验证码邮件不入库）。两条路径必须同一套保护，
+      // 否则「极简模式没事、完整模式卡住」这种差异没人查得出来。
+      copied = autoCopy ? await copyWithTimeout(notifier, resolved.code) : false
       stored.copyStatus = autoCopy ? (copied ? 'copied' : 'failed') : 'none'
       // 关掉自动复制时是 'manual'：toast 上给「点击复制」按钮，而不是报「失败了」
       toastStatus = autoCopy ? (copied ? 'copied' : 'failed') : 'manual'
