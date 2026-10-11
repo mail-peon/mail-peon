@@ -98,7 +98,7 @@ export function showToast(payload: ToastPayload): void {
 
   const existing = entries.get(payload.mailId)
   if (existing) {
-    // 更新已有那条：状态与文案可能变了（比如用户点了「点击复制」之后变成「已复制」）
+    // 更新已有那条：内容与状态可能变了（比如用户点了「点击复制」之后按钮要消失）
     renderBody(existing.el, payload)
     restartTimer(existing.el, payload)
     return
@@ -132,21 +132,6 @@ export function showToast(payload: ToastPayload): void {
   restartTimer(toast, payload)
 }
 
-/**
- * 更新已有 toast 的状态（「点击复制」成功后调用）。
- *
- * 单独导出而不是只走 `showToast`：点击复制的处理函数手上只有 mailId 与新状态，
- * 重新构造一份 payload 容易漏字段（比如发件人名），而漏掉的表现是
- * 「复制成功后标题变成空」。
- */
-export function updateToast(payload: ToastPayload): void {
-  const entry = entries.get(payload.mailId)
-  if (!entry)
-    return
-  renderBody(entry.el, payload)
-  restartTimer(entry.el, payload)
-}
-
 /** 关掉某条 */
 export function removeToast(mailId: string): void {
   const entry = entries.get(mailId)
@@ -168,6 +153,36 @@ export function removeToast(mailId: string): void {
 /**
  * 重建 toast 的内容。
  *
+ * 自动复制成功（`design/page-toast.md § 3.3`）：
+ *
+ *   ┌────────────────────────────────────────────────┐
+ *   │ GitHub · noreply@github.com                  × │  ← 第一行：发件人 · 发件邮箱
+ *   │ 验证码  123456                                 │  ← 第二行：验证码（主体，放大）
+ *   │ √ 已复制                                       │  ← 第三行：一句安静的确认（灰色）
+ *   └────────────────────────────────────────────────┘
+ *
+ * 自动复制失败时第三行换成失败说明 + 复制按钮（§ 3.4）：
+ *
+ *   ┌────────────────────────────────────────────────┐
+ *   │ GitHub · noreply@github.com                  × │
+ *   │ 验证码  123456                                 │
+ *   │ 自动复制失败  复制                             │
+ *   └────────────────────────────────────────────────┘
+ *
+ * 五条刻意为之：
+ *
+ * 1. **第一行不带状态 emoji**（以前是 ✅ / ⚠ / ℹ）：状态已经由左侧 4px 色条
+ *    表达了，同一件事说两遍只会把发件人那一行挤短。
+ * 2. **第二行永远只有验证码**：状态词、按钮都放第三行 —— 挤在那一行会把主体
+ *    （22px 的验证码）压小，而那是用户唯一要读的东西。
+ * 3. **自动复制成功的确认是灰色的**（`√ 已复制`）：成功是默认预期，
+ *    只需要一句安静的话，不需要绿色加粗去强调（对比手动复制那下，
+ *    那是用户刚做的动作，才值得 `.copy-done` 的绿色）。
+ * 4. **关闭按钮在第一行右端**：以前它被 append 在内容行之后，于是单独占了
+ *    第三行、落在左下角，看起来像第二个操作按钮。
+ * 5. **手动模式（没开自动复制）不写状态词**：那是用户自己的设置，
+ *    不是这条 toast 要报告的事情 —— 只给复制按钮。
+ *
  * 用 `replaceChildren` + `createElement` 而**不是** `innerHTML`：
  * 发件人名与主题来自邮件，是**不可信输入**。用 innerHTML 拼接它们就是一个
  * 自造的 XSS（`<img src=x onerror=…>` 出现在发件人名里是完全可行的）。
@@ -182,14 +197,26 @@ function renderBody(toast: HTMLElement, payload: ToastPayload): void {
   const body = document.createElement('div')
   body.className = 'body'
 
+  const head = document.createElement('div')
+  head.className = 'head'
+
   const title = document.createElement('div')
   title.className = 'title'
-  const icon = document.createElement('span')
-  icon.className = 'icon'
-  icon.textContent = payload.status === 'copied' ? '✅' : payload.status === 'failed' ? '⚠' : 'ℹ'
-  const from = document.createElement('span')
-  from.textContent = payload.from
-  title.append(icon, from)
+  title.textContent = payload.from
+
+  const close = document.createElement('button')
+  close.className = 'close'
+  close.type = 'button'
+  close.title = '关闭'
+  close.setAttribute('aria-label', '关闭')
+  close.textContent = '×'
+  close.addEventListener('click', (event) => {
+    // 别让点击冒泡到整条 toast（那会打开 Popup）
+    event.stopPropagation()
+    removeToast(payload.mailId)
+  })
+
+  head.append(title, close)
 
   const content = document.createElement('div')
   content.className = 'content'
@@ -202,56 +229,100 @@ function renderBody(toast: HTMLElement, payload: ToastPayload): void {
   code.className = 'code'
   code.textContent = payload.code
 
-  const status = document.createElement('span')
-  status.className = 'status'
-  status.textContent = payload.status === 'copied'
-    ? '已复制 ✓'
-    : payload.status === 'failed'
-      ? '自动复制失败'
-      : '未自动复制'
+  content.append(label, code)
 
-  content.append(label, code, status)
+  // 没开自动复制：不写状态词，复制按钮直接跟在验证码后面
+  if (payload.status === 'manual')
+    content.append(createCopyButton(toast, payload, null))
 
-  // 失败 / 手动模式下给「点击复制」按钮
-  if (payload.status !== 'copied') {
-    const button = document.createElement('button')
-    button.className = 'copy'
-    button.type = 'button'
-    button.textContent = '点击复制'
-    button.addEventListener('click', (event) => {
-      // 别让点击冒泡到整条 toast（那会打开 Popup）
-      event.stopPropagation()
-      void handleManualCopy(payload, button, status)
-    })
-    content.appendChild(button)
+  body.append(head, content)
+
+  if (payload.status === 'failed') {
+    // 第三行：失败说明 + 复制按钮（`status` 交给它，复制成功后要把这行说明撤掉）
+    const status = document.createElement('span')
+    status.className = 'status'
+    status.textContent = '自动复制失败'
+
+    body.append(createFooterRow(status, createCopyButton(toast, payload, status)))
+  }
+  else if (payload.status === 'copied') {
+    // 第三行：自动复制成功的一句安静确认（灰色、不加粗，见 `.copied-hint`）
+    const hint = document.createElement('span')
+    hint.className = 'copied-hint'
+    hint.textContent = '√ 已复制'
+
+    body.append(createFooterRow(hint))
   }
 
-  body.append(title, content)
-
-  const close = document.createElement('button')
-  close.className = 'close'
-  close.type = 'button'
-  close.title = '关闭'
-  close.textContent = '×'
-  close.addEventListener('click', (event) => {
-    event.stopPropagation()
-    removeToast(payload.mailId)
-  })
-
-  body.appendChild(close)
   toast.append(accent, body)
 }
 
 /**
- * toast 上的「点击复制」。
+ * 第三行（`.footer`）。
  *
- * 这是**第三级降级**：SW 与 content script 的自动复制都失败之后，用户手动点一下。
- * 因为发生在页面 DOM 内、且是用户手势触发的，`writeText` 在这里几乎必然成功。
+ * 单独一行是为了让第二行永远只有「验证码 + 数字」这一件事 —— 状态词挤在那一行
+ * 会把主体压小（用户报过）。两种内容共用它：失败说明 + 复制按钮、
+ * 以及自动复制成功那句灰色确认。
+ */
+function createFooterRow(...children: HTMLElement[]): HTMLDivElement {
+  const footer = document.createElement('div')
+  footer.className = 'footer'
+  footer.append(...children)
+  return footer
+}
+
+/**
+ * 「复制」文字按钮（`design/page-toast.md § 3.4`）。
+ *
+ * 与 Popup 列表项里那个同款做法：无边框、无底色，读起来是左边那句话的延续
+ * （「验证码 123456 复制」），而不是一个需要去找的控件。
+ *
+ * `status` 只在失败态有：复制成功后要把「自动复制失败」那半句撤掉 ——
+ * 留着就是「自动复制失败 √ 复制成功」这种自相矛盾的一行。
+ */
+function createCopyButton(
+  toast: HTMLElement,
+  payload: ToastPayload,
+  status: HTMLElement | null,
+): HTMLButtonElement {
+  const button = document.createElement('button')
+  button.className = 'copy'
+  button.type = 'button'
+  button.textContent = '复制'
+  button.addEventListener('click', (event) => {
+    // 别让点击冒泡到整条 toast（那会打开 Popup）
+    event.stopPropagation()
+    void handleManualCopy(toast, payload, button, status)
+  })
+  return button
+}
+
+/**
+ * 把复制按钮**换成**绿色的「√ 复制成功」。
+ *
+ * 与 Popup 的 `.copy-done` 同一套做法：那一刻它已经不是一个可点的控件了，
+ * 所以是换成一个 `<span>`，而不是改按钮文案再禁用（后者还留着按钮的盒模型与
+ * 焦点行为）。`.copy-done` 与 `.copy` 共用字号 / 行高，换的时候这一行不会跳。
+ */
+function markCopied(button: HTMLButtonElement): void {
+  const done = document.createElement('span')
+  done.className = 'copy-done'
+  done.textContent = '√ 复制成功'
+  button.replaceWith(done)
+}
+
+/**
+ * toast 上的「复制」。
+ *
+ * 这是**第三级降级**：SW 与 content script 的自动复制都失败（或用户关掉了自动
+ * 复制）之后，用户手动点一下。因为发生在页面 DOM 内、且是用户手势触发的，
+ * `writeText` 在这里几乎必然成功。
  */
 async function handleManualCopy(
+  toast: HTMLElement,
   payload: ToastPayload,
   button: HTMLButtonElement,
-  status: HTMLElement,
+  status: HTMLElement | null,
 ): Promise<void> {
   button.disabled = true
   let ok = false
@@ -264,12 +335,18 @@ async function handleManualCopy(
   }
 
   if (ok) {
-    status.textContent = '已复制 ✓'
-    button.remove()
-    updateToast({ ...payload, status: 'copied' })
+    status?.remove()
+    markCopied(button)
+    /*
+     * ⚠ 成功之后再给 5 秒：用户刚点了复制，这条提示不该在他读到
+     *   「√ 复制成功」之前消失（原来的写法是重渲染，顺带重置了倒计时；
+     *   现在就地换文案，得自己把倒计时拨回来）。
+     */
+    restartTimer(toast, payload)
   }
   else {
-    status.textContent = '复制失败，请手动选中'
+    if (status)
+      status.textContent = '复制失败，请手动选中'
     button.disabled = false
   }
 

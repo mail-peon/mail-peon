@@ -107,10 +107,16 @@ const zhCN: StringTable = {
 
   toast: {
     codeLabel: '验证码',
-    copied: '已复制 ✓',
+    /**
+     * ⚠ 自动复制成功的那句确认是 `autoDone`（灰色、不加粗）：成功是默认预期，
+     *   只需要安静地说一句。绿色加粗的 `copyDone` 留给「用户刚点了复制」那一下
+     *   —— 那是他做的一个动作，值得一个明确的结果（`page-toast.md § 3.3`）。
+     */
+    autoDone: '√ 已复制',
     copyFailed: '自动复制失败',
-    notCopied: '未自动复制',
-    clickToCopy: '点击复制',
+    /** 文字按钮的文案（Popup 列表项里那个同款） */
+    copy: '复制',
+    copyDone: '√ 复制成功',
   },
 
   options: {
