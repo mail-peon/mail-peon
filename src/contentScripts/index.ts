@@ -1,5 +1,5 @@
 import { onMessage } from 'webext-bridge/content-script'
-import { showToast, updateToast } from './toast'
+import { showToast } from './toast'
 
 /**
  * Content Script 入口（每个页面一个实例）。
@@ -17,26 +17,19 @@ import { showToast, updateToast } from './toast'
  * 而我们现在只需要 toast（懒创建，空闲时零 DOM）。
  */
 
-/** 页面级去重：同一封邮件在同一页面里重复到达时只更新，不叠加 */
-const recentlyToasted = new Set<string>()
-
+/**
+ * 页面级去重**不在这里**做：`showToast` 自己就是「同一封邮件还在屏幕上时只更新、
+ * 不叠加」（`toast.ts` 的 `entries` 表，对应 `page-toast.md § 8`）。
+ *
+ * ⚠ 这里从前额外维护过一个只增不减的「最近弹过」`Set`（超过 200 条才淘汰最老的
+ * 100 个），而 toast 关掉时**不会**从它里面删 —— 于是「toast 早就关了、同一封邮件
+ * 再送达」会走 `updateToast`，它找不到条目就**静默什么都不做**：用户看到的是
+ * 「有时候弹有时候不弹」（得等 100 封别的邮件把那封挤出集合才会再弹）。
+ * 删掉那份集合之后判据只剩一处（屏幕上有没有它），这个不确定性也就没了。
+ */
 onMessage('mail:toast', ({ data }) => {
   if (!data?.mailId || !data.code)
     return
-
-  if (recentlyToasted.has(data.mailId)) {
-    updateToast(data)
-    return
-  }
-  recentlyToasted.add(data.mailId)
-  // 集合会无限增长（一个页面开一整天的话）；超过 200 条时清掉最老的几个。
-  // 不做这件事的代价不是内存，而是**同一封邮件被重发时不再弹 toast** ——
-  // 用户会遇到「有时候弹有时候不弹」
-  if (recentlyToasted.size > 200) {
-    const drop = [...recentlyToasted].slice(0, 100)
-    for (const id of drop)
-      recentlyToasted.delete(id)
-  }
 
   showToast(data)
 })
