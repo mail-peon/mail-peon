@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import type { AiPlatformOptionPayload } from '~/adapters/ai/platforms'
 import type { AiSettings } from '~/logic/types'
 import type { UiStatusText } from '~/logic/ui-status'
 import { computed, ref, watch } from 'vue'
@@ -30,14 +31,14 @@ const props = defineProps<{ settings: AiSettings | null }>()
 
 const { setAi, loadFailed, reload } = useSettings()
 
-interface PlatformOption {
-  value: string
-  label: string
-  hint: string
-  defaultBaseUrl: string
-  defaultModel: string
-  nativeJson: boolean
-}
+/**
+ * 平台清单的形状**直接引用源类型**，不本地重抄。
+ *
+ * ⚠ 这里曾经是一个手写的 `PlatformOption`，而它漏了 `thinkingToggle` ——
+ *   于是「平台支不支持思考模式」这件事在界面上无法表达，勾选框只能无条件显示
+ *   （OpenAI / Anthropic 上勾了没用）。现在引用源类型，漏字段会当场编译报错。
+ */
+type PlatformOption = AiPlatformOptionPayload
 
 const platforms = ref<PlatformOption[]>([])
 const draft = ref<AiSettings | null>(null)
@@ -46,6 +47,16 @@ const testResult = ref<{ ok: boolean, text: string, latencyMs?: number } | null>
 const saved = ref('')
 
 const current = computed(() => platforms.value.find(item => item.value === draft.value?.platform) ?? null)
+
+/**
+ * 当前平台有没有思考模式。
+ *
+ * ⚠ 判据来自平台声明（`thinkingToggle`），不是我们的猜测：协议层
+ *   （`protocols/openai.ts` / `anthropic.ts`）就是靠它决定发不发那个参数。
+ *   拿不到平台信息时按 `false` 处理 —— 宁可少显示一个能用的开关，
+ *   也不要给一个勾了没反应的。
+ */
+const supportsThinking = computed(() => current.value?.thinkingToggle ?? false)
 
 /** 平台下拉的选项 */
 const platformOptions = computed(() =>
@@ -260,11 +271,11 @@ function onOutputLanguageChange(value: unknown) {
           </a-form-item>
 
           <a-form-item>
-            <a-checkbox v-model:checked="draft.thinking">
+            <a-checkbox v-model:checked="draft.thinking" :disabled="!supportsThinking">
               {{ t('ai.thinking') }}
             </a-checkbox>
             <p class="mp-hint indent">
-              {{ t('ai.thinkingHint') }}
+              {{ supportsThinking ? t('ai.thinkingHint') : t('ai.thinkingUnsupported') }}
             </p>
           </a-form-item>
 

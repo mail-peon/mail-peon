@@ -58,15 +58,55 @@ export function createAiProvider(id: string, config: AiProviderConfig): AiProvid
   }
 }
 
+/**
+ * 一个平台**过消息通道**之后的样子（Options 的 AI 配置页读它）。
+ *
+ * 与 `AiPlatformDefinition` 的差别都是刻意的：
+ *   - `id` → `value`（跟其它下拉一致）；
+ *   - `capabilities.nativeJson` → 摊平成 `nativeJson`（界面只关心这一项能力）；
+ *   - `protocol` / `providerName` / `capabilities` 本身不过通道（见下面的排除表）。
+ */
+export interface AiPlatformOptionPayload {
+  value: string
+  label: string
+  hint: string
+  /** 接口地址留空时实际会用的地址，设置页直接显示它，省得用户去翻文档 */
+  defaultBaseUrl: string
+  defaultModel: string
+  nativeJson: boolean
+  /**
+   * 这个平台有没有「思考模式」。
+   *
+   * ⚠ 界面**必须**拿它来决定要不要显示那个勾选框：协议层只在它为真时才发
+   *   关闭思考的参数。少了它，OpenAI / Anthropic 上会出现一个勾了没用的开关。
+   */
+  thinkingToggle: boolean
+}
+
+/**
+ * `AiPlatformDefinition` 里**故意不**过消息通道的字段。
+ *
+ * 单测会拿它和 `AI_PLATFORM_OPTIONS` 能覆盖的字段对账：源定义里出现新字段而
+ * 两处都没提到时测试失败。加字段时只有两个选择 —— 放进载荷，或者放进这里并写清理由。
+ */
+export const AI_PLATFORM_OPTION_EXCLUDED = new Set<keyof AiPlatformDefinition>([
+  // wire 格式处理器：对象里带函数，结构化克隆过不去；它只在 background 侧用
+  'protocol',
+  // 只有 `nativeJson` 是界面需要的，其余（如 `maxInputChars`）是 prompt 组装侧的事
+  'capabilities',
+  // 只在连通性测试的结果文案里用（background 侧拼好再给界面），界面不需要自己判断
+  'providerName',
+])
+
 /** 供 Options 展示的可选平台清单（顺序即展示顺序） */
-export const AI_PLATFORM_OPTIONS = AI_PLATFORMS.map(platform => ({
+export const AI_PLATFORM_OPTIONS: AiPlatformOptionPayload[] = AI_PLATFORMS.map(platform => ({
   value: platform.id,
   label: platform.label,
   hint: platform.hint,
-  /** 接口地址留空时实际会用的地址，设置页直接显示它，省得用户去翻文档 */
   defaultBaseUrl: platform.defaultBaseUrl,
   defaultModel: platform.defaultModel,
   nativeJson: platform.capabilities.nativeJson,
+  thinkingToggle: platform.thinkingToggle,
 }))
 
 export type { AiProvider, AiProviderCapabilities, AiProviderConfig } from '../types'

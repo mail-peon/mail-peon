@@ -302,6 +302,12 @@ const zhCN: StringTable = {
     model: 'Model',
     thinking: '启用思考模式',
     thinkingHint: 'DeepSeek 等平台默认已关闭；开启会消耗大量 token 且可能导致输出为空。',
+    /*
+     * ⚠ 有些平台**没有**思考模式（OpenAI / Anthropic 的声明里 `thinkingToggle: false`），
+     *   协议层对它们根本不发那个参数。不把这件事说出来，用户勾了之后只会觉得
+     *   「开了没反应」。
+     */
+    thinkingUnsupported: '当前平台没有思考模式，此项不可用。',
     outputLanguage: '输出语言',
     outputLanguageBrowser: '跟随浏览器（推荐）',
     outputLanguageEmail: '跟随邮件',

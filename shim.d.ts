@@ -145,6 +145,13 @@ declare module 'webext-bridge' {
 
     // --- AI ---
     'ai:test': ProtocolWithReturn<{ ai: AiSettings }, AiTestResult>
+    /*
+     * ⚠ 这份声明必须和 `AiPlatformOptionPayload`（`adapters/ai/platforms/index.ts`）
+     *   一致。它曾经漏了 `thinkingToggle` —— 与 `mail:providers` 漏掉 `presets`
+     *   是同一个形状的问题：上游声明得好好的，中间一层手抄时丢了，
+     *   界面就只能按「没有这个能力」渲染。
+     *   加字段时两处一起改，`adapters/ai/__tests__/platforms.spec.ts` 会拦。
+     */
     'ai:platforms': ProtocolWithReturn<undefined, {
       platforms: Array<{
         value: string
@@ -153,6 +160,8 @@ declare module 'webext-bridge' {
         defaultBaseUrl: string
         defaultModel: string
         nativeJson: boolean
+        /** 平台有没有思考模式 —— 界面据此决定「启用思考模式」勾选框可不可用 */
+        thinkingToggle: boolean
       }>
     }>
 
