@@ -2,7 +2,7 @@
 import type { AccountBusyKind, AccountProbeResult, AccountStatus } from './accounts-status'
 import type { MailProviderFieldPayload, MailProviderOptionPayload } from '~/adapters/mail/registry'
 import type { MailAccount, SyncCursor } from '~/logic/types'
-import { computed, onMounted, ref } from 'vue'
+import { computed, nextTick, onMounted, ref } from 'vue'
 import ConfirmDialog from '~/components/ConfirmDialog.vue'
 import SecretInput from '~/components/SecretInput.vue'
 import { send, useAccounts } from '~/logic/bridge'
@@ -39,6 +39,18 @@ import { accountStatus } from './accounts-status'
 type ProviderOption = MailProviderOptionPayload
 type ProviderField = MailProviderFieldPayload
 
+/**
+ * 校验失败的结果。
+ *
+ * ⚠ 带上 `key` 而不是只给一句话：界面要拿它把**出错的那个字段**滚到眼前
+ *   （弹窗的字段区是可滚动的，出错字段很可能不在视口里）。
+ */
+interface ValidationFailure {
+  /** 字段 key（与 `a-form-item` 的 `name` 对应） */
+  key: string
+  message: string
+}
+
 /*
  * `ProviderOption.downloadHint`（IMAP → 下载 peon-hall）为什么不拼进
  * `availabilityNote`：那一串是 `a-alert` 的 `:message`，antd 当**纯文本**渲染，
@@ -49,6 +61,20 @@ const { accounts, reload, save, remove, test, resetCursor, authorizeGmail } = us
 
 const providers = ref<ProviderOption[]>([])
 const editing = ref<MailAccount | null>(null)
+
+/**
+ * `a-form` 的实例。
+ *
+ * ⚠ 只用来拿它的根元素（`$el`）——`revealField` 在这个范围里找字段，
+ *   而不是满页 `document.querySelector`。理由有两个：
+ *
+ *   1. **只会有一个编辑弹窗**，但「页面级查询」这种写法会在将来出现第二个
+ *      同名字段时静默指向错的那个；
+ *   2. 组件不一定挂在 `document` 上（单测就是**游离挂载**的），
+ *      全局查询会直接找不到 —— 于是那条逻辑在测试里永远走不到，
+ *      测试也就守不住它。
+ */
+const formRef = ref<{ $el?: HTMLElement } | null>(null)
 
 /**
  * 哪些「带预设的 host 字段」当前处于**自定义模式**（下拉选中了「自定义…」）。
@@ -441,7 +467,7 @@ function onFieldSelectUpdate(key: string, value: unknown): void {
  *
  * @returns 错误信息；通过时返回空串
  */
-function validateAccount(account: MailAccount): string {
+function validateAccount(account: MailAccount): ValidationFailure | null {
   const provider = providers.value.find(item => item.value === account.provider)
 
   for (const field of provider?.fields ?? []) {
@@ -455,7 +481,7 @@ function validateAccount(account: MailAccount): string {
       : typeof value !== 'string' || !value.trim()
 
     if (missing)
-      return `请填写「${field.label}」`
+      return { key: String(field.key), message: `请填写「${field.label}」` }
   }
 
   return validateRelayUrl(account)
@@ -467,28 +493,63 @@ function validateAccount(account: MailAccount): string {
  * 单独一条而不是塞进上面的通用循环：这里能给出**可操作**的提示
  * （「要写 `ws://` 开头」），而通用循环只能说「请填写」。
  */
-function validateRelayUrl(account: MailAccount): string {
+function validateRelayUrl(account: MailAccount): ValidationFailure | null {
   const raw = account.config.relayUrl?.trim()
   // 只有用得上中继的 provider 才校验（Gmail 那条路不经过中继）
   if (account.provider !== 'imap')
-    return ''
+    return null
 
   if (!raw)
-    return '请填写「WebSocket 中继地址」（装好 peon-hall 后填 ws://127.0.0.1:41316/）'
+    return { key: 'relayUrl', message: '请填写「WebSocket 中继地址」（装好 peon-hall 后填 ws://127.0.0.1:41316/）' }
 
   if (!/^wss?:\/\//i.test(raw)) {
-    return `中继地址要以 ws:// 或 wss:// 开头（当前是「${raw}」）。`
-      + '本机中继写 ws://127.0.0.1:41316/'
+    return {
+      key: 'relayUrl',
+      message: `中继地址要以 ws:// 或 wss:// 开头（当前是「${raw}」）。`
+        + '本机中继写 ws://127.0.0.1:41316/',
+    }
   }
 
   try {
     void new URL(raw)
   }
   catch {
-    return `中继地址不是合法 URL：「${raw}」`
+    return { key: 'relayUrl', message: `中继地址不是合法 URL：「${raw}」` }
   }
 
-  return ''
+  return null
+}
+
+/**
+ * 校验失败 → 把那个字段**滚到眼前**并聚焦。
+ *
+ * ⚠ 为什么需要它：弹窗的字段区是 `max-height: 60vh; overflow-y: auto`，
+ *   而错误文案只出现在顶部一行 —— 「请填写『WebSocket 中继地址』」
+ *   很可能指向一个**当前不在视口里**的字段，用户只能自己一栏栏找。
+ *
+ * ⚠ 为什么不用 antd 的 `form.scrollToField()`：那个 API 要求每个 `a-form-item`
+ *   都带 `name`，而**只加 `name` 不加 `:model`** 会让 antd 启用它自己的校验 ——
+ *   实测控制台会刷出一片 `async-validator: '${name}' is required`
+ *   （表单没有 model，所有字段对它都是 undefined），界面上可能跟着冒红字。
+ *   我们本来就是**手写校验**，没必要为此把整张表单切到 antd 的受控模型上。
+ *
+ *   所以用 `data-field-key` 自己定位：代价一次 `querySelector`，
+ *   好处是完全不动 antd 的表单语义。
+ */
+function revealField(key: string): void {
+  void nextTick(() => {
+    const host = formRef.value?.$el
+    if (!host)
+      return
+
+    const item = host.querySelector<HTMLElement>(`[data-field-key="${key}"]`)
+    if (!item)
+      return
+
+    item.scrollIntoView({ block: 'center', behavior: 'smooth' })
+    // 顺带把焦点送进去：键盘用户可以直接开始改，不用再 Tab 一圈
+    item.querySelector<HTMLElement>('input, textarea, .ant-select-selector')?.focus()
+  })
 }
 
 async function onSave() {
@@ -498,12 +559,14 @@ async function onSave() {
 
   if (!editing.value.email.trim()) {
     pageError.value = '请填写邮箱地址'
+    revealField('email')
     return
   }
 
   const invalid = validateAccount(editing.value)
   if (invalid) {
-    pageError.value = invalid
+    pageError.value = invalid.message
+    revealField(invalid.key)
     return
   }
 
@@ -535,7 +598,8 @@ async function onSave() {
 async function onTest(account: MailAccount) {
   const invalid = validateAccount(account)
   if (invalid) {
-    probeState.value[account.id] = { ok: false, text: invalid }
+    // 这里是**列表卡片**上的「测试连接」，没有可滚动的表单 —— 只报文案
+    probeState.value[account.id] = { ok: false, text: invalid.message }
     return
   }
 
@@ -808,16 +872,16 @@ const formTitle = computed(() =>
         </template>
       </a-alert>
 
-      <a-form layout="vertical" class="form">
-        <a-form-item :label="t('accounts.label')">
+      <a-form ref="formRef" layout="vertical" class="form">
+        <a-form-item data-field-key="label" :label="t('accounts.label')">
           <a-input v-model:value="editing.label" :placeholder="t('accounts.labelPlaceholder')" />
         </a-form-item>
 
-        <a-form-item :label="t('accounts.email')">
+        <a-form-item data-field-key="email" :label="t('accounts.email')">
           <a-input v-model:value="editing.email" placeholder="me@example.com" type="email" />
         </a-form-item>
 
-        <a-form-item :label="t('accounts.provider')" :help="currentProvider?.hint">
+        <a-form-item data-field-key="provider" :label="t('accounts.provider')" :help="currentProvider?.hint">
           <a-select
             class="control"
             :value="editing.provider"
@@ -854,7 +918,7 @@ const formTitle = computed(() =>
 
         <!-- 字段由 provider 声明生成 -->
         <template v-for="field in currentProvider?.fields ?? []" :key="field.key">
-          <a-form-item v-if="field.type === 'toggle'" :label="field.label">
+          <a-form-item v-if="field.type === 'toggle'" :data-field-key="String(field.key)" :label="field.label">
             <a-switch
               :checked="fieldBool(field.key)"
               @update:checked="(value) => onToggleUpdate(field.key, value)"
@@ -863,6 +927,7 @@ const formTitle = computed(() =>
 
           <a-form-item
             v-else-if="field.type === 'password'"
+            :data-field-key="String(field.key)"
             :label="field.label"
             :required="field.required"
           >
@@ -875,6 +940,7 @@ const formTitle = computed(() =>
 
           <a-form-item
             v-else-if="field.type === 'number'"
+            :data-field-key="String(field.key)"
             :label="field.label"
             :required="field.required"
           >
@@ -887,7 +953,7 @@ const formTitle = computed(() =>
             />
           </a-form-item>
 
-          <a-form-item v-else-if="field.presets" :label="field.label" :required="field.required">
+          <a-form-item v-else-if="field.presets" :data-field-key="String(field.key)" :label="field.label" :required="field.required">
             <!--
               下拉挑常用服务器，最后一条「自定义…」切出输入框自己填。
 
@@ -928,7 +994,7 @@ const formTitle = computed(() =>
             </div>
           </a-form-item>
 
-          <a-form-item v-else :label="field.label" :required="field.required">
+          <a-form-item v-else :data-field-key="String(field.key)" :label="field.label" :required="field.required">
             <a-input
               :value="fieldValue(field.key)"
               :placeholder="field.placeholder"

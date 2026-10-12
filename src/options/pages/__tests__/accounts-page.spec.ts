@@ -800,3 +800,87 @@ describe('iMAP host 预设下拉', () => {
     wrapper.unmount()
   })
 })
+
+/*
+ * 校验失败要**把出错的那个字段滚到眼前**。
+ *
+ * ⚠ 这一组对应的缺陷：错误文案只出现在弹窗顶部一行，而字段区是
+ *   `max-height: 60vh; overflow-y: auto` —— 「请填写『WebSocket 中继地址』」
+ *   很可能指向一个当前不在视口里的字段，用户只能自己一栏栏找。
+ *
+ *   （曾经试过用 antd 的 `form.scrollToField()`，但它要求给每个 `a-form-item`
+ *    加 `name`，而那会在没有 `:model` 的表单上启用 antd 自己的校验，
+ *    实测控制台刷出一片 `async-validator: ''${name}'' is required`。
+ *    所以改成用 `data-field-key` 自己定位。）
+ */
+describe('校验失败会定位到出错字段', () => {
+  /** 读「当前正在编辑的账号」的 config（组件里的 `editing` ref） */
+  function editingConfig(wrapper: ReturnType<typeof mount>): Record<string, unknown> {
+    const vm = wrapper.vm as unknown as { editing?: { config: Record<string, unknown> } }
+    return vm.editing?.config ?? {}
+  }
+
+  /** jsdom 没有 scrollIntoView / focus 的布局语义，这里记下谁被滚过 */
+  const scrolledKeys: string[] = []
+
+  beforeEach(() => {
+    scrolledKeys.length = 0
+    mocks.accounts = ref([])
+    mocks.clipboardText = null
+    mocks.clipboardError = false
+    mocks.providerOverride = null
+    vi.unstubAllGlobals()
+
+    /*
+     * ⚠ 挂在 `Element.prototype` 上而不是某个元素上：组件是在 `nextTick` 里
+     *   才 `querySelector` 的，那时元素已由 antd 渲染出来，原型上的桩才生效。
+     */
+    Element.prototype.scrollIntoView = function () {
+      const key = (this as HTMLElement).dataset.fieldKey
+      if (key)
+        scrolledKeys.push(key)
+    }
+  })
+
+  it('必填字段为空时点保存 → 滚到那个字段，且顶部给出原因', async () => {
+    const wrapper = await mountPage()
+    await button(wrapper, '新增账号').trigger('click')
+    await flush()
+
+    // 新账号只带 `default`，没有中继地址（DEPS 里 relayUrl 是 required）
+    await button(wrapper, '保存').trigger('click')
+    await flush()
+    await new Promise(resolve => setTimeout(resolve, 0))
+
+    // ⚠ 新建账号的邮箱是空的，而 `onSave` **先**检查邮箱 ——
+    //   所以这里定位到的是 `email`，不是 `relayUrl`
+    expect(scrolledKeys).toContain('email')
+    // 弹窗还开着（没有把一份无效配置存进去）
+    expect(wrapper.find('.dialog').exists() || wrapper.find('.ant-modal').exists()).toBe(true)
+
+    wrapper.unmount()
+  })
+
+  it('邮箱为空时 → 定位到邮箱字段', async () => {
+    const wrapper = await mountPage()
+    await button(wrapper, '新增账号').trigger('click')
+    await flush()
+
+    // 把必填的都填上，只留邮箱空着
+    const config = editingConfig(wrapper)
+    config.relayUrl = 'ws://127.0.0.1:41316/'
+    config.host = 'imap.qq.com'
+    config.port = 993
+    config.user = 'me@example.com'
+    config.pass = 'x'
+    await flush()
+
+    await button(wrapper, '保存').trigger('click')
+    await flush()
+    await new Promise(resolve => setTimeout(resolve, 0))
+
+    expect(scrolledKeys).toContain('email')
+
+    wrapper.unmount()
+  })
+})
