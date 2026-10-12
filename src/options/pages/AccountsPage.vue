@@ -29,6 +29,16 @@ interface ProviderOption {
   hint: string
   availability: 'ready' | 'needs-relay'
   availabilityNote?: string
+  /**
+   * 「要装点东西」时的可点链接（IMAP → 下载 peon-hall）。
+   *
+   * ⚠️ 为什么不拼进 `availabilityNote`：那一串是 `a-alert` 的 `:message`，
+   *   antd 当**纯文本**渲染，链接点不开。分开传，模板里用 `<a>` 渲染。
+   */
+  downloadHint?: {
+    text: string
+    url: string
+  }
   fields: Array<{
     key: string
     label: string
@@ -334,7 +344,7 @@ function validateRelayUrl(account: MailAccount): string {
     return ''
 
   if (!raw)
-    return '请填写「WebSocket 中继地址」（推荐安装 peon-hall 自动启动，或本机跑 `pnpm relay` 后填 ws://127.0.0.1:41316/）'
+    return '请填写「WebSocket 中继地址」（装好 peon-hall 后填 ws://127.0.0.1:41316/）'
 
   if (!/^wss?:\/\//i.test(raw)) {
     return `中继地址要以 ws:// 或 wss:// 开头（当前是「${raw}」）。`
@@ -693,7 +703,24 @@ const formTitle = computed(() =>
           type="warning"
           show-icon
           :message="currentProvider.availabilityNote"
-        />
+        >
+          <!--
+            「去哪儿拿中继」放在这条黄条的 description 里 —— 用户读到
+            「需要本机中继」的**下一句**就该是「点这里下载」，中间不该隔别的内容。
+
+            文字链而不是主按钮：这是个**可选安装**动作（Gmail / 已有中继的用户不需要），
+            不该跟表单底部的【保存】抢视觉重量。
+          -->
+          <template v-if="currentProvider.downloadHint" #description>
+            <a
+              :href="currentProvider.downloadHint.url"
+              target="_blank"
+              rel="noopener noreferrer"
+            >
+              {{ currentProvider.downloadHint.text }}
+            </a>
+          </template>
+        </a-alert>
 
         <!-- 字段由 provider 声明生成 -->
         <template v-for="field in currentProvider?.fields ?? []" :key="field.key">

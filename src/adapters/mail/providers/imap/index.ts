@@ -26,23 +26,30 @@ import { ImapClient } from './client'
 export const definition: MailProviderDefinition = {
   id: 'imap',
   label: 'IMAP（用户名密码）',
-  hint: '通用协议，支持任意邮箱；需要先在本机运行中继（推荐安装 peon-hall，或开发者跑 pnpm relay）',
+  /*
+   * `hint` 刻意留空 —— 信息已经被拆到两处更该出现的地方：
+   *   - `availabilityNote`：卡片里的黄条，「为什么这条路在扩展里走不通」
+   *   - `downloadHint`：「去哪儿拿 peon-hall」（可点链接）
+   *
+   * 原来那句「通用协议，支持任意邮箱；需要先在本机运行中继（推荐安装 peon-hall，
+   * 或开发者跑 pnpm relay）」把「是什么」「要装什么」「开发者怎么跑」塞在一行小字里，
+   * 用户扫一眼只会看到「pnpm relay」这个他根本敲不了的东西。
+   */
+  hint: '',
   availability: 'needs-relay',
   /*
-   * ⚠ 这段文案要说实话。
+   * 一句话：扩展不能直接连 IMAP，需要中继转发。
    *
-   * 之前的版本写的是「中继看不到明文（TLS 是端到端）」—— 那是**错的**：
-   * 993 是 implicit TLS，中继必须自己完成 TLS 握手才能跟邮件服务器通话，
-   * 而握手完成后明文就在中继进程里，**包括用户的邮箱密码**。
-   *
-   * 这不是实现缺陷，是 TLS 的协议结构决定的（谁终止握手谁看到明文）。
-   * 所以正确的做法是：默认只绑 127.0.0.1，并把这件事明说，
-   * 让用户知道「自己跑中继」等于「密码留在自己机器上」。
+   * ⚠️ 之前的版本有「TLS 握手 → 中继能看到密码 → 跑在本机」的安全告知段。
+   *   那段话是**对的**（TLS 协议结构就是谁终止握手谁看到明文），但**太长**——
+   *   用户填密码前不需要听一段密码学课，只要知道「为啥要装」就够了。
+   *   想看完整事实：About 页有 peon-hall 下载入口，README 有详细架构说明。
    */
-  availabilityNote:
-    '浏览器扩展里没有裸 TCP，IMAP 必须经 WebSocket↔TCP 中继转发字节。'
-    + '中继需要完成 TLS 握手，因此它能看到你的邮箱密码 —— 所以请把中继跑在'
-    + '本机（默认只监听 127.0.0.1），这样凭据不会离开你的电脑。',
+  availabilityNote: '浏览器扩展不能直接连接 IMAP，需要本机中继转发。',
+  downloadHint: {
+    text: '下载 peon-hall',
+    url: 'https://github.com/mail-peon/peon-hall/releases/latest',
+  },
   fields: [
     { key: 'host', label: 'IMAP 服务器', type: 'text', placeholder: 'imap.qq.com', required: true },
     { key: 'port', label: '端口', type: 'number', default: 993, required: true },

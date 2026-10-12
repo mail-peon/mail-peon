@@ -34,7 +34,12 @@ const DEPS = {
       label: 'IMAP（用户名密码）',
       hint: '',
       availability: 'needs-relay',
-      availabilityNote: '',
+      availabilityNote: '浏览器扩展不能直接连接 IMAP，需要本机中继转发。',
+      // 与真实 provider（`providers/imap/index.ts`）保持一致
+      downloadHint: {
+        text: '下载 peon-hall',
+        url: 'https://github.com/mail-peon/peon-hall/releases/latest',
+      },
       fields: [
         { key: 'host', label: 'IMAP 服务器', type: 'text', required: true },
         { key: 'relayUrl', label: 'WebSocket 中继地址', type: 'text', required: true },
@@ -59,28 +64,38 @@ function account(patch: Partial<MailAccount> = {}): MailAccount {
   }
 }
 
-const mocks = vi.hoisted(() => ({
-  accounts: null as unknown as { value: import('~/logic/types').MailAccount[] },
-  message: {
-    info: vi.fn(),
-    success: vi.fn(),
-    warning: vi.fn(),
-    error: vi.fn(),
-    loading: vi.fn(),
-    open: vi.fn(),
-    destroy: vi.fn(),
-  },
-  reload: vi.fn(async () => {}),
-  test: vi.fn(),
-  resetCursor: vi.fn(),
-  send: vi.fn(async () => DEPS),
-  /**
-   * 模拟「剪贴板里有东西」：每个测试按需改 `clipboardText`。
-   * 默认 null（没有 navigator.clipboard）。
+const mocks = vi.hoisted(() => {
+  /*
+   * `vi.hoisted` 的回调在模块顶层 `const DEPS` **之前**执行 —— 但下面那个箭头
+   * 函数体是**调用时**才读 `DEPS` / `providerOverride`，所以没有 TDZ 问题。
+   * 这样 `send` 的返回既能用默认 DEPS，又能被单个用例临时替换（见 Gmail 那条）。
    */
-  clipboardText: null as string | null,
-  clipboardError: false as boolean,
-}))
+  const m = {
+    accounts: null as unknown as { value: import('~/logic/types').MailAccount[] },
+    /** 临时替换 `send('mail:providers')` 的返回；`null` = 用默认 DEPS */
+    providerOverride: null as unknown,
+    message: {
+      info: vi.fn(),
+      success: vi.fn(),
+      warning: vi.fn(),
+      error: vi.fn(),
+      loading: vi.fn(),
+      open: vi.fn(),
+      destroy: vi.fn(),
+    },
+    reload: vi.fn(async () => {}),
+    test: vi.fn(),
+    resetCursor: vi.fn(),
+    send: vi.fn(async (): Promise<unknown> => m.providerOverride ?? DEPS),
+    /**
+     * 模拟「剪贴板里有东西」：每个测试按需改 `clipboardText`。
+     * 默认 null（没有 navigator.clipboard）。
+     */
+    clipboardText: null as string | null,
+    clipboardError: false as boolean,
+  }
+  return m
+})
 
 /**
  * 模拟 navigator.clipboard.readText()。在 vi.hoisted 之后单独 setup，
@@ -172,6 +187,7 @@ describe('「重置同步位置」不会让「测试连接」转圈', () => {
     mocks.resetCursor.mockReset()
     mocks.clipboardText = null
     mocks.clipboardError = false
+    mocks.providerOverride = null
     vi.unstubAllGlobals()
   })
 
@@ -302,6 +318,7 @@ describe('剪贴板里有中继地址 → 表单顶部提示【填入】', () =>
     })])
     mocks.clipboardText = null
     mocks.clipboardError = false
+    mocks.providerOverride = null
     vi.unstubAllGlobals()
   })
 
@@ -431,6 +448,91 @@ describe('剪贴板里有中继地址 → 表单顶部提示【填入】', () =>
     await flush()
 
     expect(promptsVisible(wrapper)).toBe(false)
+
+    wrapper.unmount()
+  })
+})
+
+/*
+ * 「需要装 peon-hall」时的那条下载链接 —— 见 `providers/imap/index.ts` 的
+ * `downloadHint` 与 `AccountsPage.vue` 里把它渲染成 `<a>` 的那段模板。
+ *
+ * ⚠️ 断的是「**可点**」：antd 的 `a-alert` 把 `:message` 当纯文本，链接塞在里面
+ *   点不开 —— 所以 downloadHint 走独立的 `<a>`，这里验证它真的渲染成了 `<a>`。
+ */
+describe('imap provider 的 peon-hall 下载链接', () => {
+  beforeEach(() => {
+    mocks.accounts = ref([])
+    mocks.clipboardText = null
+    mocks.clipboardError = false
+    mocks.providerOverride = null
+    vi.unstubAllGlobals()
+  })
+
+  it('黄条里渲染出可点的「下载 peon-hall」链接', async () => {
+    const wrapper = await mountPage()
+    await button(wrapper, '新增账号').trigger('click')
+    await flush()
+
+    const link = wrapper.findAll('a').find(node => node.text().includes('下载 peon-hall'))
+    expect(link).toBeDefined()
+    expect(link!.attributes('href')).toBe('https://github.com/mail-peon/peon-hall/releases/latest')
+
+    wrapper.unmount()
+  })
+
+  it('下载链接在新标签页打开，且不发 Referer（noopener noreferrer）', async () => {
+    const wrapper = await mountPage()
+    await button(wrapper, '新增账号').trigger('click')
+    await flush()
+
+    const link = wrapper.findAll('a').find(node => node.text().includes('下载 peon-hall'))
+    expect(link!.attributes('target')).toBe('_blank')
+    const rel = link!.attributes('rel') ?? ''
+    expect(rel).toContain('noopener')
+    expect(rel).toContain('noreferrer')
+
+    wrapper.unmount()
+  })
+
+  it('黄条正文只有「为什么需要中继」，不再堆 pnpm relay / 安全细节', async () => {
+    const wrapper = await mountPage()
+    await button(wrapper, '新增账号').trigger('click')
+    await flush()
+
+    const alertText = wrapper.findAll('.ant-alert').map(node => node.text()).join('\n')
+    expect(alertText).toContain('浏览器扩展不能直接连接 IMAP')
+    // 这几样都不该再出现在界面上（历史遗留文案）
+    expect(alertText).not.toContain('pnpm relay')
+    expect(alertText).not.toContain('邮箱密码')
+    expect(alertText).not.toContain('TLS 握手')
+    expect(alertText).not.toContain('通用协议')
+
+    wrapper.unmount()
+  })
+
+  it('gmail 没有 downloadHint → 不渲染下载链接', async () => {
+    // 把 provider 换成 gmail（`availability: 'ready'` → 连黄条都不该有）
+    mocks.providerOverride = {
+      providers: [
+        {
+          value: 'gmail',
+          label: 'Gmail',
+          hint: '推荐。浏览器原生支持，不需要中继',
+          availability: 'ready',
+          fields: [{ key: 'clientId', label: 'Client ID', type: 'text', required: true }],
+        },
+      ],
+    }
+
+    const wrapper = await mountPage()
+    await button(wrapper, '新增账号').trigger('click')
+    await flush()
+
+    const link = wrapper.findAll('a').find(node => node.text().includes('下载 peon-hall'))
+    expect(link).toBeUndefined()
+    // availability === 'ready' → 黄条不出现
+    expect(wrapper.findAll('.ant-alert').some(node => node.text().includes('中继'))).toBe(false)
 
     wrapper.unmount()
   })

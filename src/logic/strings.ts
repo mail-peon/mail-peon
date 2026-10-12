@@ -325,6 +325,20 @@ const zhCN: StringTable = {
     aiDesc: '只在调用 AI 时把「主题 + 正文片段」发到你配置的 AI 平台；极简模式下正文根本不存储。',
     shortcutsTitle: '其它入口',
     shortcutsDesc: '点击工具栏图标打开弹窗；侧边栏（Chrome 侧栏 / Firefox 侧栏）提供完整列表。',
+    peonHallTitle: '配套桌面端（peon-hall）',
+    /*
+     * About 页卡片里的「为什么需要装」—— 只一句，不堆安全细节。
+     *
+     * IMAP provider 的 `availabilityNote` 也说了同一件事，但**故意措辞不同**
+     * （这里 22 字、那边 18 字）—— 不同决策点用各自的长度，硬同步成"同一份文案"
+     * 会把"为什么装"也拉成三段话。
+     *
+     * 安全细节（TLS 握手、本机监听）用户**自己知道**就好 —— 想看完整的：
+     *   - `providers/imap/index.ts` 旧版本的 `availabilityNote` 注释里有完整说明
+     *   - `docs/privacy-policy.md` 的「数据存储」一节
+     */
+    peonHallWhyNeeded: '浏览器扩展不能直接连接 IMAP，需要本机中继转发。',
+    peonHallDownload: '下载 peon-hall',
   },
 }
 

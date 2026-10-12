@@ -48,6 +48,7 @@ export const MAIL_PROVIDER_OPTIONS = MAIL_PROVIDERS.map(definition => ({
   hint: definition.hint,
   availability: definition.availability,
   availabilityNote: definition.availabilityNote,
+  downloadHint: definition.downloadHint,
 }))
 
 export type {

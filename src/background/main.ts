@@ -839,6 +839,7 @@ onMessage('mail:providers', async () => {
       hint: definition.hint,
       availability: definition.availability,
       availabilityNote: definition.availabilityNote,
+      downloadHint: definition.downloadHint,
       fields: definition.fields.map(field => ({
         key: String(field.key),
         label: field.label,

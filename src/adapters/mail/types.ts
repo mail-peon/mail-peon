@@ -59,6 +59,22 @@ export interface MailProviderDefinition {
   availability: 'ready' | 'needs-relay'
   /** 兼容性说明（`availability !== 'ready'` 时展示） */
   availabilityNote?: string
+  /**
+   * 「需要装点东西」类的下载链接（例如 IMAP provider 需要装 peon-hall）。
+   *
+   * 为什么不在 `hint` 里直接塞 HTML？`hint` 是 `a-form-item` 的 `:help` 属性，
+   * antd 渲染成普通文本，链接点不开。`downloadHint` 单独走，由模板渲染成
+   * `<a target="_blank" rel="noopener noreferrer">`，渲染时还要 `target=_blank` 、
+   * 不发 Referer，跟 About 页的 peon-hall 下载按钮**同一套安全姿势**。
+   *
+   * 字段为可选 —— 大多数 provider（Gmail 等）没这个需求。
+   */
+  downloadHint?: {
+    /** 链接文字，例如「下载 peon-hall」 */
+    text: string
+    /** 跳转 URL（建议 GitHub Releases latest，会自动 302 到具体 tag） */
+    url: string
+  }
 }
 
 export interface MailProviderField {
