@@ -5,6 +5,7 @@ import { computed, onMounted, ref } from 'vue'
 import ConfirmDialog from '~/components/ConfirmDialog.vue'
 import SecretInput from '~/components/SecretInput.vue'
 import { send, useAccounts } from '~/logic/bridge'
+import { looksLikeClipboardRelayUrl, readClipboardText } from '~/logic/clipboard-relay'
 import { useConfirmAction } from '~/logic/confirm-action'
 import { t } from '~/logic/strings'
 import { ERROR_DURATION, useAppMessage } from '~/logic/ui-message'
@@ -68,11 +69,52 @@ const pageError = ref('')
 const authorizing = ref(false)
 const uiMessage = useAppMessage()
 
+/**
+ * 剪贴板里**可能**有用户刚从 peon-hall 复制过来的中继地址。
+ *
+ * 不是「自动填」：我们只把候选放进 `clipboardCandidate`，在弹窗顶部显示一条
+ * 提示，由用户**显式**点【填入】才会写进字段 —— 见 `clipboard-relay.ts` 的说明。
+ */
+const clipboardCandidate = ref<string | null>(null)
+
 onMounted(async () => {
   await reload()
   const result = await send<{ providers: ProviderOption[] }>('mail:providers', undefined, { providers: [] })
   providers.value = result.providers ?? []
+
+  // 剪贴板检测：等 reload 完了再读（reload 失败时也能填，用户复制没受影响）。
+  void probeClipboard()
 })
+
+/**
+ * 读一次剪贴板，命中就放进 `clipboardCandidate` 等用户确认。
+ *
+ * ⚠️ 故意**不**在 `onMounted` 期间自动填字段 —— 见 `clipboard-relay.ts` 的
+ *   「为什么是『提示 + 按钮』而不是『自动填入』」一段。
+ *
+ * ⚠️ 只在用户**真正打开账号表单**（`editing` 变非空）时检测才有意义；这一层
+ *   让候选常驻是为了「用户先开扩展、剪贴板里已经有 peon-hall 复制的内容、
+ *   再点【+ 新增账号】时立刻提示」那条路径。`openEditor()` 在这里重新触发一次，
+ *   因为用户从「打开扩展」到「点 + 新增」可能隔几秒，剪贴板内容也可能在这
+ *   期间被换（覆盖即可让用户看到新候选 —— 也会因为「不是中继 URL」自动不显示）。
+ */
+async function probeClipboard(): Promise<void> {
+  const text = await readClipboardText()
+  if (text && looksLikeClipboardRelayUrl(text)) {
+    clipboardCandidate.value = text.trim()
+  }
+  else {
+    clipboardCandidate.value = null
+  }
+}
+
+/** 用户点【填入】 —— 把候选写进字段，banner 收起。 */
+function applyClipboardFromClipboard(): void {
+  if (!editing.value || !clipboardCandidate.value)
+    return
+  setField('relayUrl', clipboardCandidate.value)
+  clipboardCandidate.value = null
+}
 
 const currentProvider = computed(() =>
   providers.value.find(item => item.value === editing.value?.provider) ?? null,
@@ -168,6 +210,7 @@ function describeError(error: unknown): string {
 function openEditor(account: MailAccount) {
   pageError.value = ''
   editing.value = { ...account }
+  void probeClipboard()
 }
 
 /** 关闭编辑弹窗（取消 / 点遮罩 / Esc 都走这里） */
@@ -190,6 +233,7 @@ function newAccount() {
     createdAt: Date.now(),
     cursor: null,
   }
+  void probeClipboard()
 }
 
 function defaultConfigFor(provider: ProviderOption | null | undefined): MailAccount['config'] {
@@ -598,6 +642,32 @@ const formTitle = computed(() =>
       -->
       <a-alert v-if="pageError" class="editor-error" type="error" show-icon :message="pageError" />
 
+      <!--
+        剪贴板里有中继地址候选 —— 用户刚才在 peon-hall 点过「复制扩展地址」。
+        见 `clipboard-relay.ts` 的说明：「提示 + 按钮」而不是「自动填入」。
+
+        只在 IMAP 协议下显示 —— Gmail 不走中继，填了反而误导。
+        只在 relayUrl 字段为空时显示 —— 已经有值的话别覆盖。
+      -->
+      <a-alert
+        v-if="clipboardCandidate && editing.provider === 'imap' && !fieldValue('relayUrl')"
+        class="clipboard-prompt"
+        type="info"
+        show-icon
+        :message="`剪贴板里有中继地址：${clipboardCandidate}`"
+      >
+        <template #description>
+          <a-space :size="8">
+            <a-button size="small" type="primary" @click="applyClipboardFromClipboard">
+              填入
+            </a-button>
+            <a-button size="small" @click="clipboardCandidate = null">
+              不用
+            </a-button>
+          </a-space>
+        </template>
+      </a-alert>
+
       <a-form layout="vertical" class="form">
         <a-form-item :label="t('accounts.label')">
           <a-input v-model:value="editing.label" :placeholder="t('accounts.labelPlaceholder')" />
@@ -793,6 +863,10 @@ const formTitle = computed(() =>
 }
 
 .editor-error {
+  margin-bottom: 12px;
+}
+
+.clipboard-prompt {
   margin-bottom: 12px;
 }
 
