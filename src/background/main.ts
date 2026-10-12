@@ -36,6 +36,7 @@ import { patchAiSettings, patchAppSettings, readAiSettings, readAppSettings } fr
 import { deleteDb } from '~/platform/idb/database'
 import { createSingleFlight } from '~/platform/single-flight'
 import { copyViaContentScript } from './clipboard'
+import { fireAndForget } from './deferred-task'
 import { authorizeGmail } from './gmail-oauth'
 import { createBrowserNotifier } from './notifier'
 import { runSyncCycle } from './sync'
@@ -649,8 +650,7 @@ onMessage('accounts:reset-cursor', async ({ data }) => {
  */
 onMessage('accounts:sync-now', async () => {
   await ensureStoreReady()
-
-  void (async () => {
+  return fireAndForget(async () => {
     try {
       const { value: results } = await syncOnce()
       lastSync = { ok: true, results, finishedAt: Date.now() }
@@ -664,9 +664,11 @@ onMessage('accounts:sync-now', async () => {
       // 失败也要通知 —— 否则 UI 会一直停在「同步中」（这正是修之前的行为）
       broadcastToExtension('sync:done', { ok: false, results: [], error: message, finishedAt: lastSync.finishedAt })
     }
-  })()
-
-  return { started: true as const }
+  }, (error) => {
+    // 同步到这里都不应该失败（try / catch 里走完了）；兜底把异常吃掉 + 记日志，
+    // 不能再让 promise 走 unhandled rejection（MV3 worker 会被报错）。
+    console.warn('[mail-peon] 手动同步未捕获异常', error)
+  })
 })
 
 onMessage('accounts:sync-status', async () => {
