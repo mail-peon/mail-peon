@@ -74,7 +74,29 @@ const mocks = vi.hoisted(() => ({
   test: vi.fn(),
   resetCursor: vi.fn(),
   send: vi.fn(async () => DEPS),
+  /**
+   * 模拟「剪贴板里有东西」：每个测试按需改 `clipboardText`。
+   * 默认 null（没有 navigator.clipboard）。
+   */
+  clipboardText: null as string | null,
+  clipboardError: false as boolean,
 }))
+
+/**
+ * 模拟 navigator.clipboard.readText()。在 vi.hoisted 之后单独 setup，
+ * 让 describe 块能根据 `mocks.clipboardText` / `mocks.clipboardError` 切换返回值。
+ */
+function installClipboardMock() {
+  vi.stubGlobal('navigator', {
+    clipboard: {
+      readText: async () => {
+        if (mocks.clipboardError)
+          throw new Error('permission denied')
+        return mocks.clipboardText
+      },
+    },
+  })
+}
 
 vi.mock('~/logic/bridge', () => ({
   useAccounts: () => ({
@@ -122,9 +144,9 @@ async function mountPage() {
   return wrapper
 }
 
-/** 按文字找一个按钮 */
+/** 按文字找一个按钮 —— antd 在两个字的按钮里插了空格，忽略空白匹配。 */
 function button(wrapper: ReturnType<typeof mount>, text: string) {
-  const found = wrapper.findAll('button').find(node => node.text().includes(text))
+  const found = wrapper.findAll('button').find(node => node.text().replace(/\s+/g, '').includes(text))
   if (!found)
     throw new Error(`没找到「${text}」按钮 —— 模板改了？`)
   return found
@@ -148,6 +170,9 @@ describe('「重置同步位置」不会让「测试连接」转圈', () => {
       level.mockClear()
     mocks.test.mockReset()
     mocks.resetCursor.mockReset()
+    mocks.clipboardText = null
+    mocks.clipboardError = false
+    vi.unstubAllGlobals()
   })
 
   /*
@@ -258,6 +283,154 @@ describe('「重置同步位置」不会让「测试连接」转圈', () => {
     expect(
       mocks.message.error.mock.calls.map(call => String(call[0])).join('\n'),
     ).toContain('boom')
+
+    wrapper.unmount()
+  })
+})
+
+/*
+ * 「剪贴板里有中继地址」的提示与填入 —— 见 `src/logic/clipboard-relay.ts`。
+ *
+ * ⚠ 这里是**界面级**断言：banner 渲染、点【填入】写进字段、点【不用】收起 banner。
+ *    `clipboard-relay.ts` 自己的纯函数有 10 条单测（`logic/__tests__/clipboard-relay.spec.ts`）。
+ */
+describe('剪贴板里有中继地址 → 表单顶部提示【填入】', () => {
+  beforeEach(() => {
+    mocks.accounts = ref([account({
+      // 把 relayUrl 留空，否则 banner 不会出现（已经有值就别覆盖）
+      config: { host: 'imap.qq.com', relayUrl: '' },
+    })])
+    mocks.clipboardText = null
+    mocks.clipboardError = false
+    vi.unstubAllGlobals()
+  })
+
+  /** 找「填入 / 不用」按钮 —— antd 在两个字的按钮里插了空格，trim 之后匹配。 */
+  function actionButton(wrapper: ReturnType<typeof mount>, text: string) {
+    const found = wrapper.findAll('button').find(node => node.text().replace(/\s+/g, '') === text)
+    if (!found)
+      throw new Error(`没找到「${text}」按钮 —— 模板改了？`)
+    return found
+  }
+
+  /** 提示出现：用 alert 里的 URL 作为锚定（抗文字与按钮变化） */
+  function promptsVisible(wrapper: ReturnType<typeof mount>): boolean {
+    return wrapper.findAll('.ant-alert').some(node => node.text().includes('127.0.0.1:41316'))
+  }
+
+  it('剪贴板里有 ws:// 形态的中继地址 + relayUrl为空 → 弹窗里出现「填入」提示', async () => {
+    mocks.clipboardText = 'ws://127.0.0.1:41316/'
+    installClipboardMock()
+
+    const wrapper = await mountPage()
+    await button(wrapper, '新增账号').trigger('click')
+    await flush()
+
+    expect(promptsVisible(wrapper)).toBe(true)
+    // 顺便验文案
+    const alertText = wrapper.findAll('.ant-alert').map(node => node.text()).join('\n')
+    expect(alertText).toContain('ws://127.0.0.1:41316/')
+
+    wrapper.unmount()
+  })
+
+  it('点【填入】 → 字段被写入 + banner 收起', async () => {
+    mocks.clipboardText = 'ws://127.0.0.1:41316/'
+    installClipboardMock()
+
+    const wrapper = await mountPage()
+    await button(wrapper, '新增账号').trigger('click')
+    await flush()
+    expect(promptsVisible(wrapper)).toBe(true)
+
+    await actionButton(wrapper, '填入').trigger('click')
+    await flush()
+    await wrapper.vm.$nextTick()
+
+    expect(promptsVisible(wrapper)).toBe(false)
+    // 字段值通过 input 取
+    const relayInput = wrapper.findAll('input').find(input => input.element.value?.includes('127.0.0.1:41316'))
+    expect(relayInput).toBeDefined()
+
+    wrapper.unmount()
+  })
+
+  it('点【不用】 → banner 收起但字段不变', async () => {
+    mocks.clipboardText = 'ws://127.0.0.1:41316/'
+    installClipboardMock()
+
+    const wrapper = await mountPage()
+    await button(wrapper, '新增账号').trigger('click')
+    await flush()
+    expect(promptsVisible(wrapper)).toBe(true)
+
+    await actionButton(wrapper, '不用').trigger('click')
+    await flush()
+    await wrapper.vm.$nextTick()
+
+    expect(promptsVisible(wrapper)).toBe(false)
+    // 字段值还是空（没点填入）
+    const relayInput = wrapper.findAll('input').find(input => input.element.value?.includes('127.0.0.1:41316'))
+    expect(relayInput).toBeUndefined()
+
+    wrapper.unmount()
+  })
+
+  it('剪贴板里不是 ws/wss → 不出现', async () => {
+    mocks.clipboardText = 'hello world'
+    installClipboardMock()
+
+    const wrapper = await mountPage()
+    await button(wrapper, '新增账号').trigger('click')
+    await flush()
+
+    expect(promptsVisible(wrapper)).toBe(false)
+
+    wrapper.unmount()
+  })
+
+  it('剪贴板为空 → 不出现', async () => {
+    mocks.clipboardText = ''
+    installClipboardMock()
+
+    const wrapper = await mountPage()
+    await button(wrapper, '新增账号').trigger('click')
+    await flush()
+
+    expect(promptsVisible(wrapper)).toBe(false)
+
+    wrapper.unmount()
+  })
+
+  it('剪贴板 API 抛错（permission denied）→ 静默退化、不抛到界面上', async () => {
+    mocks.clipboardError = true
+    installClipboardMock()
+
+    const wrapper = await mountPage()
+    await button(wrapper, '新增账号').trigger('click')
+    await flush()
+
+    expect(promptsVisible(wrapper)).toBe(false)
+    // 没有全局 error message —— 退化是设计行为
+    const errorMsgs = mocks.message.error.mock.calls.map(call => String(call[0]))
+    expect(errorMsgs.some(m => m.includes('clipboard'))).toBe(false)
+
+    wrapper.unmount()
+  })
+
+  it('已有 relayUrl → 即使剪贴板有也不再出现（不覆盖用户填过的值）', async () => {
+    mocks.accounts = ref([account({
+      // 已有值
+      config: { host: 'imap.qq.com', relayUrl: 'ws://127.0.0.1:41316/' },
+    })])
+    mocks.clipboardText = 'ws://127.0.0.1:9999/' // 用户故意填另一个
+    installClipboardMock()
+
+    const wrapper = await mountPage()
+    await button(wrapper, '编辑').trigger('click')
+    await flush()
+
+    expect(promptsVisible(wrapper)).toBe(false)
 
     wrapper.unmount()
   })
