@@ -25,11 +25,11 @@
  * ## 用法
  *
  * ```bash
- * pnpm relay                       # 监听 127.0.0.1:8787
+ * pnpm relay                       # 监听 127.0.0.1:41316
  * TLS_REJECT_UNAUTHORIZED=0 pnpm relay   # 允许自签证书的邮件服务器（仅测试）
  * ```
  *
- * 然后在扩展的「设置 · 账号」里把中继地址填成 `ws://127.0.0.1:8787/`。
+ * 然后在扩展的「设置 · 账号」里把中继地址填成 `ws://127.0.0.1:41316/`。
  *
  * ## 类型标注
  *
@@ -90,8 +90,8 @@ function readOption(flag: string, envName: string, fallback: string): string {
   return process.env[envName] ?? fallback
 }
 
-/** 端口。`--port 8788` / `PORT=8788` / 默认 8787 */
-const PORT_RAW = readOption('port', 'PORT', '8787')
+/** 端口。`--port 8788` / `PORT=8788` / 默认 41316（与 peon-burrow 默认端口对齐） */
+const PORT_RAW = readOption('port', 'PORT', '41316')
 const PORT = Number.parseInt(PORT_RAW, 10)
 
 /*
@@ -168,7 +168,7 @@ const WATCH_REIDLE_MS = 25 * 60 * 1000
  *   `scripts/watch-handshake.ts`。
  *
  * ⚠ 单独一个模块而不是写在这里，是因为**这个文件 import 不得**：文件末尾的
- *   `void main()` 会真的把中继服务起起来（实测：测试里一 import 就占用了 8787）。
+ *   `void main()` 会真的把中继服务起起来（实测：测试里一 import 就占用了 41316）。
  *   而看门狗是这段逻辑里唯一「有状态、会记时、错了只能靠真机复现」的部分，
  *   必须可测。所以它被抽出去，这里只负责把环境变量喂给它。
  */
@@ -1644,11 +1644,11 @@ function findPortOwner(port: number): number | null {
       const output = execFileSync('netstat', ['-ano', '-p', 'TCP'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] })
       for (const line of output.split('\n')) {
         const parts = line.trim().split(/\s+/)
-        // 形如：  TCP    127.0.0.1:8787    0.0.0.0:0    LISTENING    9072
+        // 形如：  TCP    127.0.0.1:41316   0.0.0.0:0    LISTENING    9072
         if (parts.length < 5 || parts[3] !== 'LISTENING')
           continue
         const local = parts[1]
-        // 只比端口号：地址可能是 `127.0.0.1:8787` 或 `[::]:8787`
+        // 只比端口号：地址可能是 `127.0.0.1:41316` 或 `[::]:41316`
         if (local.slice(local.lastIndexOf(':') + 1) !== String(port))
           continue
         const pid = Number.parseInt(parts[4], 10)

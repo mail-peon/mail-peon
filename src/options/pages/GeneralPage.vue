@@ -91,7 +91,7 @@ function applySyncResult(result: { ok: boolean, results: SyncSummary[], error?: 
 
   /*
    * 账号级的「这一轮出了事」，例如
-   * `无法连接中继：ws://127.0.0.1:8787/imap.qq.com:993?tls=1`。
+   * `无法连接中继：ws://127.0.0.1:41316/imap.qq.com:993?tls=1`。
    *
    * ⚠ 这类文案走的是 `SyncSummary.warning` 字段（见 `adapters/mail/mailbox.ts`：
    *   连接抛错时会把它塞进 `warning`），所以**字段名看着像警告、内容可能是故障**。

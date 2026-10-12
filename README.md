@@ -69,7 +69,7 @@ pnpm build          # 或 pnpm dev 开发
 中继实现随仓库提供：
 
 ```bash
-pnpm relay                                     # 默认 ws://127.0.0.1:8787/
+pnpm relay                                     # 默认 ws://127.0.0.1:41316/
 pnpm relay --port 9000 --token xxx --allow-hosts imap.example.com
 ```
 
@@ -77,8 +77,11 @@ pnpm relay --port 9000 --token xxx --allow-hosts imap.example.com
 > 常驻监听用的是 implicit TLS（993），中继必须自己终结 TLS 才能说 IMAP ——
 > 所以它手里有一份解密后的字节流。默认只绑 `127.0.0.1`，以及 `--token` 的存在，
 > 都是因为这个。详见 [`adr-0005`](./ai-docs/decisions/adr-0005-imap-needs-relay.md)。
+>
+> 上线后推荐走独立仓库 [`peon-burrow`](../../peon-burrow)（Rust 版中继）+
+> [`peon-hall`](../../peon-hall)（桌面端安装器），普通用户装一次即用，不用手动启。
 
-然后在「设置 · 账号」里把中继地址填成 `ws://127.0.0.1:8787/`，再填 IMAP 服务器 / 用户名 / 密码。
+然后在「设置 · 账号」里把中继地址填成 `ws://127.0.0.1:41316/`，再填 IMAP 服务器 / 用户名 / 密码。
 
 ### 2. 配一个 AI Key
 

@@ -83,8 +83,8 @@
 
 | 项 | 现状 / 目标 |
 | --- | --- |
-| 中继地址 | **现状**：账号表单里的**必填可见字段**（`providers/imap/index.ts` 的 `relayUrl`，默认值 `ws://127.0.0.1:8787/`）。<br>目标：装好后固定为 `ws://127.0.0.1:<port>`，字段对用户隐藏 `(待实现)` |
-| 端口 | **现状**：固定默认 **8787**（`--port` / `PORT` 可改）。占用则报 `EADDRINUSE` → 用 `netstat` / `lsof` 找出占用者 → 问 `[Y/n]` 是否杀掉它再启动。<br>目标：监听 `127.0.0.1:0` 由系统分配 + 写发现文件 `(待实现)` |
+| 中继地址 | **现状**：账号表单里的**必填可见字段**（`providers/imap/index.ts` 的 `relayUrl`，默认值 `ws://127.0.0.1:41316/`）。<br>目标：装好后固定为 `ws://127.0.0.1:<port>`，字段对用户隐藏 `(待实现)` |
+| 端口 | **现状**：固定默认 **41316**（`--port` / `PORT` 可改，与 `peon-burrow` 默认端口对齐）。占用则报 `EADDRINUSE` → 用 `netstat` / `lsof` 找出占用者 → 问 `[Y/n]` 是否杀掉它再启动。<br>目标：监听 `127.0.0.1:0` 由系统分配 + 写发现文件 `(待实现)` |
 | 发现文件 | **现状**：不存在。<br>目标：Windows `%LOCALAPPDATA%\mail-peon\port`；macOS `~/Library/Application Support/mail-peon/port`；Linux `~/.local/share/mail-peon/port` `(待实现)` |
 | 版本协商 | **现状**：watch 协议里**没有**版本字段。<br>目标：握手后上报版本，扩展发现不兼容时提示更新（避免「扩展更新了但 exe 没更新」）`(待实现)` |
 | 扩展连不上时 | **现状**：文案是「当前环境没有裸 TCP，IMAP 需要配置一个 WebSocket↔TCP 中继地址…要么在账号里填中继，要么改用 Gmail（OAuth）协议」（`transport/relay.ts`），以及账号页的「需要先在本机运行中继（`pnpm relay`）」。<br>目标：统一成「请先运行 mail-peon 助手」——**产品名未定**，定下来再改文案 |
@@ -96,7 +96,7 @@
 | 坑 | 处理 |
 | --- | --- |
 | **代码签名（最贵的一步）** | Windows：无签名 → SmartScreen 拦截「Windows 已保护你的电脑」（OV/EV 证书，EV 可立刻免警告）。macOS：**必须签名 + notarize**，否则 Gatekeeper 直接拒绝运行（Apple Developer $99/年）。Linux：不需要 |
-| **端口冲突** | 现状：固定 8787，`EADDRINUSE` 时用 `netstat`/`lsof` 找占用者并问 `[Y/n]`。目标（Rust 版）：靠 `:0` + 发现文件，见 §2.3 |
+| **端口冲突** | 现状：固定 41316，`EADDRINUSE` 时用 `netstat`/`lsof` 找占用者并问 `[Y/n]`。目标（Rust 版）：靠 `:0` + 发现文件，见 §2.3 |
 | **多账号并发** | 每条 WebSocket 连接开独立 TCP，**不能复用**（IMAP 是有状态协议） |
 | **三平台打包** | Windows `.exe`(Inno/NSIS 或自研)；macOS `.pkg`/`.dmg`；Linux `.deb`/`.rpm`/AppImage。三套都要维护 |
 | **后台无界面 → 排查难** | 中继写日志到固定路径；扩展侧给出可操作文案 |

@@ -32,7 +32,7 @@ function account(patch: Partial<MailAccount> = {}): MailAccount {
       tls: true,
       user: 'me@example.com',
       pass: 'authcode',
-      relayUrl: 'ws://127.0.0.1:8787/',
+      relayUrl: 'ws://127.0.0.1:41316/',
     },
     blockedList: [],
     enabled: true,
@@ -60,7 +60,7 @@ describe('buildWatchRequest', () => {
 
   it('从**中继地址**里取 token（用户可能写成 ?token=xxx）', () => {
     const request = buildWatchRequest(account({
-      config: { ...account().config, relayUrl: 'ws://127.0.0.1:8787/?token=s3cret' },
+      config: { ...account().config, relayUrl: 'ws://127.0.0.1:41316/?token=s3cret' },
     }))
     expect(request?.token).toBe('s3cret')
   })
@@ -180,7 +180,7 @@ describe('openWatchChannel', () => {
     if (!request)
       throw new Error('测试账号配置不完整')
 
-    const stop = openWatchChannel('ws://127.0.0.1:8787/', request, event => events.push(event))
+    const stop = openWatchChannel('ws://127.0.0.1:41316/', request, event => events.push(event))
     const socket = FakeWebSocket.instances.at(-1)
     if (!socket)
       throw new Error('没有创建 WebSocket')

@@ -248,7 +248,7 @@ function fieldBool(key: string): boolean {
  * 按 provider 声明校验必填字段。
  *
  * ⚠ 之前 `required: true` **只用来渲染一个 `*`**，保存与「测试连接」都不检查 ——
- *   于是漏填中继地址、或把地址填成 `127.0.0.1:8787` / `https://…`，
+ *   于是漏填中继地址、或把地址填成 `127.0.0.1:41316` / `https://…`，
  *   都会一路存下去，直到建立 WebSocket 时才失败。而那时的报错是
  *   「无法连接中继：…」，用户根本不会联想到是「地址少写了协议头」。
  *
@@ -290,11 +290,11 @@ function validateRelayUrl(account: MailAccount): string {
     return ''
 
   if (!raw)
-    return '请填写「WebSocket 中继地址」（本机运行 `pnpm relay` 后填 ws://127.0.0.1:8787/）'
+    return '请填写「WebSocket 中继地址」（本机运行 `pnpm relay` 后填 ws://127.0.0.1:41316/）'
 
   if (!/^wss?:\/\//i.test(raw)) {
     return `中继地址要以 ws:// 或 wss:// 开头（当前是「${raw}」）。`
-      + '本机中继写 ws://127.0.0.1:8787/'
+      + '本机中继写 ws://127.0.0.1:41316/'
   }
 
   try {

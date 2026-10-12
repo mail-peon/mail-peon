@@ -49,7 +49,7 @@ function account(patch: Partial<MailAccount> = {}): MailAccount {
     label: '个人邮箱',
     email: 'me@example.com',
     provider: 'imap',
-    config: { host: 'imap.qq.com', relayUrl: 'ws://127.0.0.1:8787/' },
+    config: { host: 'imap.qq.com', relayUrl: 'ws://127.0.0.1:41316/' },
     blockedList: [],
     enabled: true,
     createdAt: Date.now(),

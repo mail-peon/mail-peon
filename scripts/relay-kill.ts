@@ -20,7 +20,7 @@
  *   - 命令行里含 `imap-relay` 的进程（就是中继本身，可能换了端口在跑）
  *
  * 用法：
- *   pnpm relay:kill          # 默认端口 8787
+ *   pnpm relay:kill          # 默认端口 41316
  *   pnpm relay:kill 8788
  */
 
@@ -57,12 +57,12 @@ function listeningPids(targetPort: number): number[] {
 
   if (process.platform === 'win32') {
     for (const line of run('netstat', ['-ano', '-p', 'TCP']).split('\n')) {
-      // 形如：  TCP    127.0.0.1:8787    0.0.0.0:0    LISTENING    9072
+      // 形如：  TCP    127.0.0.1:41316   0.0.0.0:0    LISTENING    9072
       const parts = line.trim().split(/\s+/)
       if (parts.length < 5 || parts[3] !== 'LISTENING')
         continue
       const local = parts[1]
-      // 只比端口号：地址可能是 `127.0.0.1:8787` 或 `[::]:8787`
+      // 只比端口号：地址可能是 `127.0.0.1:41316` 或 `[::]:41316`
       if (local.slice(local.lastIndexOf(':') + 1) !== String(targetPort))
         continue
       const pid = Number.parseInt(parts[4], 10)
@@ -131,7 +131,7 @@ function relayPids(): number[] {
  *   也不用给 `scripts/` 单独塞一个 `package.json`（那是个只有内行才看得懂的隐含约定）。
  */
 async function main(): Promise<void> {
-  const port = Number.parseInt(process.argv[2] ?? process.env.PORT ?? '8787', 10)
+  const port = Number.parseInt(process.argv[2] ?? process.env.PORT ?? '41316', 10)
 
   if (!Number.isFinite(port) || port <= 0) {
     console.error(`端口无效：${process.argv[2]}`)

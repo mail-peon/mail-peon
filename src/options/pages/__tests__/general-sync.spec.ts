@@ -297,7 +297,7 @@ describe('同步中一定会结束', () => {
 
     mocks.syncListeners[0]({
       ok: true,
-      results: [summary({ warning: '无法连接中继：ws://127.0.0.1:8787/imap.qq.com:993?tls=1' })],
+      results: [summary({ warning: '无法连接中继：ws://127.0.0.1:41316/imap.qq.com:993?tls=1' })],
     })
     await flush()
 

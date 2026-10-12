@@ -77,7 +77,7 @@ export function buildWatchRequest(account: MailAccount): Record<string, unknown>
  *   连接」，这里的重连针对「插件到中继的连接」。两者失败原因完全不同 ——
  *   中继可能没启动、可能正在重启，而那时中继自己根本没机会重连。
  *
- * @param relayUrl 中继地址（`ws://127.0.0.1:8787/`）
+ * @param relayUrl 中继地址（`ws://127.0.0.1:41316/`）
  * @param request watch 请求体（见 `buildWatchRequest`）
  * @param onEvent 收到事件时回调
  * @returns 停止函数

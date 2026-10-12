@@ -46,7 +46,7 @@ describe('账号连接状态的颜色', () => {
   })
 
   it('有 lastError → 红色「同步失败」，详情就是那条错误', () => {
-    const error = '无法连接中继：ws://127.0.0.1:8787/imap.qq.com:993?tls=1'
+    const error = '无法连接中继：ws://127.0.0.1:41316/imap.qq.com:993?tls=1'
     const s = status({ lastSyncedAt: 1, lastError: error })
     expect(s.status).toBe('error')
     expect(s.label).toBe('同步失败')
