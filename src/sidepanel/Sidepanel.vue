@@ -7,6 +7,7 @@ import MailListItem from '~/components/MailListItem.vue'
 import { useMails, useSettings } from '~/logic/bridge'
 import { t } from '~/logic/strings'
 import { useTrashConfirm } from '~/logic/trash-confirm'
+import { ERROR_DURATION, useAppMessage } from '~/logic/ui-message'
 import {
   countByTab,
   displayCount,
@@ -34,6 +35,7 @@ import {
 
 const { mails, loading, justCopied, copyCode, setRead, dismiss, trash } = useMails(300)
 const { app, reload } = useSettings()
+const uiMessage = useAppMessage()
 
 /**
  * 删除确认（与 Popup 共用同一套交互）。
@@ -49,6 +51,18 @@ const {
   cancel: cancelTrashConfirm,
   confirm: confirmTrashConfirm,
 } = useTrashConfirm(trash)
+
+/**
+ * 确认删除。
+ *
+ * ⚠ 必须看返回值：`confirm()` 删除失败时给 `false`（例如邮件已经不在库里）。
+ *   不处理的话弹窗照关、邮件还在列表里，用户只会觉得「点了没反应」。
+ */
+async function onConfirmTrash() {
+  const ok = await confirmTrashConfirm()
+  if (!ok)
+    uiMessage.error(t('mail.trashFailed'), ERROR_DURATION)
+}
 
 const activeTab = ref<PopupTab>('important')
 
@@ -150,7 +164,7 @@ function openOptions() {
       :message="trashDialog.message"
       :confirm-text="t('mail.trash')"
       danger
-      @confirm="confirmTrashConfirm"
+      @confirm="onConfirmTrash"
       @cancel="cancelTrashConfirm"
     />
   </main>

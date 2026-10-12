@@ -38,8 +38,14 @@ export interface TrashConfirm {
   ask: (mail: Mail) => void
   /** 用户取消 */
   cancel: () => void
-  /** 用户确认 —— 执行真正的删除 */
-  confirm: () => Promise<void>
+  /**
+   * 用户确认 —— 执行真正的删除。
+   *
+   * ⚠ 返回 `false` 表示**没删成**（`perform` 给了假值，例如 `trash:trash` 返回
+   *   `{ ok: false }`）。调用方**必须**处理它：弹窗是先关再执行动作的，
+   *   不看返回值就会变成「弹窗关了、邮件还在、用户不知道为什么」。
+   */
+  confirm: () => Promise<boolean>
 }
 
 /**
@@ -87,12 +93,15 @@ export function useTrashConfirm(perform: (mail: Mail) => Promise<boolean> | void
     pending.value = null
   }
 
-  async function confirm() {
+  async function confirm(): Promise<boolean> {
     const mail = pending.value
     // 先关弹窗再执行：这样即使 `perform` 抛错，界面也不会卡在一个「已确认但没关」的弹窗上
     pending.value = null
-    if (mail)
-      await perform(mail)
+    if (!mail)
+      return false
+    // `perform` 可以返回 `void`（有些调用方不关心结果），那种情况按「成功」处理 ——
+    // 只有**明确说了失败**（`false`）才算失败
+    return (await perform(mail)) !== false
   }
 
   return { pending, dialog, ask, cancel, confirm }
