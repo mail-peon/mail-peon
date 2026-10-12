@@ -149,6 +149,8 @@ const barState = computed(() => {
     :aria-valuenow="Math.round(progress * 100)"
     aria-valuemin="0"
     aria-valuemax="100"
+    :aria-label="t('mail.code')"
+    :aria-valuetext="expired ? expiredAtText : remainingText"
   >
     <div class="fill" :style="{ width: `${progress * 100}%` }" />
     <div class="text">

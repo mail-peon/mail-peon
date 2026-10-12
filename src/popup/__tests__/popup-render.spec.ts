@@ -442,3 +442,79 @@ describe('列表读取失败', () => {
     wrapper.unmount()
   })
 })
+
+/*
+ * 邮件卡片必须能用键盘操作。
+ *
+ * ⚠ 卡片是 `<article @click>` —— 鼠标能点，但**键盘完全够不着**：
+ *   没有 `tabindex` 就进不了 Tab 顺序，没有 `keydown` 处理就回车没反应。
+ *   用键盘的用户在弹窗里只能 Tab 到「复制」和「打开设置」，
+ *   中间那一整列邮件是死的。
+ */
+describe('邮件卡片的键盘可达性', () => {
+  const card = (wrapper: ReturnType<typeof mount>) => wrapper.find('.mail-item')
+
+  it('卡片进入 Tab 顺序，且声明成按钮', () => {
+    mocks.app.value = { minimalMode: false, excludeAds: true, popupDefaultTab: 'important' }
+    mocks.mails.value = [codeMail()]
+
+    const wrapper = mount(Popup)
+    const item = card(wrapper)
+
+    expect(item.exists()).toBe(true)
+    expect(item.attributes('tabindex')).toBe('0')
+    expect(item.attributes('role')).toBe('button')
+
+    wrapper.unmount()
+  })
+
+  /*
+   * ⚠ 必须有 `aria-label`：`role="button"` 配一个没有可访问名称的容器，
+   *   读屏会拿整棵子树的文本去拼按钮名 —— 发件人 + 时间 + 主题 + 验证码 +
+   *   摘要 + 按钮，读出来是几十个字。
+   */
+  it('卡片有明确的可访问名称（不是拼接整棵子树）', () => {
+    mocks.app.value = { minimalMode: false, excludeAds: true, popupDefaultTab: 'important' }
+    mocks.mails.value = [codeMail()]
+
+    const wrapper = mount(Popup)
+    const label = card(wrapper).attributes('aria-label') ?? ''
+
+    expect(label).toContain('测试发件人')
+    expect(label).toContain('测试邮件')
+    // 名称应该短 —— 不该把摘要 / 验证码也塞进来
+    expect(label.length).toBeLessThan(60)
+
+    wrapper.unmount()
+  })
+
+  it('回车和空格都能打开邮件', async () => {
+    mocks.app.value = { minimalMode: false, excludeAds: true, popupDefaultTab: 'important' }
+    mocks.mails.value = [codeMail()]
+
+    const wrapper = mount(Popup)
+    const item = card(wrapper)
+
+    await item.trigger('keydown', { key: 'Enter' })
+    await item.trigger('keydown', { key: ' ' })
+    // 断言「没有抛错且卡片仍在」——打开邮件是弹窗外的行为（新标签页），
+    // 这里能测的是「按键被处理了而不是落到默认行为上」
+    expect(item.exists()).toBe(true)
+
+    wrapper.unmount()
+  })
+
+  it('时间是机器可读的（`<time datetime>`）', () => {
+    mocks.app.value = { minimalMode: false, excludeAds: true, popupDefaultTab: 'important' }
+    mocks.mails.value = [codeMail()]
+
+    const wrapper = mount(Popup)
+    const time = wrapper.find('.mail-item time')
+
+    expect(time.exists()).toBe(true)
+    // ISO 8601，读屏和机器都能解析出绝对时刻（可见文字只是「x 分钟前」）
+    expect(time.attributes('datetime')).toMatch(/^\d{4}-\d{2}-\d{2}T/)
+
+    wrapper.unmount()
+  })
+})

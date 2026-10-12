@@ -107,6 +107,23 @@ const isAd = computed(() => props.mail.ai?.isAd === true)
 /** 相对时间（「5 分钟前」）。不引 dayjs：只有一个函数需要，多一个依赖不划算 */
 const relativeTime = computed(() => formatRelative(props.mail.receivedAt))
 
+/** `<time datetime>` 要的是 ISO 8601；取不到时间就不加这个属性（宁可没有，也别给个假的） */
+const timeDateTime = computed(() =>
+  Number.isFinite(props.mail.receivedAt) ? new Date(props.mail.receivedAt).toISOString() : undefined,
+)
+
+/**
+ * 卡片的可访问名称。
+ *
+ * ⚠ `role="button"` 配上一个**没有** `aria-label` 的容器，读屏会拿整棵子树的
+ *   文本去拼按钮名 —— 卡片里可能有发件人、时间、主题、验证码、摘要、按钮……
+ *   结果就是一段几十个字的按钮名。给一个明确的名称，读屏只念这一句，
+ *   卡片内部仍然可以按普通文档浏览。
+ */
+const openLabel = computed(() =>
+  `${props.mail.from?.[0]?.name || t('common.unknownSender')}：${props.mail.subject || t('common.noSubject')}`,
+)
+
 function formatRelative(ts: number): string {
   const diff = Date.now() - ts
   if (diff < 60_000)
@@ -135,7 +152,12 @@ const urgencyClass = computed(() => {
     class="mail-item"
     :class="[{ 'is-ad': isAd, 'is-read': mail.read, 'is-focused': focused }, urgencyClass]"
     :data-mail-id="mail.id"
+    role="button"
+    tabindex="0"
+    :aria-label="openLabel"
     @click="emit('open', mail)"
+    @keydown.enter.prevent="emit('open', mail)"
+    @keydown.space.prevent="emit('open', mail)"
     @mouseenter="onCardEnter"
     @mouseleave="onCardLeave"
   >
@@ -159,7 +181,12 @@ const urgencyClass = computed(() => {
           flex 布局下发件人名字会被挤得抖一下。
       -->
       <span class="time-slot" :class="{ 'is-hidden': trashZoneVisible }">
-        <time class="time">{{ relativeTime }}</time>
+        <!--
+          `datetime` 是给读屏和机器读的**绝对时间**。
+          ⚠ 缺了它，辅助技术只能念出可见的「5 分钟前」—— 那是个相对量，
+            而 `<time>` 这个标签的意义恰恰在于提供一个不含糊的时刻。
+        -->
+        <time class="time" :datetime="timeDateTime">{{ relativeTime }}</time>
       </span>
 
       <!--
@@ -347,6 +374,19 @@ const urgencyClass = computed(() => {
 .mail-item.is-read .subject {
   font-weight: 500;
   color: var(--mp-text-dim);
+}
+
+/*
+ * ⚠ 键盘可达性：卡片本身是 `role="button"` + `tabindex="0"`，
+ *   但浏览器**不会**给 `article` 画焦点圈（`outline` 只在部分元素上有默认样式）。
+ *   不显式给一个的话，键盘用户 Tab 过来完全看不出焦点在哪。
+ *
+ *   用 `:focus-visible` 而不是 `:focus`：鼠标点击也会触发 `:focus`，
+ *   那样鼠标用户点一下卡片就会看到一个描边闪一下。
+ */
+.mail-item:focus-visible {
+  outline: 2px solid var(--mp-accent);
+  outline-offset: 2px;
 }
 
 /*
