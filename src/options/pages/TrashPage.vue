@@ -32,7 +32,7 @@ import { t } from '~/logic/strings'
  */
 
 const { app, setApp } = useSettings()
-const { mails, loading, restore, deleteForever, empty } = useTrash()
+const { mails, total, loading, restore, deleteForever, empty } = useTrash()
 
 const hasMails = computed(() => mails.value.length > 0)
 
@@ -125,7 +125,7 @@ function onEmpty() {
     notice.value = t('trash.emptyAlready')
     return
   }
-  const count = mails.value.length
+  const count = total.value
   askConfirm({
     title: t('trash.confirmEmptyTitle'),
     message: t('trash.confirmEmptyMessage', { n: count }),
@@ -198,7 +198,7 @@ function rowMail(record: Record<string, unknown>): Mail {
 
     <a-card size="small">
       <div class="toolbar">
-        <span class="count">{{ mails.length }} 封</span>
+        <span class="count">{{ t('trash.count', { n: total }) }}</span>
         <span v-if="notice" class="notice">{{ notice }}</span>
         <a-button danger :disabled="busy || !hasMails" @click="onEmpty">
           {{ t('trash.emptyAction') }}

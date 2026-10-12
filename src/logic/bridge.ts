@@ -458,9 +458,16 @@ export function useTrash() {
   const mails = ref<Mail[]>([]) as Ref<Mail[]>
   const loading = ref(true)
 
+  /**
+   * 列表被 `readTrashedMails(500)` 截断，所以**总数单独给**。
+   * 界面上的「{n} 封」和「将彻底删除 {n} 封」都得用这个，不能用 `mails.length`。
+   */
+  const total = ref(0)
+
   async function reload() {
-    const result = await send<{ mails: Mail[] }>('trash:list', undefined, { mails: [] })
+    const result = await send<{ mails: Mail[], total: number }>('trash:list', undefined, { mails: [], total: 0 })
     mails.value = result.mails
+    total.value = result.total ?? result.mails.length
     loading.value = false
   }
 
@@ -511,7 +518,7 @@ export function useTrash() {
     dataChangeListeners.delete(reload)
   })
 
-  return { mails, loading, reload, restore, deleteForever, empty }
+  return { mails, total, loading, reload, restore, deleteForever, empty }
 }
 
 // ---------------------------------------------------------------------------

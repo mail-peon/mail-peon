@@ -96,8 +96,8 @@ declare module 'webext-bridge' {
     'accounts:gmail-authorize': ProtocolWithReturn<{ clientId: string }, { ok: boolean, refreshToken?: string, email?: string, error?: string }>
 
     // --- 回收站 ---
-    /** 回收站列表（按删除时间倒序） */
-    'trash:list': ProtocolWithReturn<undefined, { mails: Mail[] }>
+    /** 回收站列表（按删除时间倒序）+ **真实总数**（列表被截断，总数不能从它推） */
+    'trash:list': ProtocolWithReturn<undefined, { mails: Mail[], total: number }>
     /**
      * 移入回收站。
      *

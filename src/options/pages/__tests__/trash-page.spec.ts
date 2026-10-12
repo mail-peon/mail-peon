@@ -26,6 +26,8 @@ import { ref } from 'vue'
 
 const mocks = vi.hoisted(() => ({
   mails: null as unknown as { value: Mail[] },
+  /** 真实总数 —— 列表被截断时它会**大于** `mails.length` */
+  total: null as unknown as { value: number },
   /*
    * ⚠ 形参必须显式写出来（`_mail: Mail`），否则 `vi.fn(async () => true)` 推出的是
    *   零参函数，`mock.calls[0][0]` 就成了「长度为 0 的元组取下标 0」——
@@ -45,6 +47,7 @@ vi.mock('~/logic/bridge', () => ({
    */
   useTrash: () => ({
     mails: mocks.mails,
+    total: mocks.total,
     loading: ref(false),
     reload: vi.fn(async () => {}),
     restore: mocks.restore,
@@ -83,8 +86,9 @@ function mail(patch: Partial<Mail> = {}): Mail {
   } as Mail
 }
 
-function mountPage(mails: Mail[] = [mail()]) {
+function mountPage(mails: Mail[] = [mail()], total = mails.length) {
   mocks.mails = ref(mails) as unknown as { value: Mail[] }
+  mocks.total = ref(total) as unknown as { value: number }
   return mount(TrashPage, { attachTo: document.body })
 }
 
@@ -194,6 +198,35 @@ describe('回收站页的动作按钮', () => {
   it('回收站为空时不渲染任何行内动作按钮', () => {
     const wrapper = mountPage([])
     expect(wrapper.findAll('.ant-table-tbody button')).toHaveLength(0)
+    wrapper.unmount()
+  })
+
+  /*
+   * ⚠ 这一条守的是「不可撤销的操作要报真实数量」。
+   *
+   * 列表被 `readTrashedMails(500)` 截断，而清空确认和执行用的都是**全部** ——
+   * 拿 `mails.length` 当总数时，回收站超过 500 封会在确认框里**少报**。
+   */
+  it('列表被截断时，确认框报的是真实总数而不是列表长度', async () => {
+    // 列表只拿到 3 条，但实际有 600 封。
+    // ⚠ 故意挑两个**不共享数字子串**的数：用 512/2 的话「512 封邮件」里也含
+    //   「2 封邮件」，负向断言就没意义了（踩过）。
+    const wrapper = mountPage([mail({ id: 'm1' }), mail({ id: 'm2' }), mail({ id: 'm3' })], 600)
+
+    // 工具栏上的计数也必须是真实总数
+    expect(wrapper.find('.count').text()).toContain('600')
+
+    await rowButton(wrapper, '清空回收站')!.trigger('click')
+    await new Promise(resolve => setTimeout(resolve, 0))
+    await wrapper.vm.$nextTick()
+
+    const dialog = wrapper.find('.dialog')
+    expect(dialog.exists()).toBe(true)
+    // 报的是真实总数……
+    expect(dialog.text()).toContain('600 封邮件')
+    // ……而不是列表长度（列表里只有 3 条）
+    expect(dialog.text()).not.toContain('3 封邮件')
+
     wrapper.unmount()
   })
 })
