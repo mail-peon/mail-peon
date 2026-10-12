@@ -315,7 +315,13 @@ async function onSyncNow() {
  */
 const { pending, ask: askConfirm, cancel: cancelConfirm, confirm: runPending } = useConfirmAction()
 
-/** 清空邮件列表（不可撤销） */
+/**
+ * 清空邮件列表（不可撤销）。
+ *
+ * ⚠ 必须看返回值。`send` 在消息失败 / 超时时返回的是**兜底值**（这里 `{ ok: false }`），
+ *   它不会抛错（见 `logic/bridge.ts` 的 `send`）—— 所以「不看返回值就报成功」
+ *   会让「一封都没删掉」和「已清空」在界面上完全一样。
+ */
 function onClearMails() {
   askConfirm({
     title: t('general.clearMails'),
@@ -324,8 +330,12 @@ function onClearMails() {
     run: async () => {
       busy.value = true
       try {
-        await send('settings:clear-mails', undefined, { ok: false })
-        uiMessage.success('已清空邮件列表')
+        const result = await send<{ ok: boolean }>('settings:clear-mails', undefined, { ok: false })
+        if (!result.ok) {
+          uiMessage.error(t('general.clearMailsFailed'), ERROR_DURATION)
+          return
+        }
+        uiMessage.success(t('general.clearMailsDone'))
         await reloadUsage()
       }
       finally {
@@ -335,7 +345,7 @@ function onClearMails() {
   })
 }
 
-/** 清空所有数据（不可撤销） */
+/** 清空所有数据（不可撤销）—— 返回值处理同 `onClearMails` */
 function onClearAll() {
   askConfirm({
     title: t('general.clearAll'),
@@ -344,8 +354,12 @@ function onClearAll() {
     run: async () => {
       busy.value = true
       try {
-        await send('settings:clear-all', undefined, { ok: false })
-        uiMessage.success('已清空所有数据')
+        const result = await send<{ ok: boolean }>('settings:clear-all', undefined, { ok: false })
+        if (!result.ok) {
+          uiMessage.error(t('general.clearAllFailed'), ERROR_DURATION)
+          return
+        }
+        uiMessage.success(t('general.clearAllDone'))
         await Promise.all([reload(), reloadUsage(), reloadAccounts()])
       }
       finally {

@@ -207,6 +207,16 @@ const zhCN: StringTable = {
     codeCount: '验证码记录：{n} 条',
     confirmClearMails: '确定要清空所有已保存的邮件吗？此操作不可撤销。',
     confirmClearAll: '确定要清空所有数据吗？账号、规则、设置、邮件将全部删除，此操作不可撤销。',
+    /*
+     * ⚠ 这两条存在的理由：不可撤销的操作**必须**在失败时说出来。
+     *   以前 `onClearMails` / `onClearAll` 不看 `send` 的返回值就报成功，
+     *   而消息失败时 `send` 返回的是兜底值 `{ ok: false }` ——
+     *   于是「什么都没删掉」和「已清空」在界面上长得一模一样。
+     */
+    clearMailsDone: '已清空邮件列表',
+    clearMailsFailed: '清空邮件列表失败：没有收到后台确认，请重试',
+    clearAllDone: '已清空所有数据',
+    clearAllFailed: '清空所有数据失败：没有收到后台确认，请重试',
   },
 
   accounts: {
