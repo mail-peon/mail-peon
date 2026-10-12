@@ -110,13 +110,55 @@ beforeEach(() => {
   mocks.send.mockResolvedValue({ ok: true })
 })
 
-describe('清空操作的失败必须说出来', () => {
+/** 侧边栏之外的那个主操作按钮（按可见文字找） */
+function syncButton(wrapper: ReturnType<typeof mountPage>) {
+  return wrapper.findAll('button').find(node => /立即同步|同步中/.test(node.text().replace(/\s+/g, '')))
+}
+
+/** 等一个「操作进行中」的中间态：清空请求还没返回时，按钮应该是禁用的 */
+function pendingPromise<T>() {
+  let resolve!: (value: T) => void
+  const promise = new Promise<T>((r) => {
+    resolve = r
+  })
+  return { promise, resolve }
+}
+
+describe('清空操作的失败与忙碌状态', () => {
   it('清空邮件列表成功 → 走 success', async () => {
     const wrapper = mountPage()
     await runConfirmed(wrapper, '清空邮件列表')
 
     expect(messageText(mocks.message.success)).toContain('已清空邮件列表')
     expect(messageText(mocks.message.error)).toBe('')
+
+    wrapper.unmount()
+  })
+
+  /*
+   * ⚠ 这一条守的是「点 A 转圈的是 B」。
+   *
+   * 同步按钮写的是 `:loading="syncing"` + `syncing ? '同步中…' : '立即同步增量'`，
+   * 而清空操作曾经和它**共用一个 `busy`** —— 于是点「清空所有数据」时，
+   * 同步按钮会开始转圈并显示「同步中…」，用户会以为在同步而不是在删数据。
+   */
+  it('清空进行中 → 同步按钮不能显示「同步中…」', async () => {
+    const pending = pendingPromise<{ ok: boolean }>()
+    mocks.send.mockReturnValue(pending.promise)
+
+    const wrapper = mountPage()
+    await runConfirmed(wrapper, '清空所有数据')
+
+    const button = syncButton(wrapper)
+    expect(button).toBeDefined()
+    // 关键断言：同步按钮的文案仍是「立即同步增量」，没有变成「同步中…」
+    expect(button!.text().replace(/\s+/g, '')).toContain('立即同步')
+    expect(button!.text().replace(/\s+/g, '')).not.toContain('同步中')
+    // 也不该有 loading 圈
+    expect(button!.classes()).not.toContain('ant-btn-loading')
+
+    pending.resolve({ ok: true })
+    await new Promise(resolve => setTimeout(resolve, 0))
 
     wrapper.unmount()
   })

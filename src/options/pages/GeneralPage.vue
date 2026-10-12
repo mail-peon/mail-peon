@@ -26,7 +26,29 @@ import { ERROR_DURATION, useAppMessage, WARNING_DURATION } from '~/logic/ui-mess
 const { app, ai, setApp, reload } = useSettings()
 const { accounts, syncNow, syncStatus, reload: reloadAccounts } = useAccounts()
 
-const busy = ref(false)
+/**
+ * 「正在跑一轮同步」。
+ *
+ * ⚠ 它**只**表示同步，不要拿它当通用的「页面忙」用。
+ *
+ *   原来这里只有一个 `busy`，被同步 / 清空邮件列表 / 清空所有数据**共用**，
+ *   而同步按钮写的是 `:loading="busy"` + `busy ? '同步中…' : '立即同步增量'` ——
+ *   于是点「清空所有数据」时，**同步按钮会开始转圈并显示「同步中…」**。
+ *   用户看到的是「我在删数据，它却告诉我正在同步」。
+ *
+ *   这跟账号页修过的那个 bug 是同一类（`busyOps` / `probeState` 分开，见
+ *   `AccountsPage.vue`）：「哪个操作在忙」必须是**每个操作各自**的状态，
+ *   塞进一个布尔量就一定会在某个按钮上显示成别人的状态。
+ */
+const syncing = ref(false)
+
+/**
+ * 「正在跑一个会改数据的操作」（清空邮件列表 / 清空所有数据）。
+ *
+ * 与 `syncing` 分开的理由见上。它只用来**禁用**这些按钮，不驱动任何 loading ——
+ * 因为它们的进度没有可展示的东西，禁用 + 结果提示就够了。
+ */
+const clearing = ref(false)
 const uiMessage = useAppMessage()
 
 /**
@@ -48,7 +70,7 @@ const uiMessage = useAppMessage()
  * @param result 后台给出的一轮同步结果
  */
 function applySyncResult(result: { ok: boolean, results: SyncSummary[], error?: string }) {
-  busy.value = false
+  syncing.value = false
 
   if (!result.ok) {
     // 失败如实说。不要用「没有启用的账号」这种猜测 —— 那是另一个原因，
@@ -113,11 +135,11 @@ function applySyncResult(result: { ok: boolean, results: SyncSummary[], error?: 
  *   `sync:done` 的送达依赖 background 侧 `connMap` 里有没有对应端点，而它只在
  *   对方握手完成后才有条目。于是「页面在 background 重载之前就连上了」
  *   「同一 context 有多个连接」「端点名对不上」这三种情况都会让消息**静默消失**。
- *   真机上就这样卡过：点同步 → `busy = true` → 消息没到 → 永远转圈，
+ *   真机上就这样卡过：点同步 → `syncing = true` → 消息没到 → 永远转圈，
  *   而且**没有任何错误**可查（中继日志显示同步根本就是成功的）。
  *
  *   所以点击之后一边等广播、一边按间隔问 `accounts:sync-status`；
- *   谁先拿到算谁的（`applySyncResult` 里会先判断 `busy`）。
+ *   谁先拿到算谁的（`applySyncResult` 里会先判断 `syncing`）。
  *
  * @param startedAt 本次点击的时刻
  * @returns 清理函数（组件卸载时必须调用，否则会一直轮询下去）
@@ -129,14 +151,14 @@ function startSyncWatchdog(startedAt: number): () => void {
 
   const timer = window.setInterval(async () => {
     // 广播先到了 —— 停掉轮询
-    if (!busy.value) {
+    if (!syncing.value) {
       stop()
       return
     }
 
     if (Date.now() - startedAt > DEADLINE_MS) {
       stop()
-      busy.value = false
+      syncing.value = false
       uiMessage.error('同步超过 6 分钟仍未返回。请检查中继是否在运行，然后重试。', ERROR_DURATION)
       return
     }
@@ -201,7 +223,7 @@ onMounted(async () => {
    */
   stopSyncListener = onSyncDone((result) => {
     // 广播可能重复到达（后台与轮询各给一次），只认第一次
-    if (!busy.value)
+    if (!syncing.value)
       return
     stopWatchdog?.()
     stopWatchdog = null
@@ -280,13 +302,13 @@ function onRetentionChange(value: unknown) {
  *   一轮同步正好跑了 32 秒）。
  */
 async function onSyncNow() {
-  busy.value = true
+  syncing.value = true
 
   const result = await syncNow()
 
   if (!result?.started) {
     // 连「开始」都没成功 —— 这时才需要自己收尾（正常路径由广播/轮询收尾）
-    busy.value = false
+    syncing.value = false
     uiMessage.error('无法启动同步：与后台通信失败，请重试', ERROR_DURATION)
     return
   }
@@ -295,7 +317,7 @@ async function onSyncNow() {
    * ⚠ 这里**必须**开看门狗，而不是只等 `sync:done` 广播。
    *
    *   广播的送达依赖 background 侧 `connMap`，任何一环没接上它就静默消失 ——
-   *   那时 `busy` 会永远停在 true，用户看到「同步中」不动，而且没有任何错误可查
+   *   那时 `syncing` 会永远停在 true，用户看到「同步中」不动，而且没有任何错误可查
    *   （真机上就这样卡过，而中继日志显示同步根本是成功的）。
    */
   stopWatchdog?.()
@@ -328,7 +350,7 @@ function onClearMails() {
     message: t('general.confirmClearMails'),
     confirmText: t('general.clearMails'),
     run: async () => {
-      busy.value = true
+      clearing.value = true
       try {
         const result = await send<{ ok: boolean }>('settings:clear-mails', undefined, { ok: false })
         if (!result.ok) {
@@ -339,7 +361,7 @@ function onClearMails() {
         await reloadUsage()
       }
       finally {
-        busy.value = false
+        clearing.value = false
       }
     },
   })
@@ -352,7 +374,7 @@ function onClearAll() {
     message: t('general.confirmClearAll'),
     confirmText: t('general.clearAll'),
     run: async () => {
-      busy.value = true
+      clearing.value = true
       try {
         const result = await send<{ ok: boolean }>('settings:clear-all', undefined, { ok: false })
         if (!result.ok) {
@@ -363,7 +385,7 @@ function onClearAll() {
         await Promise.all([reload(), reloadUsage(), reloadAccounts()])
       }
       finally {
-        busy.value = false
+        clearing.value = false
       }
     },
   })
@@ -534,10 +556,10 @@ async function onImportFile(event: Event) {
         </a-descriptions>
 
         <div class="actions">
-          <a-button type="primary" :loading="busy" @click="onSyncNow">
-            {{ busy ? t('general.syncing') : t('general.syncNow') }}
+          <a-button type="primary" :loading="syncing" :disabled="clearing" @click="onSyncNow">
+            {{ syncing ? t('general.syncing') : t('general.syncNow') }}
           </a-button>
-          <a-button danger :disabled="busy" @click="onClearAll">
+          <a-button danger :disabled="syncing || clearing" @click="onClearAll">
             {{ t('general.clearAll') }}
           </a-button>
         </div>
@@ -615,21 +637,21 @@ async function onImportFile(event: Event) {
         </a-descriptions>
 
         <div class="actions">
-          <a-button type="primary" :loading="busy" @click="onSyncNow">
-            {{ busy ? t('general.syncing') : t('general.syncNow') }}
+          <a-button type="primary" :loading="syncing" :disabled="clearing" @click="onSyncNow">
+            {{ syncing ? t('general.syncing') : t('general.syncNow') }}
           </a-button>
         </div>
       </a-card>
 
       <a-card size="small" :title="t('general.data')">
         <div class="actions actions-tight">
-          <a-button :disabled="busy" @click="onExport">
+          <a-button :disabled="syncing || clearing" @click="onExport">
             {{ t('general.exportSettings') }}
           </a-button>
-          <a-button :disabled="busy" @click="importInput?.click()">
+          <a-button :disabled="syncing || clearing" @click="importInput?.click()">
             {{ t('general.importSettings') }}
           </a-button>
-          <a-button :disabled="busy" @click="onClearMails">
+          <a-button :disabled="syncing || clearing" @click="onClearMails">
             {{ t('general.clearMails') }}
           </a-button>
         </div>
@@ -650,7 +672,7 @@ async function onImportFile(event: Event) {
           {{ t('general.privacyBody') }}
         </p>
         <div class="actions">
-          <a-button danger :disabled="busy" @click="onClearAll">
+          <a-button danger :disabled="syncing || clearing" @click="onClearAll">
             {{ t('general.clearAll') }}
           </a-button>
         </div>
