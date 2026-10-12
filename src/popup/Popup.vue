@@ -5,6 +5,7 @@ import ConfirmDialog from '~/components/ConfirmDialog.vue'
 import EmptyState from '~/components/EmptyState.vue'
 import MailListItem from '~/components/MailListItem.vue'
 import { useMails, useSettings } from '~/logic/bridge'
+import { useMailFocus } from '~/logic/mail-focus'
 import { t } from '~/logic/strings'
 import { useTrashConfirm } from '~/logic/trash-confirm'
 import { ERROR_DURATION, useAppMessage } from '~/logic/ui-message'
@@ -33,6 +34,15 @@ import {
 const { mails, loading, justCopied, copyCode, setRead, dismiss, trash, markAllRead } = useMails(200)
 const { app, ai, reload: reloadSettings } = useSettings()
 const uiMessage = useAppMessage()
+
+/**
+ * 「点 toast → 把这封滚到眼前」（见 `logic/mail-focus.ts`）。
+ *
+ * ⚠ 这个功能以前是**只做了一半**的：内容脚本一直在发 `mail:focus`，
+ *   而没有任何接收端。现在补上了，而且它天然对两种模式都生效
+ *   （极简列表与完整列表都用 `MailListItem`）。
+ */
+const { focusedId } = useMailFocus()
 
 const activeTab = ref<PopupTab>('important')
 
@@ -214,6 +224,7 @@ function onOpen(mail: Mail) {
             :key="mail.id"
             :mail="mail"
             :just-copied="justCopied.has(mail.id)"
+            :focused="focusedId === mail.id"
             minimal
             @copy="onCopy"
             @trash="onTrash"
@@ -265,6 +276,7 @@ function onOpen(mail: Mail) {
                 :key="mail.id"
                 :mail="mail"
                 :just-copied="justCopied.has(mail.id)"
+                :focused="focusedId === mail.id"
                 @copy="onCopy"
                 @read="onRead"
                 @dismiss="onDismiss"

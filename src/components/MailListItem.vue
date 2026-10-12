@@ -21,6 +21,13 @@ const props = defineProps<{
    *   详见 `logic/bridge.ts` 的 `justCopied`。
    */
   justCopied?: boolean
+  /**
+   * 这封是「刚从内容脚本的 toast 定位过来的」——短暂描边一下。
+   *
+   * 见 `logic/mail-focus.ts`：滚动之后目标只是「出现在视口里」，
+   * 用户视线还在找，描边才让「就是这条」一目了然。
+   */
+  focused?: boolean
 }>()
 
 const emit = defineEmits<{
@@ -126,7 +133,8 @@ const urgencyClass = computed(() => {
 <template>
   <article
     class="mail-item"
-    :class="[{ 'is-ad': isAd, 'is-read': mail.read }, urgencyClass]"
+    :class="[{ 'is-ad': isAd, 'is-read': mail.read, 'is-focused': focused }, urgencyClass]"
+    :data-mail-id="mail.id"
     @click="emit('open', mail)"
     @mouseenter="onCardEnter"
     @mouseleave="onCardLeave"
@@ -339,6 +347,19 @@ const urgencyClass = computed(() => {
 .mail-item.is-read .subject {
   font-weight: 500;
   color: var(--mp-text-dim);
+}
+
+/*
+ * 「从 toast 定位过来」的那一条：短暂描边。
+ *
+ * ⚠ 用 `outline` 而不是 `border`：卡片本来就有 1px border，改成 border 会让
+ *   内容整体位移 1px（滚动定位之后来这么一下很明显）。
+ *   `outline` 不占布局、不影响圆角，且能画在 border 外面。
+ *   `box-shadow` 也行，但那会与卡片自己的阴影抢同一层。
+ */
+.mail-item.is-focused {
+  outline: 2px solid var(--mp-accent);
+  outline-offset: 2px;
 }
 
 /*

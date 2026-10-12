@@ -82,6 +82,12 @@ vi.mock('~/logic/bridge', () => ({
     ai: mocks.ai,
     reload: vi.fn(async () => {}),
   }),
+  /*
+   * `Popup` 通过 `useMailFocus()` 订阅「点 toast 定位邮件」。
+   * 这里给一个什么都不做的实现 —— 那一套行为在
+   * `logic/__tests__/mail-focus.spec.ts` 与 `bridge-listeners.spec.ts` 里单独测。
+   */
+  onMailFocus: () => () => {},
 }))
 
 let Popup: import('vue').Component

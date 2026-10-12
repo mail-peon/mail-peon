@@ -238,6 +238,17 @@ interface SyncDonePayload {
 }
 const syncDoneListeners = new Set<(result: SyncDonePayload) => void>()
 
+/**
+ * 「用户点了某条 toast，希望定位到这封邮件」的订阅者。
+ *
+ * ⚠ 这条通道**曾经只有发送端**：内容脚本在 toast 被点击时
+ *   `sendToBackground('mail:focus', …)`（见 `contentScripts/toast.ts`），
+ *   注释和 `shim.d.ts` 都写着「让已经打开的 Popup 滚过去」——
+ *   但 `installBridgeListener()` 里没有注册它，**全项目没有一个接收端**。
+ *   于是点 toast 就是单纯地让它消失，那半句承诺从来没兑现过。
+ */
+const mailFocusListeners = new Set<(mailId: string) => void>()
+
 let bridgeListenerInstalled = false
 
 function installBridgeListener(): void {
@@ -270,6 +281,19 @@ function installBridgeListener(): void {
     for (const listener of syncDoneListeners)
       listener(data)
   })
+  /*
+   * 内容脚本点 toast → 定位那封邮件。
+   *
+   * ⚠ 这条**必须**在这里注册：`onMessage` 是累加注册的，漏了它发送端就白发。
+   *   而且它和上面几条不同 —— 那几条是「数据变了，去重读」，这条是
+   *   「请把某一封滚到眼前」，所以载荷里的 `mailId` 要原样传给订阅者。
+   */
+  onMessage('mail:focus', ({ data }) => {
+    if (!data?.mailId)
+      return
+    for (const listener of mailFocusListeners)
+      listener(data.mailId)
+  })
 }
 
 /**
@@ -299,6 +323,22 @@ export function onSyncDone(
   installBridgeListener()
   syncDoneListeners.add(listener)
   return () => syncDoneListeners.delete(listener)
+}
+
+/**
+ * 订阅「把某封邮件滚到眼前」（内容脚本的 toast 被点击时发出）。
+ *
+ * ⚠ 与其它订阅不同，它的载荷是**一次性的意图**而不是状态：
+ *   收到就执行一次滚动 / 高亮，不需要（也不该）缓存下来等下次挂载。
+ *   所以没有「挂载时补一次」这回事 —— 弹窗没开着的时候点击 toast，
+ *   那条消息本来就没人收（用户点扩展图标打开时自然会看到列表）。
+ *
+ * 返回取消订阅函数。
+ */
+export function onMailFocus(listener: (mailId: string) => void): () => void {
+  installBridgeListener()
+  mailFocusListeners.add(listener)
+  return () => mailFocusListeners.delete(listener)
 }
 
 export function useMails(limit = 200) {
