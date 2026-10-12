@@ -32,7 +32,7 @@ import { t } from '~/logic/strings'
  */
 
 const { app, setApp } = useSettings()
-const { mails, loading, restore, deleteForever, empty, trash } = useTrash()
+const { mails, loading, restore, deleteForever, empty } = useTrash()
 
 const hasMails = computed(() => mails.value.length > 0)
 
@@ -57,7 +57,7 @@ const columns = [
 /**
  * 待确认的动作。
  *
- * ⚠ 三处删除（单条彻底删除、单条移入回收站、清空回收站）**都**要确认，
+ * ⚠ 两处删除（单条彻底删除、清空回收站）**都**要确认，
  *   但它们的文案与后果不同，所以 `useConfirmAction` 存的是「用户想做什么」
  *   而不是一个布尔量 —— 一个 `confirming: boolean` 表达不了「确认哪一条」。
  *
@@ -65,12 +65,22 @@ const columns = [
  */
 const { pending, ask: askConfirm, cancel: cancelConfirm, confirm: runPending } = useConfirmAction()
 
-/** 用户点了确认 —— `useConfirmAction` 已经执行了那个动作，这里只负责收尾提示 */
+/**
+ * 跑一个会改数据的动作：期间禁用按钮，结束后给一句提示。
+ *
+ * ⚠ 必须有 `catch`，不能只写 `finally`。这里曾经只有 `finally`，于是动作抛错时
+ *   `notice` 保持空、按钮解除禁用、界面零变化 —— 用户看到的就是
+ *   「点了确认，什么都没发生」；异常还会变成 unhandled rejection，只在 devtools 里可见。
+ *   （真踩过：本页那个按钮调了一个不存在的函数，见下方 `onTrash` 被删掉的说明。）
+ */
 async function withBusy<T>(run: () => Promise<T>, done: (result: T) => string) {
   busy.value = true
   notice.value = ''
   try {
     notice.value = done(await run())
+  }
+  catch (error) {
+    notice.value = `${t('trash.opFailed')}：${error instanceof Error ? error.message : String(error)}`
   }
   finally {
     busy.value = false
@@ -96,20 +106,18 @@ function onDeleteForever(mail: Mail) {
 }
 
 /**
- * 单条移入回收站。
+ * 单条移入回收站 —— **这个按钮不存在了，别再把它加回来**。
  *
- * ⚠ 回收站页里为什么还有「删除」？因为这一页显示的是**已删除**的邮件，
- *   而用户在这里也可能改主意想让它彻底离开主列表（而不是恢复到列表里）。
- *   它与「彻底删除」的区别正是本页的核心语义，所以两个按钮都要有。
+ * 本页曾经有一个「移入回收站」按钮，调 `trash(mail)`。但：
+ *
+ *   1. `useTrash()` **从来没有返回过 `trash`**（那个函数属于 `useMails`），
+ *      所以它是个必然抛 `TypeError` 的死按钮 —— 而 `.vue` 不在 `tsc` 的检查
+ *      范围内、单测又整体 mock 了 bridge，两个环节都没拦住；
+ *   2. 它想表达的语义（「让邮件彻底离开主列表」）已经由同一行的
+ *      **「彻底删除」**承担了 —— 邮件本来就在回收站里，再「移入回收站」是个空操作。
+ *
+ * 所以这里是**删除**而不是补上 `useTrash().trash`。
  */
-function onTrash(mail: Mail) {
-  askConfirm({
-    title: t('trash.confirmTrashTitle'),
-    message: t('trash.confirmTrashMessage', { subject: mail.subject || t('common.noSubject') }),
-    confirmText: t('mail.trash'),
-    run: () => withBusy(() => trash(mail), ok => (ok ? t('trash.trashDone') : t('trash.opFailed'))),
-  })
-}
 
 /** 清空回收站 —— 不可撤销的批量操作，要确认 */
 function onEmpty() {
@@ -233,9 +241,6 @@ function trashedAtOf(mail: Mail): string {
               <a-button size="small" :disabled="busy" @click="onRestore(record)">
                 {{ t('trash.restore') }}
               </a-button>
-              <a-button size="small" :disabled="busy" @click="onTrash(record)">
-                {{ t('mail.trash') }}
-              </a-button>
               <a-button size="small" danger :disabled="busy" @click="onDeleteForever(record)">
                 {{ t('trash.deleteForever') }}
               </a-button>
@@ -246,7 +251,7 @@ function trashedAtOf(mail: Mail): string {
     </a-card>
 
     <!--
-      确认弹窗（**三处删除共用**一个实例）。
+      确认弹窗（**两处删除共用**一个实例）。
 
       ⚠ 用一个实例 + `pending` 状态，而不是每行渲染一个弹窗：
          回收站可能有几百行，每行一个 `v-if` 弹窗会让 DOM 白白多出一个数量级的

@@ -138,15 +138,15 @@ const zhCN: StringTable = {
     emptyAction: '清空回收站',
     emptyDone: '已彻底删除 {n} 封',
     emptyAlready: '回收站已经是空的',
-    /* 确认弹窗（三处删除共用） */
+    /* 确认弹窗（两处删除共用：彻底删除一封 / 清空回收站） */
     confirmEmptyTitle: '清空回收站？',
     confirmEmptyMessage: '将彻底删除回收站里的 {n} 封邮件，此操作无法撤销。',
     confirmDeleteTitle: '彻底删除这封邮件？',
     confirmDeleteMessage: '「{subject}」将被永久移除，此操作无法撤销。',
+    /* 下面两条给的是**邮件列表**里的删除确认（`logic/trash-confirm.ts`），不是本页的 */
     confirmTrashTitle: '删除这封邮件？',
     confirmTrashMessage: '「{subject}」将被删除，可在「设置 · 回收站」里恢复。',
     opFailed: '操作失败',
-    trashDone: '已移入回收站',
     loading: '加载中…',
     emptyList: '回收站是空的',
     emptyListHint: '在弹窗里把鼠标移到邮件右上角的时间上，会出现一个删除按钮。',
