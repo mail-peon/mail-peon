@@ -1,5 +1,28 @@
+import type { ProtocolMap } from 'webext-bridge'
 import type { ToastPayload } from './notification/types'
 import { onMessage, sendMessage } from 'webext-bridge/background'
+
+/**
+ * 能**广播给所有扩展页面**的通道。
+ *
+ * ⚠ 这份联合是手写的：`ProtocolMap` 把「有请求/有返回」的通道和纯广播通道混在
+ *   一起，没法自动挑出后者。所以加一条新的广播通道时要动两处 ——
+ *   `shim.d.ts` 的 `ProtocolMap`，以及这里。
+ *
+ *   这个类型不是装饰：`broadcastToExtension` 曾经是
+ *   `(channel: string, payload: unknown)`，于是**整条 bg → UI 的广播链路
+ *   完全不受 `ProtocolMap` 约束** —— 证据是 `{ reason: 'trash' }` 发了四处，
+ *   而 `data:changed` 声明的 reason 里根本没有 `'trash'`，没有任何编译期提示。
+ */
+type ExtensionBroadcastChannel
+  = | 'mail:updated'
+    | 'data:changed'
+    | 'settings:changed'
+    | 'sync:done'
+    | 'mail:focus'
+
+/** 能发给**当前激活 tab 的内容脚本**的通道 */
+type ActiveTabChannel = 'mail:toast'
 
 /**
  * 跨上下文消息通道的统一封装（`ai-docs/01-architecture.md § 3`）。
@@ -62,7 +85,10 @@ const TO_ACTIVE_TAB_TIMEOUT_MS = 2000
  *
  * 超时 + 不抛错是唯一稳妥的组合：**没送到就当没送到**，调用方用返回值判断。
  */
-export async function toActiveTab(channel: string, payload: unknown): Promise<boolean> {
+export async function toActiveTab<K extends ActiveTabChannel>(
+  channel: K,
+  payload: ProtocolMap[K],
+): Promise<boolean> {
   const tabId = await getActiveTabId()
   if (tabId === null)
     return false
@@ -195,7 +221,10 @@ function installConnectListener(): void {
   }
 }
 
-export function broadcastToExtension(channel: string, payload: unknown): void {
+export function broadcastToExtension<K extends ExtensionBroadcastChannel>(
+  channel: K,
+  payload: ProtocolMap[K],
+): void {
   installConnectListener()
 
   if (!liveExtensionContexts.size)

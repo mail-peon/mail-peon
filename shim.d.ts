@@ -46,7 +46,7 @@ declare module 'webext-bridge' {
      * 切回「通用」时组件**不会重新挂载** —— 没有这条广播，那一页会一直显示
      * 「账号 · 0 个」，它上面的「立即同步增量」也就跟着说「没有启用的账号」。
      */
-    'data:changed': { reason: 'accounts' | 'rules' | 'settings' }
+    'data:changed': { reason: 'accounts' | 'rules' | 'settings' | 'trash' }
     /** bg → popup：用户点了某条 toast，希望定位到那封邮件 */
     'mail:focus': { mailId: string }
     /** content script → bg：toast 上的「点击复制」结果 */
