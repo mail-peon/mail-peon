@@ -290,7 +290,7 @@ function validateRelayUrl(account: MailAccount): string {
     return ''
 
   if (!raw)
-    return '请填写「WebSocket 中继地址」（本机运行 `pnpm relay` 后填 ws://127.0.0.1:41316/）'
+    return '请填写「WebSocket 中继地址」（推荐安装 peon-hall 自动启动，或本机跑 `pnpm relay` 后填 ws://127.0.0.1:41316/）'
 
   if (!/^wss?:\/\//i.test(raw)) {
     return `中继地址要以 ws:// 或 wss:// 开头（当前是「${raw}」）。`

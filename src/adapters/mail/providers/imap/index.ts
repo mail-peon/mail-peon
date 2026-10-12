@@ -26,7 +26,7 @@ import { ImapClient } from './client'
 export const definition: MailProviderDefinition = {
   id: 'imap',
   label: 'IMAP（用户名密码）',
-  hint: '通用协议，支持任意邮箱；需要先在本机运行中继（pnpm relay）',
+  hint: '通用协议，支持任意邮箱；需要先在本机运行中继（推荐安装 peon-hall，或开发者跑 pnpm relay）',
   availability: 'needs-relay',
   /*
    * ⚠ 这段文案要说实话。
