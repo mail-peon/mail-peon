@@ -141,7 +141,14 @@ function retryLoad() {
   void reload()
 }
 
-defineExpose({ reload })
+/*
+ * ⚠ 这里**曾经**有 `defineExpose({ reload })`。删掉的理由：没有任何消费者 ——
+ *   它是根组件，没有被谁用 `ref` 拿到过。当初大概是想给「父组件触发刷新」留个口子，
+ *   但那个父组件不存在（`mount-app.ts` 只负责挂载）。
+ *
+ *   留着的代价是它看起来像一条公开 API：读代码的人会去找谁在用它，
+ *   找不到之后又不敢删。`reload` 本身仍然被 `onMounted` 和失败态的重试按钮用着。
+ */
 </script>
 
 <template>

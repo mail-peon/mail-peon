@@ -27,7 +27,7 @@ declare module 'webext-bridge' {
   export interface ProtocolMap {
     // --- 邮件 ---
     'mail:list': ProtocolWithReturn<{ limit?: number } | undefined, { mails: Mail[] }>
-    'mail:get': ProtocolWithReturn<{ mailId: string }, { mail: Mail | null }>
+    /* ⚠ 没有 `mail:get`：全项目没有发送方，见 `background/main.ts` 里的说明 */
     /** 标记已读 / 不再显示 */
     'mail:dismiss': ProtocolWithReturn<{ mailId: string, read?: boolean, dismissed?: boolean }, { ok: true }>
     /** Popup 打开时把 badge 归零 */

@@ -23,7 +23,6 @@ import {
   estimateStorageUsage,
   markAllRead,
   pruneMailsNow,
-  readMail,
   readRecentMails,
   readTrashedMails,
   restoreMail,
@@ -435,10 +434,15 @@ onMessage('mail:list', async ({ data }) => {
   return { mails }
 })
 
-onMessage('mail:get', async ({ data }) => {
-  await ensureStoreReady()
-  return { mail: (await readMail(data.mailId)) ?? null }
-})
+/*
+ * ⚠ 这里**曾经**有一个 `mail:get` handler（按 id 取单封邮件）。
+ *   删掉的理由：**全项目没有任何发送方** —— 界面要列表就整表拿（`mail:list`），
+ *   要单封就在拿到的那份数据里找，从来没有按 id 单独取过。
+ *
+ *   留着它的代价不是几行代码，而是它看起来像一条可用的通道：
+ *   下一个人会以为「已经有人按 id 取邮件了」，于是照着它写调用方，
+ *   而那条路从来没被跑过、也没被测过。
+ */
 
 onMessage('mail:dismiss', async ({ data }) => {
   await ensureStoreReady()
