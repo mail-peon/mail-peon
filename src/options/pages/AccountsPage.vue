@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import type { AccountBusyKind, AccountProbeResult, AccountStatus } from './accounts-status'
+import type { MailProviderFieldPayload, MailProviderOptionPayload } from '~/adapters/mail/registry'
 import type { MailAccount, SyncCursor } from '~/logic/types'
 import { computed, onMounted, ref } from 'vue'
 import ConfirmDialog from '~/components/ConfirmDialog.vue'
@@ -23,31 +24,26 @@ import { accountStatus } from './accounts-status'
  * `a-input-number` / `a-switch` / `a-alert`）。
  */
 
-interface ProviderOption {
-  value: string
-  label: string
-  hint: string
-  availability: 'ready' | 'needs-relay'
-  availabilityNote?: string
-  /**
-   * 「要装点东西」时的可点链接（IMAP → 下载 peon-hall）。
-   *
-   * ⚠️ 为什么不拼进 `availabilityNote`：那一串是 `a-alert` 的 `:message`，
-   *   antd 当**纯文本**渲染，链接点不开。分开传，模板里用 `<a>` 渲染。
-   */
-  downloadHint?: {
-    text: string
-    url: string
-  }
-  fields: Array<{
-    key: string
-    label: string
-    type: 'text' | 'password' | 'number' | 'toggle'
-    placeholder?: string
-    required?: boolean
-    default?: string | number | boolean
-  }>
-}
+/**
+ * 直接用通道那头的类型，**不再本地重抄一份**。
+ *
+ * ⚠ 这里曾经是一个手写的 `interface ProviderOption`，而它漏了 `fields[].presets` ——
+ *   于是模板里 `v-else-if="field.presets"` 在类型上不成立，运行时也拿不到值
+ *   （另有一处白名单错误，见 `registry.ts` 的 `mailProviderOptionPayloads`）。
+ *   更麻烦的是：因为 `.vue` 当时不在 `tsc` 的检查范围内，这份抄件和真类型
+ *   不一致**没有任何人会发现**。
+ *
+ *   现在 `typecheck` 走 `vue-tsc`，抄件会立刻变成错误 —— 所以直接引用源类型，
+ *   让它从「第三份拷贝」变回「同一个类型」。
+ */
+type ProviderOption = MailProviderOptionPayload
+type ProviderField = MailProviderFieldPayload
+
+/*
+ * `ProviderOption.downloadHint`（IMAP → 下载 peon-hall）为什么不拼进
+ * `availabilityNote`：那一串是 `a-alert` 的 `:message`，antd 当**纯文本**渲染，
+ * 链接点不开。分开传，模板里用 `<a target="_blank" rel="noopener noreferrer">` 渲染。
+ */
 
 const { accounts, reload, save, remove, test, resetCursor, authorizeGmail } = useAccounts()
 
@@ -319,7 +315,7 @@ function hostSelectValue(key: string): string | undefined {
  *   （之前放过 `payload` 对象，渲染出 `payload="[object Object]"`）。
  *   `note` 由 `presetNote()` 按 value 反查 —— 反查一次很便宜，DOM 干净。
  */
-function hostSelectOptions(field: ProviderOption['fields'][number]) {
+function hostSelectOptions(field: ProviderField) {
   return [
     ...(field.presets ?? []).map(preset => ({ value: preset.value, label: preset.label })),
     { value: CUSTOM_HOST, label: '自定义…' },
@@ -327,7 +323,7 @@ function hostSelectOptions(field: ProviderOption['fields'][number]) {
 }
 
 /** 选项副标题：按 value 回预设里查 —— 见 `hostSelectOptions` 里为什么不直接塞进 option */
-function presetNote(field: ProviderOption['fields'][number], value: string): string | undefined {
+function presetNote(field: ProviderField, value: string): string | undefined {
   return field.presets?.find(preset => preset.value === value)?.note
 }
 
@@ -405,6 +401,31 @@ function fieldNumber(key: string): number | null {
 
 function fieldBool(key: string): boolean {
   return (editing.value?.config as Record<string, unknown> | undefined)?.[key] === true
+}
+
+/*
+ * antd 把几个表单控件的值和回调声明得比我们实际处理的**宽**：
+ *
+ *   - `a-switch` 的 `update:checked` 给的是 `CheckedType`（`boolean | string`）；
+ *   - `a-input-number` 的 `value` / `update:value` 是 `ValueType`（`string | number`）；
+ *   - `a-select` 的 `change` 给的是 `SelectValue`（含 `undefined`）。
+ *
+ * 下面三个包装把它们收窄回真实的类型。写在脚本里而不是在模板上内联断言：
+ * 模板里一行塞不下注释，而且 `as` 在模板表达式里很容易被当成别的东西。
+ */
+function onToggleUpdate(key: string, checked: unknown): void {
+  // antd 的 `CheckedType` 实际是 `boolean | string | number`，而且会随版本变宽，
+  // 所以形参收成 `unknown` 再判等 —— 比照抄它的联合类型耐改
+  setField(key, checked === true)
+}
+
+function onNumberUpdate(key: string, value: string | number | null | undefined): void {
+  // 清空输入框时 antd 给 `null`：那代表「没有值」，不是 0
+  setField(key, typeof value === 'number' && Number.isFinite(value) ? value : undefined)
+}
+
+function onFieldSelectUpdate(key: string, value: unknown): void {
+  onHostSelect(key, String(value ?? ''))
 }
 
 /**
@@ -836,7 +857,7 @@ const formTitle = computed(() =>
           <a-form-item v-if="field.type === 'toggle'" :label="field.label">
             <a-switch
               :checked="fieldBool(field.key)"
-              @update:checked="(value: boolean) => setField(field.key, value)"
+              @update:checked="(value) => onToggleUpdate(field.key, value)"
             />
           </a-form-item>
 
@@ -859,10 +880,10 @@ const formTitle = computed(() =>
           >
             <a-input-number
               class="control"
-              :value="fieldNumber(field.key)"
+              :value="fieldNumber(field.key) ?? undefined"
               :min="1"
               :placeholder="field.placeholder"
-              @update:value="(value: number | null) => setField(field.key, value ?? undefined)"
+              @update:value="(value) => onNumberUpdate(field.key, value)"
             />
           </a-form-item>
 
@@ -884,7 +905,7 @@ const formTitle = computed(() =>
                 :value="hostSelectValue(field.key)"
                 :placeholder="field.placeholder ?? '请选择'"
                 :options="hostSelectOptions(field)"
-                @change="(value: string) => onHostSelect(field.key, value)"
+                @change="(value) => onFieldSelectUpdate(field.key, value)"
               >
                 <!-- 副标题（「需用授权码」这类避坑提示）按 value 反查，见 presetNote -->
                 <template #option="item">

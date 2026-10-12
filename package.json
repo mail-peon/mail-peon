@@ -35,7 +35,7 @@
     "relay:console-test": "esno scripts/relay-console.test.ts",
     "relay:port-test": "esno scripts/relay-port-prompt.test.ts",
     "postinstall": "simple-git-hooks",
-    "typecheck": "tsc --noEmit && tsc -p tsconfig.scripts.json",
+    "typecheck": "vue-tsc --noEmit -p tsconfig.json && tsc -p tsconfig.scripts.json",
     "release": "bumpp"
   },
   "dependencies": {
@@ -80,6 +80,7 @@
     "vitest": "^5.0.2",
     "vue": "^3.5.43",
     "vue-demi": "^0.14.10",
+    "vue-tsc": "2.2.10",
     "web-ext": "^10.7.0",
     "webext-bridge": "^6.0.1",
     "webextension-polyfill": "^0.12.0",

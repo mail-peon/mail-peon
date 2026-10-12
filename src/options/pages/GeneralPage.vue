@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import type { AppSettings, MailRetention, PopupTab, StorageUsage } from '~/logic/types'
+import type { AppSettings, MailRetention, PopupTab, StorageUsage, SyncSummary } from '~/logic/types'
 import { computed, onMounted, onUnmounted, ref } from 'vue'
 import ConfirmDialog from '~/components/ConfirmDialog.vue'
 import { onDataChanged, onSyncDone, send, useAccounts, useSettings } from '~/logic/bridge'

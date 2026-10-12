@@ -154,6 +154,22 @@ function senderOf(mail: Mail): string {
 function trashedAtOf(mail: Mail): string {
   return mail.trashedAt ? formatTimestamp(mail.trashedAt) : '—'
 }
+
+/**
+ * 把 `a-table` 的 `#bodyCell` 给的 `record` 收窄成 `Mail`。
+ *
+ * ⚠ antd 把插槽里的 `record` 声明成 `Record<string, any>`，而它并不是 `Mail`
+ *   的子类型，所以**没法**用「给插槽参数标类型」的办法收窄（TS 会拒掉标注）。
+ *   而这里的 `data-source` 就是 `mails`（`Mail[]`），所以收窄是安全的。
+ *
+ *   不这么做的话，下面每个 `senderOf(record)` / `onRestore(record)` 都会报
+ *   「`Record<string, any>` 不能赋给 `Mail`」，而放宽那几个函数的形参
+ *   等于把类型检查从「函数边界」上撤掉 —— 那是更差的选择。
+ */
+function rowMail(record: Record<string, unknown>): Mail {
+  // 先过 `unknown`：`Record<string, unknown>` 与 `Mail` 互不覆盖，TS 要求两次断言
+  return record as unknown as Mail
+}
 </script>
 
 <template>
@@ -220,7 +236,7 @@ function trashedAtOf(mail: Mail): string {
       >
         <template #bodyCell="{ column, record }">
           <template v-if="column.key === 'from'">
-            <span :title="senderOf(record)">{{ senderOf(record) }}</span>
+            <span :title="senderOf(rowMail(record))">{{ senderOf(rowMail(record)) }}</span>
           </template>
 
           <template v-else-if="column.key === 'subject'">
@@ -233,15 +249,15 @@ function trashedAtOf(mail: Mail): string {
           </template>
 
           <template v-else-if="column.key === 'trashedAt'">
-            <span class="faint">{{ trashedAtOf(record) }}</span>
+            <span class="faint">{{ trashedAtOf(rowMail(record)) }}</span>
           </template>
 
           <template v-else-if="column.key === 'actions'">
             <a-space :size="6">
-              <a-button size="small" :disabled="busy" @click="onRestore(record)">
+              <a-button size="small" :disabled="busy" @click="onRestore(rowMail(record))">
                 {{ t('trash.restore') }}
               </a-button>
-              <a-button size="small" danger :disabled="busy" @click="onDeleteForever(record)">
+              <a-button size="small" danger :disabled="busy" @click="onDeleteForever(rowMail(record))">
                 {{ t('trash.deleteForever') }}
               </a-button>
             </a-space>

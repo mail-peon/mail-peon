@@ -45,11 +45,24 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      # 构建必须早于测试：`unplugin-auto-import` / `unplugin-vue-components`
+      # 构建必须早于测试与类型检查：`unplugin-auto-import` / `unplugin-vue-components`
       # 在 `vite build` 期间写 src/auto-imports.d.ts 与 src/components.d.ts，
       # 这两个文件是 git-ignored 的，不先构建的话类型与全局 API 都解析不到。
       - name: Build
         run: pnpm run build
+
+      # ⚠ lint 与 typecheck 之前**没有**接进这条流水线，只有 test —— 于是
+      #   「能跑通测试但类型是错的」可以直接发出去。现在补上。
+      #
+      #   `pnpm typecheck` 走的是 **vue-tsc**（见 package.json）。这一点很关键：
+      #   原来的 `tsc --noEmit` 根本不解析 `.vue`，整个界面层不在检查范围内 ——
+      #   TrashPage 调了一个不存在的函数（点了必崩）、AccountsPage 少声明一个字段，
+      #   都是这么溜过去的。
+      - name: Lint
+        run: pnpm run lint
+
+      - name: Typecheck
+        run: pnpm run typecheck
 
       - name: Test
         run: pnpm run test
