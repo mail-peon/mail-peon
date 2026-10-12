@@ -77,6 +77,31 @@ export interface MailProviderDefinition {
   }
 }
 
+/**
+ * 「下拉 + 输入」字段的预设项 —— 用户可挑一个常用值，也可继续输入自定义值。
+ *
+ * 选预设时**同时**回填 host/port/tls：用户看到 host 改成预设后，端口与加密
+ * 也一并对了（QQ 邮箱那种「授权码不是登录密码」的常见坑就在这里被一起挡住）。
+ *
+ * 字段缺失的语义：
+ *   - `port` 缺失 → 沿用表单里 `port` 的当前值（不强制写 `993`）；
+ *   - `tls` 缺失 → 沿用表单里 `tls` 的当前值；
+ *
+ * 这样写是因为预设可能只想覆盖 host，让其它字段保持用户已经填好的状态。
+ */
+export interface ProviderPreset {
+  /** 选项显示文字（例：「QQ 邮箱」） */
+  label: string
+  /** 选项值 / 写入字段的 host（例：`imap.qq.com`） */
+  value: string
+  /** 副标题 / 说明（例：「需用授权码，不是登录密码」） */
+  note?: string
+  /** 选此项时一并写入 port —— 不写则沿用表单当前 port */
+  port?: number
+  /** 选此项时一并写入 tls —— 不写则沿用表单当前 tls */
+  tls?: boolean
+}
+
 export interface MailProviderField {
   key: keyof MailAccount['config']
   label: string
@@ -85,6 +110,15 @@ export interface MailProviderField {
   required?: boolean
   /** 默认值（表单初值） */
   default?: string | number | boolean
+  /**
+   * 仅 `type: 'text'` 生效：把字段渲染成可下拉选预设的 `a-auto-complete`。
+   *
+   * 用户既可挑预设也可输入自定义值 —— 跟 HTML `<datalist>` 一样的形态。
+   * 这条字段（`presets`）本身**不**出现在 IMAP 之外的 provider 上：
+   * `Gmail` 不需要（它走 REST API，不走 IMAP）；
+   * 未来加新 provider 时，看字段是否真的需要预设再决定要不要挂。
+   */
+  presets?: ProviderPreset[]
 }
 
 /** 服务器上的一封原始邮件（未经解析） */

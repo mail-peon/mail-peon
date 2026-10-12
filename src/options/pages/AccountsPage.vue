@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import type { AccountBusyKind, AccountProbeResult, AccountStatus } from './accounts-status'
+import type { ProviderPreset } from '~/adapters/mail/types'
 import type { MailAccount, SyncCursor } from '~/logic/types'
 import { computed, onMounted, ref } from 'vue'
 import ConfirmDialog from '~/components/ConfirmDialog.vue'
@@ -275,6 +276,28 @@ function setField(key: string, value: unknown) {
     return
   const config = editing.value.config as Record<string, unknown>
   config[key] = value
+}
+
+/**
+ * 选 IMAP 预设时回填 host / port / tls 三字段。
+ *
+ * ⚠️ `setField` 不直接接预设：port/tls 是预设独有的字段（其它字段不挂），
+ *    强行让所有 setField 都接受 preset 形参反而把通用字段复杂化。
+ *    这条函数只处理「选预设」这一种来源，逻辑写在一处、清楚。
+ *
+ * 参数 `preset = null` 代表「键入了非预设的字符串」（a-auto-complete 在键入新值时
+ * 也会触发 select —— payload 是 string 而非对象）；这种情况只写 host，
+ * 不动 port/tls，让用户自己继续输入/调整。
+ */
+function onPresetSelect(hostKey: string, preset: { value: string, port?: number, tls?: boolean } | null): void {
+  if (!editing.value || !preset)
+    return
+  const config = editing.value.config as Record<string, unknown>
+  config[hostKey] = preset.value
+  if (typeof preset.port === 'number')
+    config.port = preset.port
+  if (typeof preset.tls === 'boolean')
+    config.tls = preset.tls
 }
 
 function fieldValue(key: string): string {
@@ -757,6 +780,47 @@ const formTitle = computed(() =>
             />
           </a-form-item>
 
+          <a-form-item v-else-if="field.presets" :label="field.label" :required="field.required">
+            <!--
+              下拉 + 输入：用户可挑预设，也可继续输入自定义值。
+              选预设时 `onPresetSelect` 同时回填 host / port / tls —— 用户看到 host
+              改了，端口与加密一并对齐，不会「改了 host 但忘了改 port」。
+
+              ⚠ antd 的 `@select` 事件签名是 `(value, option)`（vc-select 内部约定）：
+              - value 是当前 host 字符串
+              - option 是整条 preset 对象（含我们塞进去的 `payload` 字段）
+              键入非预设值时也会触发 select —— 第二个参数是 undefined。
+            -->
+            <a-auto-complete
+              :value="fieldValue(field.key)"
+              :placeholder="field.placeholder"
+              spellcheck="false"
+              :options="(field.presets ?? []).map(p => ({
+                value: p.value,
+                label: p.label,
+                note: p.note,
+                // 把整条 preset 放进自定义字段，select 事件原样拿回来
+                payload: p,
+              }))"
+              @select="(_value: string, option?: { payload?: ProviderPreset }) => {
+                onPresetSelect(field.key, option?.payload ?? null)
+              }"
+              @update:value="(value: string) => setField(field.key, value)"
+            >
+              <!--
+                自定义选项内容：主行是邮箱名，副行是避坑提示
+                （「需用授权码，不是登录密码」这种 —— 不写出来用户一定会踩）。
+                antd 的 `#option` 插槽收到的是 options 里那一整条对象。
+              -->
+              <template #option="item">
+                <div class="preset-option">
+                  <span class="preset-option__label">{{ item.label }}</span>
+                  <span v-if="item.note" class="preset-option__note">{{ item.note }}</span>
+                </div>
+              </template>
+            </a-auto-complete>
+          </a-form-item>
+
           <a-form-item v-else :label="field.label" :required="field.required">
             <a-input
               :value="fieldValue(field.key)"
@@ -928,6 +992,26 @@ const formTitle = computed(() =>
   align-items: flex-start;
   gap: 6px;
   margin-bottom: 14px;
+}
+
+/*
+ * 预设下拉的选项：邮箱名 + 一行避坑提示。
+ * 提示用更小更暗的字 —— 它重要但**不必**抢过邮箱名本身。
+ */
+.preset-option {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  line-height: 1.35;
+}
+
+.preset-option__label {
+  font-size: 13px;
+}
+
+.preset-option__note {
+  color: var(--mp-text-faint);
+  font-size: 11px;
 }
 
 .actions {

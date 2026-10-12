@@ -51,7 +51,43 @@ export const definition: MailProviderDefinition = {
     url: 'https://github.com/mail-peon/peon-hall/releases/latest',
   },
   fields: [
-    { key: 'host', label: 'IMAP 服务器', type: 'text', placeholder: 'imap.qq.com', required: true },
+    {
+      key: 'host',
+      label: 'IMAP 服务器',
+      type: 'text',
+      placeholder: 'imap.qq.com',
+      required: true,
+      /*
+       * 预设清单：13 家中文用户最常用的邮箱。
+       *
+       * ⚠️ Gmail **故意不列**：扩展有专门的 Gmail provider（走 REST API），
+       *   在 IMAP 下拉里再加 Gmail 只会让用户分不清走哪条路 —— 真要用 IMAP
+       *   收 Gmail 的人也不会不知道「这有个坑」，让搜索框直接打 `imap.gmail.com` 就行。
+       *
+       * ⚠️ 全用 993 + TLS：当前中继不支持 STARTTLS 升级（`tls=0` 是纯明文），
+       *   所以预设全列 implicit TLS；用户切到 143 + STARTTLS 是被支持的，但这里
+       *   不主动给选项 —— 选了就跑不通（错信息能定位，但回报选错概率高）。
+       *
+       * 全部端口写 993、TLS 写 true：不写就沿用表单当前值（见 `ProviderPreset` 注释）。
+       * 「备注」是给用户的避坑提示（如「需用授权码，不是登录密码」）——
+       * 这种坑不写在界面上，靠用户自己搜出来的概率不低。
+       */
+      presets: [
+        { label: 'QQ 邮箱', value: 'imap.qq.com', port: 993, tls: true, note: '需用授权码，不是登录密码' },
+        { label: '网易 163', value: 'imap.163.com', port: 993, tls: true, note: '需用授权码' },
+        { label: '网易 126', value: 'imap.126.com', port: 993, tls: true, note: '需用授权码' },
+        { label: '网易 yeah.net', value: 'imap.yeah.net', port: 993, tls: true, note: '需用授权码' },
+        { label: 'QQ 企业邮', value: 'imap.exmail.qq.com', port: 993, tls: true },
+        { label: '新浪邮箱', value: 'imap.sina.cn', port: 993, tls: true, note: '需用授权码' },
+        { label: '139 邮箱', value: 'imap.139.com', port: 993, tls: true, note: '中国移动' },
+        { label: '阿里云邮箱', value: 'imap.aliyun.com', port: 993, tls: true },
+        { label: 'Outlook / Hotmail', value: 'outlook.office365.com', port: 993, tls: true },
+        { label: 'iCloud', value: 'imap.mail.me.com', port: 993, tls: true, note: '需 App 专用密码' },
+        { label: 'Fastmail', value: 'imap.fastmail.com', port: 993, tls: true },
+        { label: 'Yahoo Mail', value: 'imap.mail.yahoo.com', port: 993, tls: true, note: '需应用密码' },
+        { label: 'Yandex Mail', value: 'imap.yandex.com', port: 993, tls: true },
+      ],
+    },
     { key: 'port', label: '端口', type: 'number', default: 993, required: true },
     { key: 'tls', label: '使用 TLS（993 端口必须开）', type: 'toggle', default: true },
     { key: 'user', label: '用户名', type: 'text', placeholder: '你的QQ号@qq.com', required: true },

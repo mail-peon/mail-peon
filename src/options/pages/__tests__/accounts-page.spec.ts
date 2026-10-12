@@ -41,7 +41,18 @@ const DEPS = {
         url: 'https://github.com/mail-peon/peon-hall/releases/latest',
       },
       fields: [
-        { key: 'host', label: 'IMAP 服务器', type: 'text', required: true },
+        // 与真实 provider（`providers/imap/index.ts`）完全一致 —— 故意包括 6 个字段，
+        // 这样单测能看到选预设时 host / port / tls 三字段联动。
+        // 缺一个都会让"选预设回填"的断言拿不到对应字段。
+        { key: 'host', label: 'IMAP 服务器', type: 'text', required: true, presets: [
+          { label: 'QQ 邮箱', value: 'imap.qq.com', port: 993, tls: true, note: '需用授权码，不是登录密码' },
+          { label: '网易 163', value: 'imap.163.com', port: 993, tls: true },
+          { label: 'Outlook / Hotmail', value: 'outlook.office365.com', port: 993, tls: true },
+        ] },
+        { key: 'port', label: '端口', type: 'number', default: 993, required: true },
+        { key: 'tls', label: '使用 TLS（993 端口必须开）', type: 'toggle', default: true },
+        { key: 'user', label: '用户名', type: 'text', placeholder: '你的QQ号@qq.com', required: true },
+        { key: 'pass', label: '密码 / 授权码', type: 'password', placeholder: 'QQ 邮箱填 16 位授权码', required: true },
         { key: 'relayUrl', label: 'WebSocket 中继地址', type: 'text', required: true },
       ],
     },
@@ -54,7 +65,19 @@ function account(patch: Partial<MailAccount> = {}): MailAccount {
     label: '个人邮箱',
     email: 'me@example.com',
     provider: 'imap',
-    config: { host: 'imap.qq.com', relayUrl: 'ws://127.0.0.1:41316/' },
+    /*
+     * ⚠️ `user` / `pass` / `port` 必须给：DEPS 里的 IMAP provider 把它们声明成
+     *   `required`，而 `validateAccount()` 会逐个校验 required 字段 —— 缺任何一个
+     *   就**在调用 `test()` 之前**返回错误（界面上只显示「请填写『用户名』」）。
+     *   这条之前没暴露，是因为 mock 的 provider 只有 host / relayUrl 两个字段。
+     */
+    config: {
+      host: 'imap.qq.com',
+      port: 993,
+      user: 'me@example.com',
+      pass: 'test-auth-code',
+      relayUrl: 'ws://127.0.0.1:41316/',
+    },
     blockedList: [],
     enabled: true,
     createdAt: Date.now(),
@@ -533,6 +556,176 @@ describe('imap provider 的 peon-hall 下载链接', () => {
     expect(link).toBeUndefined()
     // availability === 'ready' → 黄条不出现
     expect(wrapper.findAll('.ant-alert').some(node => node.text().includes('中继'))).toBe(false)
+
+    wrapper.unmount()
+  })
+})
+
+/*
+ * IMAP 预设下拉 —— 见 `providers/imap/index.ts` 的 `presets` 字段。
+ *
+ * ⚠️ 断的是「**选预设时一并回填 host / port / tls**」三件事：
+ *   - 只填 host 是常见 bug（用户改了 host，端口和加密没动 → 「测试连接」报
+ *     "中继不可达" 让人困惑）；
+ *   - 测这一条比测"下拉是否渲染"更有意义 —— 下拉渲染了不证明联动对，
+ *     联动错了用户照样填不出能用的账号。
+ *
+ * ⚠️ 测试读字段值走 DOM（`input.element.value` / `switcher[aria-checked]`），
+ *   不走组件内部的 `fieldValue`/`fieldNumber`/`fieldBool` —— 后者在 setup 里，
+ *   测试模块拿不到。这样也更接近用户视角。
+ */
+describe('iMAP host 预设下拉', () => {
+  beforeEach(() => {
+    mocks.accounts = ref([])
+    mocks.clipboardText = null
+    mocks.clipboardError = false
+    mocks.providerOverride = null
+    vi.unstubAllGlobals()
+  })
+
+  /**
+   * 读「当前正在编辑的账号」的 config（组件里的 `editing` ref）。
+   *
+   * ⚠️ 为什么不从 DOM 读：`a-auto-complete` / `a-input-number` / `a-switch` 各自
+   *   包了好几层 div，按 label 反查 input 又依赖 antd 内部 class 名 ——
+   *   换个 antd 小版本就可能红，而红的理由跟被测行为无关。
+   *   `editing` 在 `<script setup>` 里是顶层绑定，dev 模式下 `wrapper.vm` 直接可达。
+   */
+  function editingConfig(wrapper: ReturnType<typeof mount>): Record<string, unknown> {
+    const vm = wrapper.vm as unknown as { editing?: { config: Record<string, unknown> } }
+    return vm.editing?.config ?? {}
+  }
+
+  it('选中「QQ 邮箱」预设 → host / port / tls 三字段一并回填', async () => {
+    const wrapper = await mountPage()
+    await button(wrapper, '新增账号').trigger('click')
+    await flush()
+
+    const autoComplete = wrapper.findComponent({ name: 'AAutoComplete' })
+    expect(autoComplete.exists()).toBe(true)
+
+    // 模拟选中预设 —— antd 的 `@select` 签名是 `(value, option)`，option 里带
+    // 我们塞进去的 `payload`（整条 preset）
+    autoComplete.vm.$emit('select', 'imap.qq.com', {
+      value: 'imap.qq.com',
+      label: 'QQ 邮箱',
+      payload: {
+        label: 'QQ 邮箱',
+        value: 'imap.qq.com',
+        port: 993,
+        tls: true,
+        note: '需用授权码，不是登录密码',
+      },
+    })
+    await flush()
+
+    // 三个字段**一并**回填 —— 只填 host 是常见 bug
+    expect(editingConfig(wrapper).host).toBe('imap.qq.com')
+    expect(editingConfig(wrapper).port).toBe(993)
+    expect(editingConfig(wrapper).tls).toBe(true)
+
+    wrapper.unmount()
+  })
+
+  it('选预设没带 port / tls → 沿用表单当前值（不强写）', async () => {
+    // 这条 preset 只有 host + tls，**没有 port** —— 验证「字段缺失 = 不动」
+    mocks.providerOverride = {
+      providers: [{
+        ...DEPS.providers[0],
+        fields: [
+          {
+            key: 'host',
+            label: 'IMAP 服务器',
+            type: 'text',
+            required: true,
+            presets: [{ label: '自定义主机', value: 'mail.example.com', tls: true }],
+          },
+          { key: 'port', label: '端口', type: 'number', default: 993 },
+          { key: 'tls', label: '使用 TLS', type: 'toggle', default: true },
+          { key: 'relayUrl', label: 'WebSocket 中继地址', type: 'text', required: true },
+        ],
+      }],
+    }
+
+    const wrapper = await mountPage()
+    await button(wrapper, '新增账号').trigger('click')
+    await flush()
+
+    const autoComplete = wrapper.findComponent({ name: 'AAutoComplete' })
+    autoComplete.vm.$emit('select', 'mail.example.com', {
+      value: 'mail.example.com',
+      label: '自定义主机',
+      // 注意：没有 port
+      payload: { label: '自定义主机', value: 'mail.example.com', tls: true },
+    })
+    await flush()
+
+    expect(editingConfig(wrapper).host).toBe('mail.example.com')
+    expect(editingConfig(wrapper).tls).toBe(true)
+    // port 没被动过 —— 仍是新建账号时的默认值 993
+    expect(editingConfig(wrapper).port).toBe(993)
+
+    wrapper.unmount()
+  })
+
+  it('自定义输入（非预设）也能保存 —— 不会触发回填副作用', async () => {
+    const wrapper = await mountPage()
+    await button(wrapper, '新增账号').trigger('click')
+    await flush()
+
+    const autoComplete = wrapper.findComponent({ name: 'AAutoComplete' })
+    // 用户键入了不在预设里的值 —— a-auto-complete 这时发 `update:value`，
+    // 而 select 的第二参数（option）是 undefined
+    autoComplete.vm.$emit('update:value', 'mail.corporate.internal')
+    await flush()
+
+    expect(editingConfig(wrapper).host).toBe('mail.corporate.internal')
+    // port / tls 不被改写
+    expect(editingConfig(wrapper).port).toBe(993)
+    expect(editingConfig(wrapper).tls).toBe(true)
+
+    wrapper.unmount()
+  })
+
+  it('select 事件缺少 option（键入非预设值）→ 只写 host，不动 port / tls', async () => {
+    const wrapper = await mountPage()
+    await button(wrapper, '新增账号').trigger('click')
+    await flush()
+
+    const autoComplete = wrapper.findComponent({ name: 'AAutoComplete' })
+    // antd 在「键入新值并回车」时也会发 select，但 option 是 undefined
+    autoComplete.vm.$emit('select', 'typed.example.com', undefined)
+    await flush()
+
+    // 不崩，且 port / tls 保持默认（host 由 update:value 负责写，不在这里写）
+    expect(editingConfig(wrapper).port).toBe(993)
+    expect(editingConfig(wrapper).tls).toBe(true)
+
+    wrapper.unmount()
+  })
+
+  it('下拉里给出预设清单，且每条带 value（host）—— 用户能挑', async () => {
+    const wrapper = await mountPage()
+    await button(wrapper, '新增账号').trigger('click')
+    await flush()
+
+    const autoComplete = wrapper.findComponent({ name: 'AAutoComplete' })
+    const options = autoComplete.props('options') as Array<{ value: string, label: string, note?: string }>
+
+    // 至少覆盖用户点名的 QQ / 网易
+    const values = options.map(o => o.value)
+    expect(values).toContain('imap.qq.com')
+    expect(values).toContain('imap.163.com')
+
+    // 每条都得有 value（写进 host 的）与 label（显示的）
+    for (const option of options) {
+      expect(option.value).toBeTruthy()
+      expect(option.label).toBeTruthy()
+    }
+
+    // 避坑提示确实带上了（QQ 那条）
+    const qq = options.find(o => o.value === 'imap.qq.com')
+    expect(qq?.note).toContain('授权码')
 
     wrapper.unmount()
   })
