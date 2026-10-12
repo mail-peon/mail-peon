@@ -41,6 +41,8 @@ const zhCN: StringTable = {
     /** 密码输入框上的显示 / 隐藏切换 */
     show: '显示',
     hide: '隐藏',
+    /** 加载失败时的重试 */
+    retry: '重试',
     enabled: '启用',
     disabled: '停用',
     unknownSender: '(未知发件人)',
@@ -128,6 +130,13 @@ const zhCN: StringTable = {
     navBlocked: '屏蔽列表',
     navTrash: '回收站',
     navAbout: '关于',
+    /*
+     * ⚠ 读取设置失败时**必须**有个出口。以前这里只有一个 `<a-spin v-if="!app">`，
+     *   而 `send` 失败返回的是 `app: null` —— 与「加载中」无法区分，
+     *   界面就永远转圈。
+     */
+    loadFailed: '读取设置失败',
+    loadFailedHint: '没有收到后台的响应。可能是扩展的后台服务刚被回收，重试一次通常就好。',
   },
 
   trash: {

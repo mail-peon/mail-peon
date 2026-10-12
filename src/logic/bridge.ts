@@ -140,11 +140,25 @@ function withTimeout<T>(promise: Promise<T>, ms: number, channel: string): Promi
 const settingsApp = ref<AppSettings | null>(null)
 const settingsAi = ref<AiSettings | null>(null)
 
+/**
+ * 上一次 `reload()` 是不是**失败**了（没拿到设置）。
+ *
+ * ⚠ 为什么必须有这个信号：`send` 失败时**不抛错**，只返回调用方给的兜底值 ——
+ *   而这里的兜底是 `app: null`。于是「还在加载」和「加载失败」在
+ *   `app.value === null` 上长得一模一样，界面只能选择一直转圈。
+ *
+ *   真机上的表现就是：后台异常 / 消息超时的时候，设置页是一个**永远转不完的圈**，
+ *   没有错误、没有重试、也没有任何可查的线索（只有 console 里一行 warn）。
+ *   有了这个 ref，界面才能把「失败」和「加载中」分开画。
+ */
+const settingsLoadFailed = ref(false)
+
 export function useSettings() {
   const app = settingsApp
   const ai = settingsAi
 
-  async function reload() {
+  /** @returns 是否真的拿到了设置（失败时 `false`，调用方可以据此提示 / 重试） */
+  async function reload(): Promise<boolean> {
     const result = await send<{ app: AppSettings, ai: AiSettings }>('settings:get', undefined, {
       app: null as unknown as AppSettings,
       ai: null as unknown as AiSettings,
@@ -153,6 +167,10 @@ export function useSettings() {
       app.value = result.app
     if (result?.ai)
       ai.value = result.ai
+
+    const ok = Boolean(result?.app)
+    settingsLoadFailed.value = !ok
+    return ok
   }
 
   async function setApp(patch: Partial<AppSettings>) {
@@ -172,7 +190,7 @@ export function useSettings() {
       ai.value = result.ai
   }
 
-  return { app, ai, reload, setApp, setAi }
+  return { app, ai, loadFailed: settingsLoadFailed, reload, setApp, setAi }
 }
 
 // ---------------------------------------------------------------------------

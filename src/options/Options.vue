@@ -37,7 +37,7 @@ import TrashPage from './pages/TrashPage.vue'
 
 type PageId = 'general' | 'accounts' | 'rules' | 'ai' | 'blocked' | 'trash' | 'about'
 
-const { app, ai, reload } = useSettings()
+const { app, ai, loadFailed, reload } = useSettings()
 
 const NAV: Array<{ id: PageId, key: string }> = [
   { id: 'general', key: 'options.navGeneral' },
@@ -130,6 +130,17 @@ function onNavClick(info: { key: string | number }) {
   select(String(info.key) as PageId)
 }
 
+/**
+ * 「重试」——重新拉一次设置。
+ *
+ * ⚠ 失败后停在失败页，不自动重试：`send` 的失败里既有「后台刚被回收」（重试就好）
+ *   也有「消息通道坏了」（重试没用）。自动重试会把后者变成一个反复闪烁的界面，
+ *   让用户以为是页面在抽风。交给用户点一下，代价只有一次点击。
+ */
+function retryLoad() {
+  void reload()
+}
+
 defineExpose({ reload })
 </script>
 
@@ -158,7 +169,27 @@ defineExpose({ reload })
       </a-layout-sider>
 
       <a-layout-content class="content">
-        <a-spin v-if="!app" class="loading" size="small" />
+        <!--
+          ⚠ 三种状态要分开画，不能只写 `v-if="!app"`：
+            「还在加载」和「加载失败」在 `app === null` 上是同一个值
+            （`send` 失败返回的就是 `app: null`），只判它的话，
+            失败时会**永远转圈**，没有错误、没有重试、也没有线索。
+        -->
+        <a-spin v-if="!app && !loadFailed" class="loading" size="small" />
+
+        <a-result
+          v-else-if="!app"
+          class="load-failed"
+          status="warning"
+          :title="t('options.loadFailed')"
+          :sub-title="t('options.loadFailedHint')"
+        >
+          <template #extra>
+            <a-button type="primary" @click="retryLoad">
+              {{ t('common.retry') }}
+            </a-button>
+          </template>
+        </a-result>
 
         <template v-else>
           <GeneralPage v-show="activePage === 'general'" />
@@ -231,5 +262,9 @@ defineExpose({ reload })
 .loading {
   display: block;
   margin: 32px auto;
+}
+
+.load-failed {
+  margin-top: 24px;
 }
 </style>

@@ -28,7 +28,7 @@ import { t } from '~/logic/strings'
 
 const props = defineProps<{ settings: AiSettings | null }>()
 
-const { setAi } = useSettings()
+const { setAi, loadFailed, reload } = useSettings()
 
 interface PlatformOption {
   value: string
@@ -194,9 +194,27 @@ function onOutputLanguageChange(value: unknown) {
 
 <template>
   <section class="page">
-    <a-card v-if="!draft" size="small">
+    <a-card v-if="!draft && !loadFailed" size="small">
       <a-spin size="small" />
     </a-card>
+
+    <!--
+      ⚠ 「加载失败」不能和「加载中」共用一个 `v-if="!draft"`：两者在
+        `draft === null` 上完全一样，只判它的话失败时会永远转圈（同 `Options.vue`）。
+    -->
+    <a-result
+      v-else-if="!draft"
+      class="load-failed"
+      status="warning"
+      :title="t('options.loadFailed')"
+      :sub-title="t('options.loadFailedHint')"
+    >
+      <template #extra>
+        <a-button type="primary" @click="reload">
+          {{ t('common.retry') }}
+        </a-button>
+      </template>
+    </a-result>
 
     <template v-else>
       <a-card size="small" :title="t('ai.cardTitle')">
