@@ -54,6 +54,11 @@ jobs:
       - name: Test
         run: pnpm run test
 
+      # 文档漂移检查：跨仓库改动经常忘了同步默认值/版本号 —— 这里 grep 一份
+      # 已知过期字符串清单（见脚本顶部的注释）。命中即发版失败。
+      - name: Docs drift check
+        run: pnpm run drift
+
       # ⚠ 不要在这里跑 `pnpm pack`：它 = `run-p pack:*`，其中的 pack:crx 需要
       # 仓库根目录的 key.pem（.gitignore 掉的私钥，CI 上不存在），必定失败。
       # Chrome 商店只吃 zip，所以只跑 pack:zip。
