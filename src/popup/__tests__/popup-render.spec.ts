@@ -1,6 +1,6 @@
 import type { Mail } from '~/logic/types'
 import { mount } from '@vue/test-utils'
-import { beforeAll, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 import { ref } from 'vue'
 import MailListItem from '~/components/MailListItem.vue'
 
@@ -52,22 +52,34 @@ const mocks = vi.hoisted(() => ({
    *   已经被赋成真 ref 了。
    */
   justCopied: null as unknown as { value: Set<string> },
+  /**
+   * ⚠ `loading` / `loadFailed` 必须是**真的 ref**，不能写成 `{ value: false }`。
+   *
+   *   普通对象在模板里**不会**被自动解包（Vue 只解包 `isRef()` 为真的东西），
+   *   而**任何对象都是真值** —— 于是 `v-if="loading"` 恒真，那一串
+   *   `v-else-if` 分支（失败态 / 空态）永远走不到。
+   *
+   *   这个坑以前一直藏着：既有用例只断言「列表项在不在」，而列表项走的是
+   *   另一条独立的 `v-if="codeMails.length"`，所以转圈和列表**同时**渲染也没人发现。
+   *   等到要测「空态 / 失败态」时才暴露出来。
+   */
+  loading: null as unknown as { value: boolean },
+  loadFailed: null as unknown as { value: boolean },
+  reloadMails: null as unknown as () => Promise<void>,
 }))
 
 vi.mock('~/logic/bridge', () => ({
   useMails: () => ({
     mails: mocks.mails,
-    loading: { value: false },
+    loading: mocks.loading,
+    loadFailed: mocks.loadFailed,
+    reload: () => mocks.reloadMails!(),
     /*
      * 「刚刚复制过」的集合 —— **纯前端瞬时状态**，不落库。
      * 默认空集合：绝大多数的渲染用例关心的是「没复制过」那一态。
-     * 它的行为（点完变绿、几秒后复原）在下面单独测。
      *
-     * ⚠ 必须是**真的 `ref`**，不能写成 `{ value: new Set() }`。
-     *   `useMails` 的返回值被 Popup 解构，而解构出来的 `justCopied` 会被
-     *   当成 setup 的顶层绑定交给模板解包 —— Vue 只对**真的 ref** 解包。
-     *   假对象不会，于是模板里拿到的是 `{ value: Set }`，
-     *   调用 `.has()` 直接报「has is not a function」。
+     * ⚠ 同样必须是**真的 `ref`**：假对象不会被模板解包，
+     *   于是 `justCopied.has(...)` 直接报「has is not a function」。
      *   （这个测试本身就是被这条规则咬过才这么写的。）
      */
     justCopied: mocks.justCopied,
@@ -98,6 +110,9 @@ beforeAll(async () => {
    *   到那时这个赋值早就完成了。
    */
   mocks.justCopied = ref(new Set<string>())
+  mocks.loading = ref(false)
+  mocks.loadFailed = ref(false)
+  mocks.reloadMails = async () => {}
   Popup = (await import('~/popup/Popup.vue')).default
 })
 
@@ -363,6 +378,66 @@ describe('极简模式渲染', () => {
      */
     expect(wrapper.text()).not.toContain('有效')
     expect(wrapper.find('.fill').exists()).toBe(false)
+
+    wrapper.unmount()
+  })
+})
+
+/*
+ * 「读不到邮件」不能显示成「没有邮件」。
+ *
+ * ⚠ 这一组对应一个**界面在陈述假事实**的缺陷：`send` 失败时 `useMails` 拿到的
+ *   是空列表兜底值，于是 `!list.length` 成立，缺省分支就渲染出「还没有收到邮件」。
+ *   用户可能刚收到一封验证码 —— 界面却告诉他没收到过。
+ *
+ *   修法是给 `useMails` 一个 `loadFailed` 信号（与 `useSettings` 同款），
+ *   并把失败态**排在空态前面**。
+ */
+describe('列表读取失败', () => {
+  afterEach(() => {
+    mocks.loadFailed.value = false
+  })
+
+  it('失败 → 显示「读取邮件失败」和重试，而不是「还没有收到邮件」', () => {
+    mocks.app.value = { minimalMode: true, excludeAds: true, popupDefaultTab: 'important' }
+    mocks.mails.value = []
+    mocks.loadFailed.value = true
+
+    const wrapper = mount(Popup)
+    const text = wrapper.text()
+
+    expect(text).toContain('读取邮件失败')
+    expect(text).not.toContain('还没有收到验证码')
+
+    wrapper.unmount()
+  })
+
+  it('失败态上的「重试」会再拉一次列表', async () => {
+    mocks.app.value = { minimalMode: true, excludeAds: true, popupDefaultTab: 'important' }
+    mocks.mails.value = []
+    mocks.loadFailed.value = true
+
+    const reload = vi.fn(async () => {})
+    mocks.reloadMails = reload
+
+    const wrapper = mount(Popup)
+    const retry = wrapper.findAll('button').find(node => node.text().replace(/\s+/g, '') === '重试')
+    expect(retry, '失败态上应该有「重试」按钮').toBeDefined()
+
+    await retry!.trigger('click')
+    expect(reload).toHaveBeenCalled()
+
+    wrapper.unmount()
+  })
+
+  it('真的没有邮件（没失败）→ 仍然显示空态，不误报失败', () => {
+    mocks.app.value = { minimalMode: true, excludeAds: true, popupDefaultTab: 'important' }
+    mocks.mails.value = []
+    mocks.loadFailed.value = false
+
+    const wrapper = mount(Popup)
+    expect(wrapper.text()).toContain('还没有收到验证码')
+    expect(wrapper.text()).not.toContain('读取邮件失败')
 
     wrapper.unmount()
   })

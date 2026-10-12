@@ -345,6 +345,18 @@ export function useMails(limit = 200) {
   const mails = ref<Mail[]>([]) as Ref<Mail[]>
   const loading = ref(true)
 
+  /**
+   * 上一次 `reload()` 是不是**失败**了（没拿到列表）。
+   *
+   * ⚠ 与 `useSettings` 的 `loadFailed` 同一个理由：`send` 失败时不抛错，
+   *   只返回兜底值（这里是 `{ mails: [] }`），于是「加载失败」和「一封邮件都没有」
+   *   在 `mails.value.length === 0` 上完全一样。
+   *
+   *   后果不是「少了个提示」那么轻：Popup 会一本正经地告诉用户
+   *   「还没有收到邮件」—— 而他可能刚收到一封验证码。**界面在陈述一个假事实。**
+   */
+  const loadFailed = ref(false)
+
   async function reload() {
     /*
      * ⚠ 计时「UI 侧看到的往返耗时」，而不是只看 background 内部耗时。
@@ -354,14 +366,25 @@ export function useMails(limit = 200) {
      *   只有两侧都计时才能分清是「库慢」还是「消息慢」。
      */
     const started = Date.now()
-    const result = await send<{ mails: Mail[] }>('mail:list', { limit }, { mails: [] })
+    const result = await send<{ mails: Mail[] } | null>('mail:list', { limit }, null)
     const elapsed = Date.now() - started
 
-    mails.value = result.mails
+    /*
+     * ⚠ 兜底值用 `null` 而不是 `{ mails: [] }`：`send` 把 `null` 原样透传（它只对
+     *   `undefined` 兜底），于是「失败」有了一个**和空列表分得开**的表示。
+     *   失败时**不动** `mails` —— 上一次拿到的数据比一个假的空列表有用得多。
+     */
+    if (result) {
+      mails.value = result.mails
+      loadFailed.value = false
+    }
+    else {
+      loadFailed.value = true
+    }
     loading.value = false
 
     if (elapsed > 300)
-      console.warn(`[mail-peon] mail:list 往返慢：${result.mails.length} 条用了 ${elapsed}ms`)
+      console.warn(`[mail-peon] mail:list 往返慢：${mails.value.length} 条用了 ${elapsed}ms`)
   }
 
   /**
@@ -476,7 +499,7 @@ export function useMails(limit = 200) {
     mailUpdateListeners.delete(reload)
   })
 
-  return { mails, loading, justCopied, reload, copyCode, setRead, dismiss, trash, markAllRead }
+  return { mails, loading, loadFailed, justCopied, reload, copyCode, setRead, dismiss, trash, markAllRead }
 }
 
 // ---------------------------------------------------------------------------

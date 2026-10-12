@@ -34,7 +34,8 @@ import {
  * 与 Popup 保持同一套视觉语言 —— 两者是同一个产品的两个入口。
  */
 
-const { mails, loading, justCopied, copyCode, setRead, dismiss, trash } = useMails(300)
+// ⚠ `reload` 这个名字已经被下面的 `useSettings()` 占了，重命名避免遮蔽
+const { mails, loading, loadFailed, justCopied, copyCode, setRead, dismiss, trash, reload: reloadMails } = useMails(300)
 const { app, reload } = useSettings()
 const uiMessage = useAppMessage()
 
@@ -103,6 +104,14 @@ function openOptions() {
     <template v-if="minimalMode">
       <div class="list">
         <a-spin v-if="loading" class="loading" size="small" />
+        <!-- 失败态排在空态前面 —— 理由见 `popup/Popup.vue` 同处 -->
+        <EmptyState
+          v-else-if="loadFailed"
+          :text="t('mail.loadFailed')"
+          :hint="t('mail.loadFailedHint')"
+          :action-text="t('common.retry')"
+          @action="reloadMails"
+        />
         <EmptyState v-else-if="!codeMails.length" :text="t('popup.codeEmpty')" />
         <!-- `v-if` 放在外层 `<template>` 上 —— 见 `popup/Popup.vue` 里同处的说明 -->
         <template v-if="codeMails.length">
@@ -142,6 +151,14 @@ function openOptions() {
 
           <div class="list">
             <a-spin v-if="loading" class="loading" size="small" />
+            <!-- 失败态排在空态前面 —— 理由见 `popup/Popup.vue` 同处 -->
+            <EmptyState
+              v-else-if="loadFailed"
+              :text="t('mail.loadFailed')"
+              :hint="t('mail.loadFailedHint')"
+              :action-text="t('common.retry')"
+              @action="reloadMails"
+            />
             <EmptyState v-else-if="!visibleMails.length" :text="t(tabEmptyKey(activeTab))" />
             <!-- `v-if` 放在外层 `<template>` 上 —— 理由见上面极简模式那段 -->
             <template v-if="visibleMails.length">

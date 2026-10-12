@@ -31,7 +31,7 @@ import {
  * 主题由 `mount-app.ts` 里的 `ConfigProvider` 注入。这里只写「antd 没提供的东西」
  * 的样式：360×480 的窗口骨架、列表自身的滚动。
  */
-const { mails, loading, justCopied, copyCode, setRead, dismiss, trash, markAllRead } = useMails(200)
+const { mails, loading, loadFailed, justCopied, copyCode, setRead, dismiss, trash, markAllRead, reload } = useMails(200)
 const { app, ai, reload: reloadSettings } = useSettings()
 const uiMessage = useAppMessage()
 
@@ -211,6 +211,18 @@ function onOpen(mail: Mail) {
 
       <div class="list">
         <a-spin v-if="loading" class="loading" size="small" />
+        <!--
+          ⚠ 失败态必须排在空态**前面**：`send` 失败返回的是空列表兜底值，
+            只判 `!codeMails.length` 的话会告诉用户「还没有收到邮件」——
+            而他可能刚收到一封验证码。这是界面在陈述假事实，不是缺个提示。
+        -->
+        <EmptyState
+          v-else-if="loadFailed"
+          :text="t('mail.loadFailed')"
+          :hint="t('mail.loadFailedHint')"
+          :action-text="t('common.retry')"
+          @action="reload"
+        />
         <EmptyState v-else-if="!codeMails.length" :text="t('popup.codeEmpty')" />
         <!--
           ⚠ `v-if` 放在**外层 `<template>`** 上，而不是与 `v-for` 写在同一元素上。
@@ -268,6 +280,14 @@ function onOpen(mail: Mail) {
 
           <div class="list">
             <a-spin v-if="loading" class="loading" size="small" />
+            <!-- 失败态排在空态前面 —— 理由见极简模式那段 -->
+            <EmptyState
+              v-else-if="loadFailed"
+              :text="t('mail.loadFailed')"
+              :hint="t('mail.loadFailedHint')"
+              :action-text="t('common.retry')"
+              @action="reload"
+            />
             <EmptyState v-else-if="!visibleMails.length" :text="t(tabEmptyKey(activeTab))" />
             <!-- `v-if` 放在外层 `<template>` 上 —— 理由见上面极简模式那段 -->
             <template v-if="visibleMails.length">

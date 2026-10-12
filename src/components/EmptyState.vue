@@ -12,9 +12,12 @@
  */
 withDefaults(defineProps<{
   text: string
+  /** 补充说明（第二行小字）。用来区分「真的没有」和「没读到」这类需要解释的情况 */
+  hint?: string
   /** 可选的行动按钮 */
   actionText?: string
 }>(), {
+  hint: '',
   actionText: '',
 })
 
@@ -23,7 +26,16 @@ const emit = defineEmits<{ action: [] }>()
 
 <template>
   <div class="empty">
-    <a-empty :description="text" />
+    <a-empty :description="text">
+      <template v-if="hint" #description>
+        <p class="title">
+          {{ text }}
+        </p>
+        <p class="hint">
+          {{ hint }}
+        </p>
+      </template>
+    </a-empty>
     <a-button v-if="actionText" size="small" @click="emit('action')">
       {{ actionText }}
     </a-button>
@@ -48,5 +60,15 @@ const emit = defineEmits<{ action: [] }>()
 .empty :deep(.ant-empty-description) {
   font-size: 12px;
   color: var(--mp-text-faint);
+}
+
+.title {
+  margin: 0;
+}
+
+.hint {
+  margin: 2px 0 0;
+  font-size: 11px;
+  opacity: 0.8;
 }
 </style>
