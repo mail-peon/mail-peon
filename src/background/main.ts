@@ -31,7 +31,7 @@ import {
   trashMail,
 } from '~/logic/store/mails'
 import { ensureStoreReady, resetStoreReadyForTests } from '~/logic/store/ready'
-import { countRules, deleteRule, listRules, moveRule, upsertRule } from '~/logic/store/rules'
+import { deleteRule, listRules, moveRule, upsertRule } from '~/logic/store/rules'
 import { patchAiSettings, patchAppSettings, readAiSettings, readAppSettings } from '~/logic/store/settings'
 import { deleteDb } from '~/platform/idb/database'
 import { createSingleFlight } from '~/platform/single-flight'
@@ -780,26 +780,29 @@ onMessage('settings:set-ai', async ({ data }) => {
   return { ai }
 })
 
+/**
+ * 存储用量（通用页）。
+ *
+ * ⚠ 这个 handler 曾经返回 5 个字段：`usage` / `retention` / `accountCount` /
+ *   `rules` / `lastSyncedAt` —— 而界面**只读 `usage` 和 `retention`**：
+ *
+ *     - `accountCount` → 界面用的是自己那份 `accounts.length`（本来就有）；
+ *     - `rules` / `lastSyncedAt` → 全项目无人读。
+ *
+ *   代价不只是几个字段：为了它们每次调用都要多跑 `listAccounts()` 和
+ *   `countRules()` 两次 IndexedDB 查询，而那是个**每次打开通用页都会跑**的路径。
+ *
+ *   现在只返回真正被用的两个。要加字段请先确认有调用方 ——
+ *   `shim.d.ts` 的 `ProtocolMap` 里同步改。
+ */
 onMessage('settings:usage', async () => {
   await ensureStoreReady()
-  const [usage, app, accounts, rules] = await Promise.all([
-    estimateStorageUsage(),
-    readAppSettings(),
-    listAccounts(),
-    countRules(),
-  ])
+  const [usage, app] = await Promise.all([estimateStorageUsage(), readAppSettings()])
 
   return {
     usage,
     // 极简模式的实际上限是写死的 50，UI 要显示真实值而不是用户配置里的那个
     retention: app.minimalMode ? (50 as const) : app.mailRetention,
-    accountCount: accounts.length,
-    rules,
-    lastSyncedAt: accounts.reduce<number | undefined>(
-      (latest, account) =>
-        account.lastSyncedAt && (!latest || account.lastSyncedAt > latest) ? account.lastSyncedAt : latest,
-      undefined,
-    ),
   }
 })
 

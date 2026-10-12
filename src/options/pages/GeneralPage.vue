@@ -182,7 +182,19 @@ function startSyncWatchdog(startedAt: number): () => void {
 let stopWatchdog: (() => void) | null = null
 
 const minimalMode = computed(() => app.value?.minimalMode ?? true)
-const retention = computed(() => (minimalMode.value ? 50 : (app.value?.mailRetention ?? 100)))
+
+/**
+ * 用量文字里要显示的**实际上限**，由后台给（`settings:usage` 的 `retention`）。
+ *
+ * ⚠ 以前这里是本地算的：`minimalMode ? 50 : app.mailRetention` ——
+ *   而「极简模式的实际上限是写死的 50」这条规则**后台也写了一遍**
+ *   （见 `background/main.ts` 的 `settings:usage`，它还特意注释说
+ *   「UI 要显示真实值而不是用户配置里的那个」）。
+ *
+ *   同一件事写在两处就会漂：改一处忘另一处，界面显示的上限和实际生效的对不上，
+ *   而用户唯一的判断依据就是这个数字。所以以**后台给的为准**。
+ */
+const retentionLimit = ref<number | 'unlimited'>(100)
 
 const usage = ref<{ count: number, bytesApprox: number } | null>(null)
 const codeCount = ref(0)
@@ -241,11 +253,25 @@ onUnmounted(() => {
 })
 
 async function reloadUsage() {
-  const result = await send<{ usage: StorageUsage } | null>('settings:usage', undefined, null)
+  /*
+   * ⚠ 显式写出真正会读的字段。
+   *
+   *   这里以前写的是 `send<{ usage: StorageUsage } | null>(…)` —— 一个**比实际载荷窄**
+   *   的类型。后果是编译器（以及读代码的人）都不会提醒你「后台还给了 retention」，
+   *   于是那个字段被白白算出来、送过来、然后丢掉。
+   */
+  const result = await send<{ usage: StorageUsage, retention: number | 'unlimited' } | null>(
+    'settings:usage',
+    undefined,
+    null,
+  )
   if (!result?.usage)
     return
 
   usage.value = { count: result.usage.count, bytesApprox: result.usage.bytesApprox }
+  // 上限以**后台**为准 —— 理由见 `retentionLimit` 的说明
+  if (result.retention !== undefined)
+    retentionLimit.value = result.retention
   /*
    * ⚠ 极简模式下列表里其实只有含验证码的记录，而 `usage.count` 统计的是**全部**。
    *   两者在极简模式下相等（不含验证码的邮件根本不入库），所以这里直接用同一个数字；
@@ -272,7 +298,7 @@ const usageText = computed(() => {
   const size = formatBytes(usage.value?.bytesApprox ?? 0)
   if (minimalMode.value)
     return t('general.usageUnlimitedText', { count: codeCount.value, size })
-  return t('general.usageText', { count, limit: retention.value, size })
+  return t('general.usageText', { count, limit: retentionLimit.value, size })
 })
 
 /**

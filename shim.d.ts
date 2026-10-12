@@ -123,14 +123,15 @@ declare module 'webext-bridge' {
     'settings:get': ProtocolWithReturn<undefined, { app: AppSettings, ai: AiSettings }>
     'settings:set-app': ProtocolWithReturn<{ patch: Partial<AppSettings> }, { app: AppSettings }>
     'settings:set-ai': ProtocolWithReturn<{ patch: Partial<AiSettings> }, { ai: AiSettings }>
+    /*
+     * ⚠ 只保留**真的有人读**的字段。这里曾经还有 `accountCount` / `rules` /
+     *   `lastSyncedAt`，而界面一个都没用（账号数用的是自己那份 `accounts.length`），
+     *   代价是每次调用多跑两次 IndexedDB 查询。详见 `background/main.ts` 的说明。
+     */
     'settings:usage': ProtocolWithReturn<undefined, {
       usage: StorageUsage
+      /** 极简模式下这是写死的 50 —— 界面要显示**真实生效**的上限 */
       retention: number | 'unlimited'
-      /** 账号数量（`accounts:list` 的完整列表另有通道，这里只给数） */
-      accountCount: number
-      rules: number
-      /** 全部账号里最近一次同步时间（UI 展示「5 分钟前」） */
-      lastSyncedAt?: number
     }>
     'settings:clear-mails': ProtocolWithReturn<undefined, { ok: true, removed: number }>
     'settings:clear-all': ProtocolWithReturn<undefined, { ok: true }>
