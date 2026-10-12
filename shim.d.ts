@@ -157,6 +157,15 @@ declare module 'webext-bridge' {
     }>
 
     // --- 邮箱协议元数据（Options 动态渲染表单） ---
+    /*
+     * ⚠ 这份声明必须和 `MailProviderOptionPayload`（`adapters/mail/registry.ts`）
+     *   以及 `MailProviderField`（`adapters/mail/types.ts`）保持一致。
+     *
+     *   它曾经缺了 `downloadHint` 和字段上的 `presets` —— 于是「类型看着没问题」
+     *   掩盖了运行时**真的**把 `presets` 丢掉的事实（当时 `background/main.ts`
+     *   手抄字段白名单，两处一起错，谁也没发现）。加字段时**三处一起改**：
+     *   types.ts 的源定义 → registry.ts 的载荷 → 这里。
+     */
     'mail:providers': ProtocolWithReturn<undefined, {
       providers: Array<{
         value: string
@@ -164,6 +173,8 @@ declare module 'webext-bridge' {
         hint: string
         availability: 'ready' | 'needs-relay'
         availabilityNote?: string
+        /** 「需要装点东西」的下载入口（IMAP 需要 peon-hall），见 types.ts 的说明 */
+        downloadHint?: { text: string, url: string }
         fields: Array<{
           key: string
           label: string
@@ -171,6 +182,14 @@ declare module 'webext-bridge' {
           placeholder?: string
           required?: boolean
           default?: string | number | boolean
+          /** 仅 `type: 'text'`：把字段渲染成可挑可填的下拉 */
+          presets?: Array<{
+            label: string
+            value: string
+            note?: string
+            port?: number
+            tls?: boolean
+          }>
         }>
       }>
     }>

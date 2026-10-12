@@ -1,6 +1,5 @@
 <script setup lang="ts">
 import type { AccountBusyKind, AccountProbeResult, AccountStatus } from './accounts-status'
-import type { ProviderPreset } from '~/adapters/mail/types'
 import type { MailAccount, SyncCursor } from '~/logic/types'
 import { computed, onMounted, ref } from 'vue'
 import ConfirmDialog from '~/components/ConfirmDialog.vue'
@@ -54,6 +53,16 @@ const { accounts, reload, save, remove, test, resetCursor, authorizeGmail } = us
 
 const providers = ref<ProviderOption[]>([])
 const editing = ref<MailAccount | null>(null)
+
+/**
+ * 哪些「带预设的 host 字段」当前处于**自定义模式**（下拉选中了「自定义…」）。
+ *
+ * 为什么需要这个显式的状态、而不是从 `config[key]` 推：
+ *   选「自定义」时 host 还是空的，而「还没选」时 host 也是空的 ——
+ *   两者在数据上一模一样，推不出来。没有它的话，用户一点「自定义」，
+ *   输入框会立刻又消失（因为 host 仍为空，看着就像没选）。
+ */
+const customHostFields = ref<Record<string, boolean>>({})
 
 /**
  * 最近一次「测试连接」的结果（**只有这一个操作会写它**）。
@@ -221,6 +230,7 @@ function describeError(error: unknown): string {
 function openEditor(account: MailAccount) {
   pageError.value = ''
   editing.value = { ...account }
+  syncCustomHostFields(editing.value)
   void probeClipboard()
 }
 
@@ -244,6 +254,7 @@ function newAccount() {
     createdAt: Date.now(),
     cursor: null,
   }
+  syncCustomHostFields(editing.value)
   void probeClipboard()
 }
 
@@ -269,6 +280,8 @@ function onProviderChange(value: unknown) {
    */
   editing.value.provider = String(value)
   editing.value.config = { ...defaultConfigFor(provider), ...editing.value.config }
+  // 换了协议就换了一批字段（预设也可能不同），自定义模式要重新判定
+  syncCustomHostFields(editing.value)
 }
 
 function setField(key: string, value: unknown) {
@@ -279,25 +292,98 @@ function setField(key: string, value: unknown) {
 }
 
 /**
- * 选 IMAP 预设时回填 host / port / tls 三字段。
+ * 「自定义…」在下拉里的哨兵值。
  *
- * ⚠️ `setField` 不直接接预设：port/tls 是预设独有的字段（其它字段不挂），
- *    强行让所有 setField 都接受 preset 形参反而把通用字段复杂化。
- *    这条函数只处理「选预设」这一种来源，逻辑写在一处、清楚。
- *
- * 参数 `preset = null` 代表「键入了非预设的字符串」（a-auto-complete 在键入新值时
- * 也会触发 select —— payload 是 string 而非对象）；这种情况只写 host，
- * 不动 port/tls，让用户自己继续输入/调整。
+ * host 是域名/地址，不可能等于这个值，所以用它当哨兵是安全的。
  */
-function onPresetSelect(hostKey: string, preset: { value: string, port?: number, tls?: boolean } | null): void {
-  if (!editing.value || !preset)
+const CUSTOM_HOST = '__custom__'
+
+/** 这个带预设的 host 字段现在是不是「自己填」模式 */
+function isCustomHost(key: string): boolean {
+  return customHostFields.value[key] === true
+}
+
+/** 下拉当前应显示的值：预设值 / 「自定义…」 / undefined（还没选） */
+function hostSelectValue(key: string): string | undefined {
+  if (isCustomHost(key))
+    return CUSTOM_HOST
+  const value = fieldValue(key)
+  return value === '' ? undefined : value
+}
+
+/**
+ * 下拉选项 = 各家预设 + 末尾一条「自定义…」。
+ *
+ * ⚠ 这里只放 `value` / `label`，**不放 `note`**。antd 会把 option 对象上的额外字段
+ *   原样铺到选项 DOM 上，`note` 会变成一个 `note="需用授权码"` 属性漏在页面上
+ *   （之前放过 `payload` 对象，渲染出 `payload="[object Object]"`）。
+ *   `note` 由 `presetNote()` 按 value 反查 —— 反查一次很便宜，DOM 干净。
+ */
+function hostSelectOptions(field: ProviderOption['fields'][number]) {
+  return [
+    ...(field.presets ?? []).map(preset => ({ value: preset.value, label: preset.label })),
+    { value: CUSTOM_HOST, label: '自定义…' },
+  ]
+}
+
+/** 选项副标题：按 value 回预设里查 —— 见 `hostSelectOptions` 里为什么不直接塞进 option */
+function presetNote(field: ProviderOption['fields'][number], value: string): string | undefined {
+  return field.presets?.find(preset => preset.value === value)?.note
+}
+
+/**
+ * 选下拉时：挑预设就回填 host / port / tls（三件一起改，见下）；
+ * 挑「自定义…」就切到输入框。
+ *
+ * ⚠️ 为什么 host / port / tls **一起**改：只写 host 的话，用户从 993 的邮箱切到
+ *    另一家非 993 的，端口还留着旧值，点「测试连接」报一个看不懂的错。
+ *    `preset.port` / `preset.tls` 缺失时**不动**对应字段（预设可以只想覆盖 host）。
+ */
+function onHostSelect(key: string, value: string): void {
+  if (!editing.value)
     return
   const config = editing.value.config as Record<string, unknown>
-  config[hostKey] = preset.value
+
+  if (value === CUSTOM_HOST) {
+    customHostFields.value[key] = true
+    // 清掉上一家的地址，让输入框空着等用户填 —— 留着一个不相干的域名更容易误提交
+    config[key] = ''
+    return
+  }
+
+  customHostFields.value[key] = false
+  config[key] = value
+
+  const field = currentProvider.value?.fields.find(item => String(item.key) === key)
+  const preset = field?.presets?.find(item => item.value === value)
+  if (!preset)
+    return
+
   if (typeof preset.port === 'number')
     config.port = preset.port
   if (typeof preset.tls === 'boolean')
     config.tls = preset.tls
+}
+
+/**
+ * 按账号当前配置，重新判定每个带预设的 host 字段是不是「自定义」。
+ *
+ * 打开已有账号时用：比如用户之前手填了 `mail.corporate.internal`，
+ * 那不匹配任何预设，下拉就该显示「自定义…」并且把输入框亮出来，
+ * 而不是显示成「没选」让用户以为配置丢了。
+ */
+function syncCustomHostFields(account: MailAccount | null): void {
+  const provider = providers.value.find(item => item.value === account?.provider)
+  const next: Record<string, boolean> = {}
+
+  for (const field of provider?.fields ?? []) {
+    if (!field.presets?.length)
+      continue
+    const current = String((account?.config as Record<string, unknown> | undefined)?.[field.key] ?? '')
+    next[field.key] = current !== '' && !field.presets.some(preset => preset.value === current)
+  }
+
+  customHostFields.value = next
 }
 
 function fieldValue(key: string): string {
@@ -782,43 +868,43 @@ const formTitle = computed(() =>
 
           <a-form-item v-else-if="field.presets" :label="field.label" :required="field.required">
             <!--
-              下拉 + 输入：用户可挑预设，也可继续输入自定义值。
-              选预设时 `onPresetSelect` 同时回填 host / port / tls —— 用户看到 host
-              改了，端口与加密一并对齐，不会「改了 host 但忘了改 port」。
+              下拉挑常用服务器，最后一条「自定义…」切出输入框自己填。
 
-              ⚠ antd 的 `@select` 事件签名是 `(value, option)`（vc-select 内部约定）：
-              - value 是当前 host 字符串
-              - option 是整条 preset 对象（含我们塞进去的 `payload` 字段）
-              键入非预设值时也会触发 select —— 第二个参数是 undefined。
+              ⚠ 为什么不用 `a-auto-complete`（下拉 + 自由输入是一个控件）：
+                它对用户是「看起来就是个普通输入框」，不点不知道有列表；
+                而且「已选的是预设还是自己填的」在数据上分不出来
+                （都只是 host 字符串），回显已有账号时会显示成空白。
+                拆成 select + 条件输入框，两种状态各自明确。
+
+              ⚠ 选预设时 `onHostSelect` 会把 host / port / tls **一起**回填 ——
+                用户看到 host 变了，端口与加密一并对齐，不会「改了 host 忘了改 port」。
             -->
-            <a-auto-complete
-              :value="fieldValue(field.key)"
-              :placeholder="field.placeholder"
-              spellcheck="false"
-              :options="(field.presets ?? []).map(p => ({
-                value: p.value,
-                label: p.label,
-                note: p.note,
-                // 把整条 preset 放进自定义字段，select 事件原样拿回来
-                payload: p,
-              }))"
-              @select="(_value: string, option?: { payload?: ProviderPreset }) => {
-                onPresetSelect(field.key, option?.payload ?? null)
-              }"
-              @update:value="(value: string) => setField(field.key, value)"
-            >
-              <!--
-                自定义选项内容：主行是邮箱名，副行是避坑提示
-                （「需用授权码，不是登录密码」这种 —— 不写出来用户一定会踩）。
-                antd 的 `#option` 插槽收到的是 options 里那一整条对象。
-              -->
-              <template #option="item">
-                <div class="preset-option">
-                  <span class="preset-option__label">{{ item.label }}</span>
-                  <span v-if="item.note" class="preset-option__note">{{ item.note }}</span>
-                </div>
-              </template>
-            </a-auto-complete>
+            <div class="host-field">
+              <a-select
+                :value="hostSelectValue(field.key)"
+                :placeholder="field.placeholder ?? '请选择'"
+                :options="hostSelectOptions(field)"
+                @change="(value: string) => onHostSelect(field.key, value)"
+              >
+                <!-- 副标题（「需用授权码」这类避坑提示）按 value 反查，见 presetNote -->
+                <template #option="item">
+                  <div class="preset-option">
+                    <span class="preset-option__label">{{ item.label }}</span>
+                    <span v-if="presetNote(field, item.value)" class="preset-option__note">
+                      {{ presetNote(field, item.value) }}
+                    </span>
+                  </div>
+                </template>
+              </a-select>
+
+              <a-input
+                v-if="isCustomHost(field.key)"
+                :value="fieldValue(field.key)"
+                placeholder="mail.example.com"
+                spellcheck="false"
+                @update:value="(value: string) => setField(field.key, value)"
+              />
+            </div>
           </a-form-item>
 
           <a-form-item v-else :label="field.label" :required="field.required">
@@ -1012,6 +1098,17 @@ const formTitle = computed(() =>
 .preset-option__note {
   color: var(--mp-text-faint);
   font-size: 11px;
+}
+
+/*
+ * 预设下拉 + 自定义输入框竖排。
+ * 选了「自定义…」时输入框出现在下拉**下面** —— 而不是替换掉下拉，
+ * 这样用户还能直接改主意换回某家预设，不用先清空。
+ */
+.host-field {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
 }
 
 .actions {

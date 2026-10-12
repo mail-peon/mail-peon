@@ -596,27 +596,27 @@ describe('iMAP host 预设下拉', () => {
     return vm.editing?.config ?? {}
   }
 
+  /**
+   * 取 host 字段那个下拉。
+   *
+   * ⚠️ 不能直接 `wrapper.findComponent({ name: 'ASelect' })` —— 表单里「协议」
+   *   也是 `a-select`，那样拿到的是第一个（协议），emit 出来的 change 走的是
+   *   `onProviderChange`，被测的东西整个跑偏。限定在 `.host-field` 里找才唯一。
+   */
+  function hostSelect(wrapper: ReturnType<typeof mount>) {
+    return wrapper.find('.host-field').findComponent({ name: 'ASelect' })
+  }
+
   it('选中「QQ 邮箱」预设 → host / port / tls 三字段一并回填', async () => {
     const wrapper = await mountPage()
     await button(wrapper, '新增账号').trigger('click')
     await flush()
 
-    const autoComplete = wrapper.findComponent({ name: 'AAutoComplete' })
-    expect(autoComplete.exists()).toBe(true)
+    const select = hostSelect(wrapper)
+    expect(select.exists()).toBe(true)
 
-    // 模拟选中预设 —— antd 的 `@select` 签名是 `(value, option)`，option 里带
-    // 我们塞进去的 `payload`（整条 preset）
-    autoComplete.vm.$emit('select', 'imap.qq.com', {
-      value: 'imap.qq.com',
-      label: 'QQ 邮箱',
-      payload: {
-        label: 'QQ 邮箱',
-        value: 'imap.qq.com',
-        port: 993,
-        tls: true,
-        note: '需用授权码，不是登录密码',
-      },
-    })
+    // 模拟用户在下拉里挑中 QQ 邮箱
+    select.vm.$emit('change', 'imap.qq.com')
     await flush()
 
     // 三个字段**一并**回填 —— 只填 host 是常见 bug
@@ -627,7 +627,118 @@ describe('iMAP host 预设下拉', () => {
     wrapper.unmount()
   })
 
-  it('选预设没带 port / tls → 沿用表单当前值（不强写）', async () => {
+  it('下拉最后一条是「自定义…」—— 选了才出现输入框', async () => {
+    const wrapper = await mountPage()
+    await button(wrapper, '新增账号').trigger('click')
+    await flush()
+
+    const select = hostSelect(wrapper)
+    const options = select.props('options') as Array<{ value: string, label: string }>
+
+    // 预设在前、「自定义…」在最后
+    expect(options.at(-1)).toEqual({ value: '__custom__', label: '自定义…' })
+    expect(options.length).toBeGreaterThan(1)
+
+    // 下拉里**不含** note —— 见 hostSelectOptions 的说明（antd 会把额外字段铺到 DOM）
+    for (const option of options)
+      expect(Object.keys(option).sort()).toEqual(['label', 'value'])
+
+    // 还没选「自定义」时，输入框不出现
+    expect(wrapper.find('.host-field input[placeholder="mail.example.com"]').exists()).toBe(false)
+
+    // 选了「自定义…」→ 出现输入框，且 host 被清空等用户填
+    select.vm.$emit('change', '__custom__')
+    await flush()
+    expect(wrapper.find('.host-field input[placeholder="mail.example.com"]').exists()).toBe(true)
+    expect(editingConfig(wrapper).host).toBe('')
+
+    wrapper.unmount()
+  })
+
+  it('「自定义」输入框里填的值会写进 host —— 且不动 port / tls', async () => {
+    const wrapper = await mountPage()
+    await button(wrapper, '新增账号').trigger('click')
+    await flush()
+
+    const select = hostSelect(wrapper)
+    select.vm.$emit('change', '__custom__')
+    await flush()
+
+    const input = wrapper.find('.host-field input[placeholder="mail.example.com"]')
+    await input.setValue('mail.corporate.internal')
+    await flush()
+
+    expect(editingConfig(wrapper).host).toBe('mail.corporate.internal')
+    // port / tls 保持默认，不被自定义输入改写
+    expect(editingConfig(wrapper).port).toBe(993)
+    expect(editingConfig(wrapper).tls).toBe(true)
+
+    wrapper.unmount()
+  })
+
+  it('从「自定义」切回预设 → 输入框收起，host / port / tls 被预设覆盖', async () => {
+    const wrapper = await mountPage()
+    await button(wrapper, '新增账号').trigger('click')
+    await flush()
+
+    const select = hostSelect(wrapper)
+    select.vm.$emit('change', '__custom__')
+    await flush()
+    await wrapper.find('.host-field input[placeholder="mail.example.com"]').setValue('mail.corporate.internal')
+    await flush()
+
+    select.vm.$emit('change', 'imap.163.com')
+    await flush()
+
+    expect(wrapper.find('.host-field input[placeholder="mail.example.com"]').exists()).toBe(false)
+    expect(editingConfig(wrapper).host).toBe('imap.163.com')
+    expect(editingConfig(wrapper).port).toBe(993)
+    expect(editingConfig(wrapper).tls).toBe(true)
+
+    wrapper.unmount()
+  })
+
+  it('打开一个 host 不在预设里的账号 → 下拉显示「自定义…」并亮出输入框', async () => {
+    // 这是回显的关键：数据上 host 只是个字符串，「是预设还是自己填的」推不出来，
+    // 靠 syncCustomHostFields 反查。查错的话用户会以为自己的配置丢了。
+    mocks.accounts = ref([account({ config: {
+      host: 'mail.corporate.internal',
+      port: 993,
+      user: 'me@example.com',
+      pass: 'x',
+      relayUrl: 'ws://127.0.0.1:41316/',
+    } })])
+
+    const wrapper = await mountPage()
+    await button(wrapper, '编辑').trigger('click')
+    await flush()
+
+    const select = hostSelect(wrapper)
+    expect(select.props('value')).toBe('__custom__')
+    // 输入框出现，且带着已保存的值
+    const input = wrapper.find('.host-field input[placeholder="mail.example.com"]')
+    expect(input.exists()).toBe(true)
+    expect((input.element as HTMLInputElement).value).toBe('mail.corporate.internal')
+
+    wrapper.unmount()
+  })
+
+  it('打开一个 host 命中预设的账号 → 下拉回显那一条，输入框不出现', async () => {
+    // 默认 account() 的 host 就是 imap.qq.com，正好在预设里
+    mocks.accounts = ref([account()])
+
+    const wrapper = await mountPage()
+    await button(wrapper, '编辑').trigger('click')
+    await flush()
+
+    const select = hostSelect(wrapper)
+    expect(select.props('value')).toBe('imap.qq.com')
+    expect(wrapper.find('.host-field input[placeholder="mail.example.com"]').exists()).toBe(false)
+
+    wrapper.unmount()
+  })
+
+  it('预设没带 port / tls → 沿用表单当前值（不强写）', async () => {
     // 这条 preset 只有 host + tls，**没有 port** —— 验证「字段缺失 = 不动」
     mocks.providerOverride = {
       providers: [{
@@ -638,7 +749,7 @@ describe('iMAP host 预设下拉', () => {
             label: 'IMAP 服务器',
             type: 'text',
             required: true,
-            presets: [{ label: '自定义主机', value: 'mail.example.com', tls: true }],
+            presets: [{ label: '只有 TLS 的主机', value: 'mail.example.com', tls: true }],
           },
           { key: 'port', label: '端口', type: 'number', default: 993 },
           { key: 'tls', label: '使用 TLS', type: 'toggle', default: true },
@@ -651,13 +762,7 @@ describe('iMAP host 预设下拉', () => {
     await button(wrapper, '新增账号').trigger('click')
     await flush()
 
-    const autoComplete = wrapper.findComponent({ name: 'AAutoComplete' })
-    autoComplete.vm.$emit('select', 'mail.example.com', {
-      value: 'mail.example.com',
-      label: '自定义主机',
-      // 注意：没有 port
-      payload: { label: '自定义主机', value: 'mail.example.com', tls: true },
-    })
+    hostSelect(wrapper).vm.$emit('change', 'mail.example.com')
     await flush()
 
     expect(editingConfig(wrapper).host).toBe('mail.example.com')
@@ -668,52 +773,15 @@ describe('iMAP host 预设下拉', () => {
     wrapper.unmount()
   })
 
-  it('自定义输入（非预设）也能保存 —— 不会触发回填副作用', async () => {
+  it('下拉列出预设清单，且每条带 value（host）—— 用户能挑', async () => {
     const wrapper = await mountPage()
     await button(wrapper, '新增账号').trigger('click')
     await flush()
 
-    const autoComplete = wrapper.findComponent({ name: 'AAutoComplete' })
-    // 用户键入了不在预设里的值 —— a-auto-complete 这时发 `update:value`，
-    // 而 select 的第二参数（option）是 undefined
-    autoComplete.vm.$emit('update:value', 'mail.corporate.internal')
-    await flush()
-
-    expect(editingConfig(wrapper).host).toBe('mail.corporate.internal')
-    // port / tls 不被改写
-    expect(editingConfig(wrapper).port).toBe(993)
-    expect(editingConfig(wrapper).tls).toBe(true)
-
-    wrapper.unmount()
-  })
-
-  it('select 事件缺少 option（键入非预设值）→ 只写 host，不动 port / tls', async () => {
-    const wrapper = await mountPage()
-    await button(wrapper, '新增账号').trigger('click')
-    await flush()
-
-    const autoComplete = wrapper.findComponent({ name: 'AAutoComplete' })
-    // antd 在「键入新值并回车」时也会发 select，但 option 是 undefined
-    autoComplete.vm.$emit('select', 'typed.example.com', undefined)
-    await flush()
-
-    // 不崩，且 port / tls 保持默认（host 由 update:value 负责写，不在这里写）
-    expect(editingConfig(wrapper).port).toBe(993)
-    expect(editingConfig(wrapper).tls).toBe(true)
-
-    wrapper.unmount()
-  })
-
-  it('下拉里给出预设清单，且每条带 value（host）—— 用户能挑', async () => {
-    const wrapper = await mountPage()
-    await button(wrapper, '新增账号').trigger('click')
-    await flush()
-
-    const autoComplete = wrapper.findComponent({ name: 'AAutoComplete' })
-    const options = autoComplete.props('options') as Array<{ value: string, label: string, note?: string }>
+    const options = hostSelect(wrapper).props('options') as Array<{ value: string, label: string }>
+    const values = options.map(o => o.value)
 
     // 至少覆盖用户点名的 QQ / 网易
-    const values = options.map(o => o.value)
     expect(values).toContain('imap.qq.com')
     expect(values).toContain('imap.163.com')
 
@@ -723,9 +791,11 @@ describe('iMAP host 预设下拉', () => {
       expect(option.label).toBeTruthy()
     }
 
-    // 避坑提示确实带上了（QQ 那条）
+    // 避坑提示确实渲染在选项里（QQ 那条带「授权码」）
     const qq = options.find(o => o.value === 'imap.qq.com')
-    expect(qq?.note).toContain('授权码')
+    expect(qq).toBeDefined()
+    // note 不进 options（避免漏成 DOM 属性），由 presetNote 按 value 反查
+    expect('note' in qq!).toBe(false)
 
     wrapper.unmount()
   })
