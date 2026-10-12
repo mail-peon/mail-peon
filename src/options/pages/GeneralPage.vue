@@ -199,11 +199,19 @@ const retentionLimit = ref<number | 'unlimited'>(100)
 const usage = ref<{ count: number, bytesApprox: number } | null>(null)
 const codeCount = ref(0)
 
+/**
+ * 「默认打开哪个 tab」的下拉选项。
+ *
+ * ⚠ 文案走 `strings.ts` 里已有的那四个键（`popup.tabXxx`），**不再各写一遍** ——
+ *   这里曾经硬编码着「重要 / 全部 / 验证码 / 营销」，而同一个东西在
+ *   `logic/strings.ts` 里还有一份。两份文案迟早会漂（改了一处、另一处还是旧的，
+ *   同一个 tab 在弹窗里和设置里叫两个名字）。
+ */
 const POPUP_TABS: Array<{ value: PopupTab, label: string }> = [
-  { value: 'important', label: '重要' },
-  { value: 'all', label: '全部' },
-  { value: 'code', label: '验证码' },
-  { value: 'ad', label: '营销' },
+  { value: 'important', label: t('popup.tabImportant') },
+  { value: 'all', label: t('popup.tabAll') },
+  { value: 'code', label: t('popup.tabCode') },
+  { value: 'ad', label: t('popup.tabAd') },
 ]
 
 /**

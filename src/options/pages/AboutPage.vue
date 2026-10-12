@@ -12,8 +12,8 @@ import { t } from '~/logic/strings'
  *   — 别的不安全过、不堆按钮、不画 alert。安全细节在 IMAP 配账号时再看。
  */
 const MODES: Array<{ name: string, desc: string }> = [
-  { name: '极简模式', desc: 'modeMinimalDesc' },
-  { name: '完整模式', desc: 'modeFullDesc' },
+  { name: t('about.modeMinimal'), desc: 'modeMinimalDesc' },
+  { name: t('about.modeFull'), desc: 'modeFullDesc' },
 ]
 
 /**

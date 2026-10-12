@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { nextTick, onUnmounted, ref, watch } from 'vue'
+import { computed, nextTick, onUnmounted, ref, watch } from 'vue'
+import { t } from '~/logic/strings'
 
 /**
  * 确认弹窗（基于 antd 的 `Modal`）。
@@ -44,8 +45,15 @@ const props = withDefaults(defineProps<{
   danger?: boolean
 }>(), {
   message: '',
-  confirmText: '确定',
-  cancelText: '取消',
+  /*
+   * ⚠ 默认文案走 `strings.ts`（`common.confirm` / `common.cancel`）而不是写死 ——
+   *   那两个键本来就在，这里再抄一份意味着「确定」这个词在两个地方各有一份，
+   *   将来要改（比如统一成「确认」）就得记得两个都改。
+   *
+   *   `withDefaults` 的默认值是在 setup 里求值的，所以这里能安全地用 `t()`。
+   */
+  confirmText: undefined,
+  cancelText: undefined,
   danger: false,
 })
 
@@ -53,6 +61,9 @@ const emit = defineEmits<{
   confirm: []
   cancel: []
 }>()
+/** 没传就取公共文案 —— 放在这里而不是默认值里，是为了让「传了就用传的」一目了然 */
+const confirmLabel = computed(() => props.confirmText ?? t('common.confirm'))
+const cancelLabel = computed(() => props.cancelText ?? t('common.cancel'))
 
 /**
  * 取消按钮 —— 打开时把焦点放上去（见下面的说明）。
@@ -170,10 +181,10 @@ onUnmounted(() => {
           所以在这里补上（antd 会在动画结束时抢焦点，脚本里的 `onFocusIn` 负责拉回来）。
       -->
       <a-button ref="cancelRef" @click="emit('cancel')">
-        {{ cancelText }}
+        {{ cancelLabel }}
       </a-button>
       <a-button type="primary" :danger="danger" @click="emit('confirm')">
-        {{ confirmText }}
+        {{ confirmLabel }}
       </a-button>
     </div>
   </a-modal>

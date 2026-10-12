@@ -878,7 +878,7 @@ const formTitle = computed(() =>
         </a-form-item>
 
         <a-form-item data-field-key="email" :label="t('accounts.email')">
-          <a-input v-model:value="editing.email" placeholder="me@example.com" type="email" />
+          <a-input v-model:value="editing.email" :placeholder="t('accounts.emailPlaceholder')" type="email" />
         </a-form-item>
 
         <a-form-item data-field-key="provider" :label="t('accounts.provider')" :help="currentProvider?.hint">
