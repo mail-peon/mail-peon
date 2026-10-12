@@ -346,6 +346,12 @@ async function rebuildWatchChannels(): Promise<void> {
         // 中继说重试无用（密码错 / 白名单拒绝）—— 记进账号状态，让 UI 能显示
         console.warn(`[mail-peon] 中继拒绝监听 ${account.label}：${event.error}`)
         void markAccountError(account.id, event.error)
+        return
+      }
+
+      if (event.state === 'error') {
+        // 中继说本轮失败但还在退避重试——可观测，不打断 sync 调度
+        console.warn(`[mail-peon] 中继监听 ${account.label} 本轮出错：${event.error}`)
       }
     }))
 

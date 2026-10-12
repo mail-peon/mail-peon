@@ -296,6 +296,12 @@ describe('openWatchChannel', () => {
     expect(events[0]).toMatchObject({ state: 'reconnecting', retryInMs: 2000 })
   })
 
+  it('error 状态传给回调（中继说本轮失败会重试）', () => {
+    const { socket, events } = open()
+    socket.push({ type: 'state', state: 'error', error: 'IMAP 连接超时' })
+    expect(events[0]).toMatchObject({ state: 'error', error: 'IMAP 连接超时' })
+  })
+
   it('中继说 failed（启动失败）→ 传给回调', () => {
     const { socket, events } = open()
     socket.push({ type: 'state', state: 'failed', error: 'watch 请求缺少 user / pass' })

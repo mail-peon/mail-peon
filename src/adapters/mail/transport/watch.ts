@@ -27,6 +27,8 @@ export type WatchEvent
   = | { type: 'state', state: 'watching', exists: number }
   /** 连接断了，正在退避重连 */
     | { type: 'state', state: 'reconnecting', retryInMs: number }
+  /** 本轮出错但还会重试（诊断信号，UI 通常记 debug 日志即可） */
+    | { type: 'state', state: 'error', error: string }
   /** 放弃重连（配置 / 凭据问题），需要用户处理 */
     | { type: 'state', state: 'failed', error: string, fatal: true }
   /** 有 `exists` 封邮件（比上次多） */
@@ -184,6 +186,15 @@ export function openWatchChannel(
 
         if (state === 'reconnecting') {
           onEvent({ type: 'state', state: 'reconnecting', retryInMs: Number(message.retryInMs ?? 0) })
+          return
+        }
+
+        if (state === 'error') {
+          /*
+           * 中继说「这轮失败，但会重试」—— 可观测用，不影响重连逻辑。
+           * 扩展当前只在 `main.ts` 记 debug 日志，不打断 sync 调度。
+           */
+          onEvent({ type: 'state', state: 'error', error: String(message.error ?? '未知原因') })
           return
         }
 
