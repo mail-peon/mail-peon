@@ -74,24 +74,26 @@ const visibleMails = computed(() =>
 const codeMails = computed(() => minimalModeMails(mails.value))
 
 /**
- * 诊断输出：**Popup 实际收到了什么**。
+ * 诊断输出：**库里有记录，当前视图却一条都没有**。
  *
- * ⚠ 这几行是为了分清一类很具体的情况：background 那边一切正常
- *   （日志显示抓取 + 入库都成功），而 Popup 里是空的。两者之间的唯一环节是
- *   `useMails()` 的 `mail:list` 消息 —— 它可能因为 SW 休眠、消息超时、
- *   或过滤条件而返回空。
+ * ⚠ 只在「有数据但渲染为 0」时才打。这才是需要解释的情况：数据确实到了 Popup
+ *   （`mail:list` 通了），只是被模式 / tab 过滤掉了。
  *
- *   没有这几行的话，「background 有数据、Popup 没有」只能靠猜。
- *   带 `activeTab` 是因为极简模式只渲染 `codeMails`、完整模式只渲染
- *   当前 tab 的 `visibleMails` —— 分清「没数据」与「数据被过滤掉了」很重要。
+ *   正常打开 Popup（包括一条记录都没有）不写日志 —— 那是常态，不是线索，
+ *   每次打开都刷一行「收到 0 条记录」只会把真正的异常淹掉。
  */
 watch([mails, activeTab, minimalMode], () => {
-  const detail = minimalMode.value
-    ? `极简模式：含验证码 ${codeMails.value.length} 条`
-    : `完整模式：tab「${activeTab.value}」${visibleMails.value.length} 条`
-  console.warn(`[mail-peon] Popup 收到 ${mails.value.length} 条记录 → ${detail}`)
-  if (mails.value.length && !minimalMode.value)
-    console.warn(`[mail-peon] 各分区计数：${JSON.stringify(counts.value)}`)
+  if (!mails.value.length)
+    return
+
+  const rendered = minimalMode.value ? codeMails.value.length : visibleMails.value.length
+  if (rendered)
+    return
+
+  const where = minimalMode.value
+    ? '极简模式（只渲染含验证码的）'
+    : `完整模式 tab「${activeTab.value}」`
+  console.warn(`[mail-peon] Popup 有 ${mails.value.length} 条记录，但当前视图 0 条：${where}`)
 }, { immediate: true })
 
 function openOptions() {

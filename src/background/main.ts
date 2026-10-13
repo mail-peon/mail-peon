@@ -355,11 +355,16 @@ async function rebuildWatchChannels(): Promise<void> {
         console.warn(`[mail-peon] 中继监听 ${account.label} 本轮出错：${event.error}`)
       }
     }))
-
-    console.warn(`[mail-peon] 已建立监听：${account.label} → ${relayUrl}`)
   }
 
-  console.warn(`[mail-peon] 监听连接重建完成，共 ${watchStops.size} 个账号`)
+  /*
+   * ⚠ 这里**不**打「已建立监听：<账号> → <中继地址>」，也不打重建完成的汇总。
+   *
+   *   重建在 SW 每次冷启动都会跑（`restartWatchChannels` 的四个时机），
+   *   每次都是同样的几行「成功」播报，只能把失败那几行淹掉 ——
+   *   而这一段的诊断价值全在失败路径上（读取账号失败 / 中继拒绝 / 本轮出错），
+   *   连接是否真的活着则由「收到中继推送」那行证明。
+   */
 }
 
 /**

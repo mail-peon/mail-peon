@@ -22,10 +22,8 @@ export interface SyncCycleDeps {
 export async function runSyncCycle(deps: SyncCycleDeps): Promise<SyncSummary[]> {
   const accounts = await listEnabledAccounts()
 
-  if (!accounts.length) {
-    console.warn('[mail-peon] 同步结束：没有启用的账号')
+  if (!accounts.length)
     return []
-  }
 
   const results = await syncAllAccounts(accounts, deps.pipeline, { hooksFor: deps.hooksFor })
 
@@ -34,18 +32,20 @@ export async function runSyncCycle(deps: SyncCycleDeps): Promise<SyncSummary[]> 
   await refreshBadge()
 
   /*
-   * ⚠ 这一行的作用是「分清两种 0」：
+   * ⚠ 只在**这一轮真的碰到了邮件**时才打印。
    *
-   *   - `拉取 0 封` + 这条日志 → 真的没有新邮件（游标已是最新）；
-   *   - 拉到了 N 封、但界面上什么都没有 → 问题在**处理链路**
-   *     （预筛 / AI / 入库），而不是抓取。后面几条日志就是为这种情况准备的。
+   *   兜底定时器每 10 分钟跑一轮，绝大多数轮次是 `拉取 0 封（屏蔽 0，失败 0）`；
+   *   把这种「什么都没发生」的轮次也打出来，只会把真正需要看的几行淹掉。
    *
-   *   没有它的话，「中继日志显示抓到了邮件、界面却是空的」这件事
-   *   在插件侧完全没有线索。
+   *   它要解释的是「拉到了 N 封、界面却是空的」—— 那时问题在**处理链路**
+   *   （预筛 / AI / 入库），而不是抓取，后面几条日志就是为这种情况准备的。
    */
-  console.warn(
-    `[mail-peon] 同步结束：${results.map(r => `${r.accountId} 拉取 ${r.fetched} 封（屏蔽 ${r.blocked}，失败 ${r.failed}）`).join('；') || '无结果'}`,
-  )
+  const touched = results.some(r => r.fetched || r.blocked || r.failed)
+  if (touched) {
+    console.warn(
+      `[mail-peon] 同步结束：${results.map(r => `${r.accountId} 拉取 ${r.fetched} 封（屏蔽 ${r.blocked}，失败 ${r.failed}）`).join('；')}`,
+    )
+  }
 
   return results.map((result, index) => ({
     accountId: result.accountId,
