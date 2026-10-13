@@ -1,7 +1,7 @@
 {
   "name": "mail-peon",
   "displayName": "Mail Peon",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "private": true,
   "packageManager": "pnpm@12.6.0",
   "description": "AI mail assistant in your browser that surfaces the mail that matters and auto-copies verification codes",
