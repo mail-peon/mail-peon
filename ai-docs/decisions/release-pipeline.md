@@ -15,12 +15,21 @@
   └ bumpp：选版本号 → 改 package.json → commit → 打 vX.Y.Z tag → push
       └ GitHub Actions（tag 触发 .github/workflows/release.yaml）
           ├ pnpm install --frozen-lockfile
-          ├ pnpm build → pnpm test → pnpm pack:zip        → extension.zip
+          ├ pnpm build                                     → extension/（含 manifest）
+          ├ pnpm lint → pnpm typecheck → pnpm test → pnpm drift
+          ├ pnpm pack:zip                                  → extension.zip
           ├ changelogithub                                 → 建 GitHub Release
           ├ gh release upload                              → 把 zip 挂上去
           ├ chrome-webstore-upload-cli upload              → 传到商店（草稿）
           └ chrome-webstore-upload-cli publish             → 提交审核
 ```
+
+> ⚠️ 中间那三道闸门（lint / typecheck / test / drift）**任一失败就不打包、不发版** ——
+> offer-hunter 那份没有这几步，是本仓库多出来的（见 § 8）。
+> 其中 `drift` 是唯一查「文档与代码有没有同步」的：它 grep 一份已知过期字符串清单
+> （[`scripts/check-docs-drift.ts`](../../scripts/check-docs-drift.ts)，用 `esno` 跑）。
+> 那个脚本**会跳过自己** —— 规则表里逐字写着那些过期字符串，扫自己必然自命中，
+> 而这个假阳性会卡在打包之前，把整条链路堵死。
 
 **版本号只有一个来源**：`package.json` 的 `version`。`scripts/prepare.ts` 生成
 `extension/manifest.json` 时从这里取值，所以 bumpp 改一处就够，不用手改清单。
@@ -163,6 +172,7 @@ pnpm release      # = bumpp：选版本 → 改 package.json → commit → 打 
 | --- | --- | --- |
 | Firefox / AMO 包 | 有（`pack:firefox` → `extension.xpi`） | **没有**：本仓库还没有 `pack:firefox` 脚本，`pack:xpi` 只是把已建好的 `extension/` 装进 xpi。<br>要加就得先补脚本，并且保持「先打 Chrome → 挪出仓库 → 再打 Firefox」的顺序（`clear` 会删根目录的 `extension.*`） |
 | 测试 | `pnpm test:coverage` | `pnpm test`（本仓库没装 `@vitest/coverage-v8`） |
+| 代码质量闸门 | 无（只有 build + test） | **多三道**：`pnpm lint` / `pnpm typecheck`（vue-tsc，覆盖 `.vue`）/ `pnpm drift` —— 本仓库踩过「测试全绿但类型是错的、文档还写着旧默认值」，所以宁可发版慢一点 |
 | 没配凭据时 | 跳过商店两步 | 一样（`CWS_READY` 标记） |
 
 > 也没有跑 `pnpm pack`：它 = `run-p pack:*`，其中 `pack:crx` 需要根目录的 `key.pem`

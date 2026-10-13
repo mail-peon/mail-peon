@@ -1,4 +1,3 @@
-#!/usr/bin/env node
 /**
  * 「文档漂移」检查 —— 在 CI 里跑，命中就红。
  *
@@ -14,24 +13,25 @@
  *
  * ## 怎么加新规则
  *
- * - **字符串匹配**：在 `STALE_STRINGS` 里加 `{ pattern, reason, since }`。
- *   `pattern` 是要查的字面量；`reason` 是一条人话原因；
- *   `since` 是当初删除这条字符串的版本（找 `git log -S`）。
+ * 在 `STALE_STRINGS` 里加 `{ pattern, reason, since }`：`pattern` 是要查的**字面量**
+ * （走 `String.includes`，不是正则 —— 过期字符串都是具体的值，正则只会让
+ * 「到底在查什么」变得难读，真要正则再加也不迟），`reason` 是一条人话原因，
+ * `since` 是当初删除这条字符串的版本（找 `git log -S`）。
  *
- * - **正则匹配**：传 `pattern: /.../` 形态。**慎用**，跨多语言正则难调试；
- *   优先用「字面」+ 多个独立条目。
+ * ⚠ 规则表**逐字**写着那些过期字符串，所以脚本必须跳过自己（见 `SELF`），
+ *   否则每加一条规则就自命中一次。
  *
  * ## 怎么「豁免」
  *
  * 设计文档解释「为什么这个旧值被淘汰」是合理的（比如 `port-and-discovery.md`
- * § 2 解释为什么不用 8787）—— 这种情况下用注释行 `// allow-historical: <reason>`
+ * § 2 解释为什么淘汰旧端口）—— 这种情况下用注释行 `// allow-historical: <reason>`
  * 标在该行末尾。
  *
  * ## 跑法
  *
  * ```bash
- * node scripts/check-docs-drift.mjs           # 整库扫
- * node scripts/check-docs-drift.mjs path/...   # 扫指定路径
+ * pnpm run drift                              # 整库扫（CI 走这条）
+ * esno scripts/check-docs-drift.ts path/...   # 只扫指定路径
  * ```
  *
  * ## 退出码
@@ -41,12 +41,35 @@
  * - `2`：脚本本身报错
  */
 
+import type { Dirent } from 'node:fs'
 import { readdir, readFile } from 'node:fs/promises'
 import { resolve } from 'node:path'
 import process from 'node:process'
+import { fileURLToPath } from 'node:url'
+
+/** 一条「已知过期字符串」规则。 */
+interface DriftRule {
+  /** 要查的字面量（`String.includes`）。 */
+  pattern: string
+  /** 为什么这个字符串已经不该出现。 */
+  reason: string
+  /** 当初删除这条字符串的版本（找 `git log -S`）。 */
+  since: string
+}
+
+/** 一处命中。 */
+interface DriftFinding {
+  file: string
+  line: number
+  pattern: string
+  reason: string
+  since: string
+  /** 命中那一行的原文（裁剪过），给人看上下文用。 */
+  text: string
+}
 
 /** 已知过期字符串 —— 命中就报错。 */
-const STALE_STRINGS = [
+const STALE_STRINGS: DriftRule[] = [
   {
     // 现状：mail-peon 默认端口已经从 8787 切换到 41316（组 4 改的）。
     // 命中含义：有人写文档/代码时把旧端口当默认值。
@@ -75,21 +98,43 @@ const STALE_STRINGS = [
   },
 ]
 
-const ROOT = resolve(new URL('..', import.meta.url).pathname)
+const ROOT = resolve(fileURLToPath(new URL('..', import.meta.url)))
 
 /**
- * 扫一个文件，命中记一条 include `old_string` 在文档里的绝对行号。
+ * 本脚本自身的绝对路径 —— 扫描时要跳过它。
  *
- * @param {string} filePath
- * @param {string} text
+ * ⚠ 不跳的话这个检查**永远红**：`STALE_STRINGS` 表里是**逐字**写着那些过期字符串的
+ *   （`pattern: 'ws://127.0.0.1:8787'` 这行本身就含 `ws://127.0.0.1:8787`），
+ *   于是每加一条规则就自命中一次 —— 看起来像文档漂移，其实是规则表在照镜子。
+ *
+ *   代价是 `release.yaml` 的 Docs drift check 这一步在修好之前**不可能通过**，
+ *   而它又排在打包之前，等于整条发版链路被一个假阳性堵死。
+ *
+ * ⚠ 两边都用 `fileURLToPath` 而不是 `URL.pathname`：后者的路径里带百分号转义
+ *   （路径含空格时是 `%20`），而 `readdir` 给的是真空格 —— 一比就不相等，
+ *   跳过失效、检查又红了，且只在「仓库路径带空格」的机器上复现。
+ *
+ * ⚠ 本文件是 `.ts`（不是 `.mts`），所以 esno 按 CJS 跑它 —— `import.meta.url`
+ *   由 tsx 垫好（实测可用）。代价是不能用顶层 await（CJS 输出不支持），
+ *   入口写成 `main().catch(...)`，与 `scripts/relay-kill.ts` 同一个理由。
  */
-function scanFile(filePath, text) {
+const SELF = fileURLToPath(import.meta.url)
+
+/** 扫一个文件，返回其中所有命中。 */
+function scanFile(filePath: string, text: string): DriftFinding[] {
   const lines = text.split(/\r?\n/)
-  const findings = []
+  const findings: DriftFinding[] = []
   for (let i = 0; i < lines.length; i += 1) {
     const line = lines[i]
-    // 豁免：行尾带 `// allow-historical: <reason>`
-    if (line.trimEnd().endsWith('allow-historical:')) {
+    /*
+     * 豁免：行尾带 `// allow-historical: <reason>`。
+     *
+     * ⚠ 判据是 `includes` 而不是 `endsWith` —— 注释的约定写法是
+     *   `...  // allow-historical: 为什么保留`，**行尾是原因、不是标记本身**。
+     *   用 `endsWith('allow-historical:')` 的话这个豁免一次也不会生效，
+     *   等于文档里写着一条不存在的逃生口。
+     */
+    if (line.includes('allow-historical:')) {
       continue
     }
     for (const rule of STALE_STRINGS) {
@@ -123,19 +168,20 @@ const SKIP_DIRS = new Set([
 /**
  * 收集要扫的文件清单。
  *
- * 只扫仓库里**真实有改动的**那几类：src/、ai-docs/、scripts/、docs/、README.md。
- * 不递归 node_modules / extension/dist / .vite-cache 等。
+ * 默认扫**整个仓库**（`src/` / `ai-docs/` / `docs/` / `scripts/` / `.github/` /
+ * `README.md` / `package.json` …）—— 过期字符串会出现在任何写到它的地方，
+ * 只扫文档目录会让「代码里还留着旧端口」这种最该抓的情况漏掉。
  *
- * @param {string[]} roots
+ * 跳过的只有两处：`SKIP_DIRS`（构建产物与依赖）和**脚本自己**（`SELF`，见它的说明）。
  */
-async function* walkFiles(roots) {
+async function* walkFiles(roots: string[]): AsyncGenerator<string> {
   for (const root of roots) {
     yield* walkDir(root)
   }
 }
 
-async function* walkDir(dir) {
-  let entries
+async function* walkDir(dir: string): AsyncGenerator<string> {
+  let entries: Dirent[]
   try {
     entries = await readdir(dir, { withFileTypes: true })
   }
@@ -150,17 +196,20 @@ async function* walkDir(dir) {
     }
     else {
       // 只扫文本类扩展名；二进制 / 图片 / 锁文件 / .tsbuildinfo 等会超时
-      if (!/\.(?:ts|mjs|cjs|js|vue|md|mdx|toml|json|yaml|yml|css|html)$/i.test(entry.name))
+      if (!/\.(?:ts|mts|mjs|cjs|js|vue|md|mdx|toml|json|yaml|yml|css|html)$/i.test(entry.name))
+        continue
+      // 规则表自己 —— 扫它必然命中（见 `SELF`），那是数据不是漂移
+      if (resolve(dir, entry.name) === SELF)
         continue
       yield `${dir}/${entry.name}`
     }
   }
 }
 
-async function main() {
+async function main(): Promise<void> {
   const args = process.argv.slice(2)
   const roots = args.length > 0 ? args : [ROOT]
-  const findings = []
+  const findings: DriftFinding[] = []
   for await (const file of walkFiles(roots)) {
     const text = await readFile(file, 'utf8')
     findings.push(...scanFile(file, text))
@@ -182,7 +231,7 @@ async function main() {
   process.exit(1)
 }
 
-main().catch((error) => {
+main().catch((error: unknown) => {
   console.error('docs-drift-check 自身报错：', error)
   process.exit(2)
 })

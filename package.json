@@ -27,7 +27,7 @@
     "icons": "esno scripts/icons.ts",
     "lint": "eslint --cache --no-warn-ignored .",
     "test": "vitest run",
-    "drift": "node scripts/check-docs-drift.mjs",
+    "drift": "esno scripts/check-docs-drift.ts",
     "relay": "esno scripts/imap-relay.ts",
     "relay:trace": "cross-env RELAY_TRACE=1 esno scripts/imap-relay.ts",
     "relay:kill": "esno scripts/relay-kill.ts",
