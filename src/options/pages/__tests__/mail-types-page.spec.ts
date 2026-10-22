@@ -111,6 +111,17 @@ describe('mailTypesPage 的模式锁定', () => {
       expect.objectContaining({ autoCopyCode: expect.any(Boolean) }),
     )
 
+    const autoDelete = wrapper.findAll('.ant-checkbox-wrapper')
+      .find(node => node.text().includes('失效后自动删除'))
+    expect(autoDelete).toBeTruthy()
+    expect(autoDelete?.classes()).not.toContain('ant-checkbox-wrapper-disabled')
+
+    await autoDelete?.find('input').trigger('click')
+    expect(mocks.setParams).toHaveBeenCalledWith(
+      'builtin:code',
+      expect.objectContaining({ autoDeleteExpiredCode: expect.any(Boolean) }),
+    )
+
     wrapper.unmount()
   })
 })

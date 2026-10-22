@@ -71,11 +71,23 @@ async function onAutoCopyToggle(adapter: MailTypeAdapter, value: boolean | strin
   await setParams(adapter.id, { autoCopyCode: Boolean(value) })
 }
 
+/** 失效验证码自动删除：同样优先适配器参数，缺省回退旧全局设置 */
+function autoDeleteExpiredCode(adapter: MailTypeAdapter): boolean {
+  const value = adapter.params?.autoDeleteExpiredCode
+  if (typeof value === 'boolean')
+    return value
+  return app.value?.autoDeleteExpiredCode ?? true
+}
+
+async function onAutoDeleteToggle(adapter: MailTypeAdapter, value: boolean | string | number) {
+  await setParams(adapter.id, { autoDeleteExpiredCode: Boolean(value) })
+}
+
 async function resetBuiltin(adapter: MailTypeAdapter) {
   await reset(adapter.id)
-  // 恢复默认后自动复制也回到默认开启（否则旧版的全局 false 会继续兜底）
+  // 恢复默认后自动复制 / 失效自动删除也回到默认开启
   if (adapter.id === BUILTIN_CODE_ID)
-    await setParams(adapter.id, { autoCopyCode: true })
+    await setParams(adapter.id, { autoCopyCode: true, autoDeleteExpiredCode: true })
   userPromptDraft[adapter.id] = ''
   uiMessage.success(t('adapters.resetDone'))
 }
@@ -223,19 +235,33 @@ function onDelete(adapter: MailTypeAdapter) {
       </p>
 
       <!--
-        验证码自己的参数。极简模式下适配器开关锁定，但「自动复制」是行为开关，
+        验证码自己的参数。极简模式下适配器开关锁定，但这两个是行为开关，
         不是「类型生不生效」，所以不跟着禁用。
       -->
       <div v-if="adapter.id === BUILTIN_CODE_ID" class="adapter-param">
-        <a-checkbox
-          :checked="autoCopyCode(adapter)"
-          @update:checked="(value: boolean | string | number) => onAutoCopyToggle(adapter, value)"
-        >
-          {{ t('adapters.code.autoCopyCode') }}
-        </a-checkbox>
-        <p class="mp-hint">
-          {{ t('adapters.code.autoCopyCodeHint') }}
-        </p>
+        <div class="param-row">
+          <a-checkbox
+            :checked="autoCopyCode(adapter)"
+            @update:checked="(value: boolean | string | number) => onAutoCopyToggle(adapter, value)"
+          >
+            {{ t('adapters.code.autoCopyCode') }}
+          </a-checkbox>
+          <p class="mp-hint">
+            {{ t('adapters.code.autoCopyCodeHint') }}
+          </p>
+        </div>
+
+        <div class="param-row">
+          <a-checkbox
+            :checked="autoDeleteExpiredCode(adapter)"
+            @update:checked="(value: boolean | string | number) => onAutoDeleteToggle(adapter, value)"
+          >
+            {{ t('adapters.code.autoDeleteExpiredCode') }}
+          </a-checkbox>
+          <p class="mp-hint">
+            {{ t('adapters.code.autoDeleteExpiredCodeHint') }}
+          </p>
+        </div>
       </div>
 
       <a-collapse ghost class="prompt-collapse">
@@ -504,6 +530,10 @@ function onDelete(adapter: MailTypeAdapter) {
 
 .adapter-param .mp-hint {
   margin: 4px 0 0 24px;
+}
+
+.param-row + .param-row {
+  margin-top: 8px;
 }
 
 .prompt-collapse {

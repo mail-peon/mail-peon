@@ -36,7 +36,6 @@ const mocks = vi.hoisted(() => ({
   restore: vi.fn(async (_mail: Mail) => true),
   deleteForever: vi.fn(async (_mail: Mail) => true),
   empty: vi.fn(async () => 0),
-  setApp: vi.fn(async () => {}),
 }))
 
 vi.mock('~/logic/bridge', () => ({
@@ -53,10 +52,6 @@ vi.mock('~/logic/bridge', () => ({
     restore: mocks.restore,
     deleteForever: mocks.deleteForever,
     empty: mocks.empty,
-  }),
-  useSettings: () => ({
-    app: ref({ autoDeleteExpiredCode: true }),
-    setApp: mocks.setApp,
   }),
 }))
 
@@ -122,7 +117,6 @@ beforeEach(() => {
   mocks.restore.mockClear()
   mocks.deleteForever.mockClear()
   mocks.empty.mockClear()
-  mocks.setApp.mockClear()
   mocks.restore.mockResolvedValue(true)
   mocks.deleteForever.mockResolvedValue(true)
   mocks.empty.mockResolvedValue(0)

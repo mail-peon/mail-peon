@@ -3,7 +3,7 @@ import type { Mail } from '~/logic/types'
 import { computed, ref } from 'vue'
 import { formatSender } from '~/adapters/mail/parser'
 import ConfirmDialog from '~/components/ConfirmDialog.vue'
-import { useSettings, useTrash } from '~/logic/bridge'
+import { useTrash } from '~/logic/bridge'
 import { useConfirmAction } from '~/logic/confirm-action'
 import { formatTimestamp } from '~/logic/notification/format-time'
 import { t } from '~/logic/strings'
@@ -31,7 +31,6 @@ import { t } from '~/logic/strings'
  * 溢出省略、横向滚动都是它自带的，不用再维护一套 `.table th/td` 的样式。
  */
 
-const { app, setApp } = useSettings()
 const { mails, total, loading, restore, deleteForever, empty } = useTrash()
 
 const hasMails = computed(() => mails.value.length > 0)
@@ -183,19 +182,7 @@ function rowMail(record: Record<string, unknown>): Mail {
       </p>
     </div>
 
-    <!-- 自动删除开关：与回收站放同一页，因为它是「邮件为什么会自己到这里」的答案 -->
-    <a-card size="small">
-      <a-checkbox
-        :checked="app?.autoDeleteExpiredCode ?? true"
-        @update:checked="(value: boolean) => setApp({ autoDeleteExpiredCode: value })"
-      >
-        {{ t('trash.autoDelete') }}
-      </a-checkbox>
-      <p class="mp-hint indent">
-        {{ t('trash.autoDeleteHint') }}
-      </p>
-    </a-card>
-
+    <!-- 回收站列表 -->
     <a-card size="small">
       <div class="toolbar">
         <span class="count">{{ t('trash.count', { n: total }) }}</span>

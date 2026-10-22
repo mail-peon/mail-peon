@@ -168,8 +168,6 @@ const zhCN: StringTable = {
   trash: {
     title: '回收站',
     intro: '这里放的是已删除的邮件。邮件本身还在，所以可以恢复；点「彻底删除」才会真的从记录里移除，那时无法撤销。',
-    autoDelete: '失效验证码自动删除',
-    autoDeleteHint: '开启后，验证码邮件过了失效时间再等 30 秒，就自动移到这里。留 30 秒是为了盖住失效时刻的推算误差（避免误删其实还有效的验证码）。',
     emptyAction: '清空回收站',
     emptyDone: '已彻底删除 {n} 封',
     emptyAlready: '回收站已经是空的',
@@ -359,6 +357,8 @@ const zhCN: StringTable = {
       description: '提取一次性验证码，可自动复制；有有效期时显示倒计时。',
       autoCopyCode: '自动复制验证码',
       autoCopyCodeHint: '提取到验证码后写入剪贴板；关闭后仍会入库，toast 里给「点击复制」。',
+      autoDeleteExpiredCode: '失效后自动删除',
+      autoDeleteExpiredCodeHint: '验证码过了失效时间再等 30 秒，自动移入回收站；留 30 秒是为了盖住失效时刻的推算误差。',
     },
     confirm: {
       name: '确认邮件',

@@ -122,6 +122,20 @@ export function adapterAutoCopyCode(
   return typeof value === 'boolean' ? value : fallback
 }
 
+/**
+ * 「失效验证码自动删除」的运行时取值。
+ *
+ * 与自动复制同一套兼容策略：优先适配器参数，没有显式值时回退旧的
+ * `app.autoDeleteExpiredCode`。
+ */
+export function adapterAutoDeleteExpiredCode(
+  adapters: MailTypeAdapter[],
+  fallback: boolean,
+): boolean {
+  const value = adapters.find(adapter => adapter.id === BUILTIN_CODE_ID)?.params?.autoDeleteExpiredCode
+  return typeof value === 'boolean' ? value : fallback
+}
+
 /** 提示词总字数（配置页预算提示用；只算**生效**的适配器） */
 export function adapterPromptChars(adapters: MailTypeAdapter[]): number {
   return adapters

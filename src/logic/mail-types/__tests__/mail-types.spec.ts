@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest'
 import { BUILTIN_ADAPTERS } from '~/logic/mail-types/catalog'
 import {
   adapterAutoCopyCode,
+  adapterAutoDeleteExpiredCode,
   adapterById,
   adapterPromptChars,
   estimatePromptTokens,
@@ -107,6 +108,21 @@ describe('resolveMailTypeAdapters', () => {
     const withoutParams = resolveMailTypeAdapters([], { minimalMode: false, lang: 'zh' })
     expect(adapterAutoCopyCode(withoutParams, false)).toBe(false)
     expect(adapterAutoCopyCode(withoutParams, true)).toBe(true)
+    expect(adapterAutoDeleteExpiredCode(withoutParams, false)).toBe(false)
+  })
+
+  it('验证码适配器的 autoDeleteExpiredCode 同样优先于旧全局值', () => {
+    const adapters = resolveMailTypeAdapters([
+      {
+        id: BUILTIN_CODE_ID,
+        kind: 'builtin',
+        params: { autoDeleteExpiredCode: false },
+        createdAt: 1,
+        updatedAt: 1,
+      },
+    ], { minimalMode: false, lang: 'zh' })
+
+    expect(adapterAutoDeleteExpiredCode(adapters, true)).toBe(false)
   })
 
   it('极简模式只生效 code + confirm，且自定义 / 总结关闭', () => {

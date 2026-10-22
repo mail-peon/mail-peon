@@ -325,11 +325,10 @@ interface AppSettings {
   /** IDB 内邮件保留份数；滚动淘汰。`'unlimited'` = 不淘汰。回收站里的不占名额 */
   mailRetention: 100 | 200 | 500 | 1000 | 'unlimited' // 默认 100
   /**
-   * 失效验证码自动删除；**默认 true**。
-   * 到了失效时刻**再等 30 秒**才移入回收站 —— 30 秒是给推算误差留的宽限，
-   * 免得误删其实还有效的验证码（详见 features/07-trash.md § 4）。
+   * @deprecated 已迁到验证码适配器的 `params.autoDeleteExpiredCode`。
+   * 这里只作为旧数据的回退值；界面在「设置 · 适配器 · 验证码」。
    */
-  autoDeleteExpiredCode: boolean // 默认 true
+  autoDeleteExpiredCode?: boolean
   /** 两套运行模式：极简（只验证码） / 完整（全部功能） */
   minimalMode: boolean // 默认 true
   schemaVersion: number

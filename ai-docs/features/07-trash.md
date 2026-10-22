@@ -1,7 +1,7 @@
 # 回收站
 
 > 已实现。对应 `src/logic/store/mails.ts` 的回收站一节、`src/options/pages/TrashPage.vue`、
-> `MailListItem.vue` 的时间/垃圾桶叠放，以及 `AppSettings.autoDeleteExpiredCode`。
+> `MailListItem.vue` 的时间/垃圾桶叠放，以及验证码适配器的 `params.autoDeleteExpiredCode`。
 
 ## 1. 一句话
 
@@ -94,7 +94,8 @@
 
 ## 4. 失效验证码自动删除
 
-`AppSettings.autoDeleteExpiredCode`，**默认开启**。
+「验证码」适配器的 `params.autoDeleteExpiredCode`，**默认开启**。
+开关在「设置 · 适配器 · 验证码」里，不再放在回收站页。
 
 规则：验证码邮件的 `codeExpiresAt` 到了之后**再等 30 秒**，移入回收站。
 
@@ -192,7 +193,7 @@ const trashZoneVisible = computed(() => cardHovered.value || trashZoneHovered.va
 行内三个按钮的文案是 **恢复 / 删除 / 彻底删除**（`strings.ts` 的 `trash.restore`、
 `mail.trash`、`trash.deleteForever`）—— 「删除」与「彻底删除」的区别正是本页的核心语义，
 所以两个都要有（理由见下面「回收站页里为什么也有『删除』」）。
-顶部有「清空回收站」和自动删除开关。
+顶部有「清空回收站」。
 
 **这一页在极简模式也显示**（不在 `FULL_MODE_ONLY` 里）。理由：
 自动删除默认开着，而它会把邮件移进回收站；极简模式下藏掉这一页，

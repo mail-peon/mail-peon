@@ -258,8 +258,8 @@ interface AppSettings {
   /** IDB 内邮件保留份数；滚动淘汰。`'unlimited'` = 不淘汰（仅完整模式生效；极简模式写死 50） */
   mailRetention: 100 | 200 | 500 | 1000 | 'unlimited'   // 默认 100
   mailRetentionDays?: number         // M3+：默认 0 = 不按时间清理
-  /** 失效验证码自动删除（默认 true）：失效后 30 秒移入回收站 */
-  autoDeleteExpiredCode: boolean
+  /** @deprecated 已迁到验证码适配器的 `params.autoDeleteExpiredCode`；仅旧数据回退 */
+  autoDeleteExpiredCode?: boolean
   schemaVersion: number              // 1
 }
 
@@ -294,7 +294,7 @@ export const defaultAppSettings: AppSettings = {
   checkIntervalMinutes: 5,
   popupDefaultTab: 'important',     // 旧值 'code' 会映射到 'adapter:builtin:code'  mailRetention: 100,
   mailRetentionDays: 0,
-  autoDeleteExpiredCode: true,      // 失效验证码自动清走
+  autoDeleteExpiredCode: true,      // @deprecated：仅旧数据回退，界面已移到验证码适配器
   schemaVersion: 1,
 }
 

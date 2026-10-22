@@ -43,6 +43,7 @@ import {
 import { ensureStoreReady, resetStoreReadyForTests } from '~/logic/store/ready'
 import { deleteRule, listRules, moveRule, upsertRule } from '~/logic/store/rules'
 import { patchAiSettings, patchAppSettings, readAiSettings, readAppSettings } from '~/logic/store/settings'
+import { BUILTIN_CODE_ID } from '~/logic/types'
 import { deleteDb } from '~/platform/idb/database'
 import { createSingleFlight } from '~/platform/single-flight'
 import { copyViaContentScript } from './clipboard'
@@ -408,9 +409,9 @@ async function rebuildWatchChannels(): Promise<void> {
 }
 
 /**
- * 把失效的验证码移入回收站（受 `autoDeleteExpiredCode` 开关控制）。
+ * 把失效的验证码移入回收站（受验证码适配器的 `params.autoDeleteExpiredCode` 控制）。
  *
- * ⚠ 30 秒宽限期的理由见 `AppSettings.autoDeleteExpiredCode`：
+ * ⚠ 30 秒宽限期的理由见 `store/mails.ts` 的 `trashExpiredCodes` 说明：
  *   失效时刻是「AI 读到的时长 + 入库时刻」推算的，本身有几十秒误差，
  *   立刻删会在边界上误删其实还有效的验证码 —— 而验证码是一次性的。
  */
@@ -419,8 +420,13 @@ const EXPIRED_CODE_GRACE_MS = 30_000
 async function purgeExpiredCodes(): Promise<void> {
   try {
     await ensureStoreReady()
-    const app = await readAppSettings()
-    if (!app.autoDeleteExpiredCode)
+    const [app, codeRecord] = await Promise.all([
+      readAppSettings(),
+      readMailTypeRecord(BUILTIN_CODE_ID),
+    ])
+    const configured = codeRecord?.params?.autoDeleteExpiredCode
+    const enabled = typeof configured === 'boolean' ? configured : app.autoDeleteExpiredCode
+    if (!enabled)
       return
 
     const moved = await trashExpiredCodes(EXPIRED_CODE_GRACE_MS)

@@ -233,7 +233,7 @@ AI（读邮件）──▶ validForSeconds（秒）
 | `Mail.codeValidForSeconds?: number` | 总有效期**秒数**（进度条的分母） |
 | `Mail.ai.validForSeconds?: number \| null` | AI 读到的原始时长（秒） |
 | `Mail.copyStatus` | 只由**自动复制**写；手动复制的反馈是纯前端瞬时的，不落库 |
-| `MailTypeRecord.params.autoCopyCode` / `Settings.autoDeleteExpiredCode` | 两个开关（前者在「适配器 · 验证码」里） |
+| `MailTypeRecord.params.autoCopyCode` / `MailTypeRecord.params.autoDeleteExpiredCode` | 两个开关（都在「适配器 · 验证码」里） |
 | `PromptRule.alwaysCopyCode?: boolean` | 规则级覆盖 |
 
 > ⚠️ `codeExpiresAt` 与 `codeValidForSeconds` **同生同灭**（见 `deriveCodeExpiry`）。
