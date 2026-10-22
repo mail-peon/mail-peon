@@ -203,7 +203,6 @@ const minimalMode = computed(() => app.value?.minimalMode ?? true)
 const retentionLimit = ref<number | 'unlimited'>(100)
 
 const usage = ref<{ count: number, bytesApprox: number } | null>(null)
-const codeCount = ref(0)
 
 /**
  * 「默认打开哪个筛选」的下拉选项。
@@ -286,13 +285,6 @@ async function reloadUsage() {
   // 上限以**后台**为准 —— 理由见 `retentionLimit` 的说明
   if (result.retention !== undefined)
     retentionLimit.value = result.retention
-  /*
-   * ⚠ 极简模式下列表里其实只有含验证码的记录，而 `usage.count` 统计的是**全部**。
-   *   两者在极简模式下相等（不含验证码的邮件根本不入库），所以这里直接用同一个数字；
-   *   但这一行不能删 —— 它把这个「为什么相等」的推理留在代码里，
-   *   将来若极简模式开始存别的记录，这里就是需要改的那一处。
-   */
-  codeCount.value = result.usage.count
 }
 
 function patch(patchValue: Partial<AppSettings>) {
@@ -311,7 +303,7 @@ const usageText = computed(() => {
   const count = usage.value?.count ?? 0
   const size = formatBytes(usage.value?.bytesApprox ?? 0)
   if (minimalMode.value)
-    return t('general.usageUnlimitedText', { count: codeCount.value, size })
+    return t('general.usageUnlimitedText', { count, size })
   return t('general.usageText', { count, limit: retentionLimit.value, size })
 })
 
@@ -601,7 +593,7 @@ async function onImportFile(event: Event) {
           <a-descriptions-item :label="t('general.accountCount', { n: accounts.length })">
             {{ accounts.map(item => item.email).join('、') || '—' }}
           </a-descriptions-item>
-          <a-descriptions-item :label="t('general.codeCount', { n: codeCount })">
+          <a-descriptions-item :label="t('general.usage')">
             {{ usageText }}
           </a-descriptions-item>
         </a-descriptions>

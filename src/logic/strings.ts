@@ -247,7 +247,6 @@ const zhCN: StringTable = {
     aiKeyMissing: '验证码 / 确认邮件处理需要先配置 AI Key',
     aiKeyMissingAction: '去 AI 配置',
     accountCount: '账号 · {n} 个',
-    codeCount: '验证码 / 确认记录：{n} 条',
     confirmClearMails: '确定要清空所有已保存的邮件吗？此操作不可撤销。',
     confirmClearAll: '确定要清空所有数据吗？账号、规则、设置、邮件将全部删除，此操作不可撤销。',
     /*
