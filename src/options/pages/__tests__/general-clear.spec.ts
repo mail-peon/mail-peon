@@ -66,6 +66,10 @@ vi.mock('~/logic/bridge', () => ({
     setApp: mocks.setApp,
     reload: vi.fn(async () => {}),
   }),
+  useMailTypes: () => ({
+    adapters: ref([]),
+    reload: vi.fn(async () => {}),
+  }),
 }))
 
 let GeneralPage: import('vue').Component

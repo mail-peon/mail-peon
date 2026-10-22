@@ -120,12 +120,34 @@ AI 跑了但没读出来。三种原因，按可能性排序：
 > 有这一行 → 数据到了 Popup、只是被过滤了；
 > 完全没有这一行 → 数据根本没到 Popup，回去看 § 4 的 ①–④。
 
-### `Popup 有 3 条记录，但当前视图 0 条：完整模式 tab「重要」`
+### 中继日志里 `watch connected` 每分钟重复一次
 
-有数据，但被 tab 过滤掉了。这封邮件的 `urgency` 不是 `high`
-（AI 判成了 normal / low）。切到「全部」就能看到。
+这是 **MV3 Service Worker 被回收**的典型信号：
 
-> 这是设计如此（「重要」收 `urgency !== 'low'` 的邮件，且**验证码邮件一律算重要**；`normal` 也会进），不是 bug。
+- watch 连上、中继发 `watching exists=N`，之后没有新邮件就没有任何流量；
+- Chrome 约 30 秒后回收 SW，WebSocket 随之断开；
+- 下一跳 `purge` alarm（1 分钟）唤醒 SW，模块加载时重建 watch。
+
+症状：中继日志里 `exists` 从 `36117` 涨到 `36119`，但插件**没有**「收到中继推送」。
+因为重连后的 `SELECT` 把新值当成了基线。
+
+修复分两层（Feature 08 之后）：
+
+1. `openWatchChannel` 每 20 秒发一个 `{type:'ping'}`，让 WebSocket 保持活跃；
+2. 即使 SW 还是被回收，重连时 `watching` 的 `exists` 会与上次比较，
+   变大就**补一轮同步**（日志：`监听基线变化：… 补一轮同步`）。
+
+如果你仍看到 `watch connected` 每分钟重复、但日志里没有「监听基线变化」，
+把中继日志和 background 控制台发我。
+
+---
+
+### `Popup 有 3 条记录，但当前视图 0 条：…`
+
+有数据，但被筛选过滤掉了。看 `Mail.stateFlags`：可能是 `Ad`（营销），
+也可能是 `LowPriority`（低优先级）。切到「全部」就能看到。
+
+> 这是设计如此（「重要」收 `!Ad && (!LowPriority || 验证码/确认)` 的邮件）。不是 bug。
 
 ---
 

@@ -1,7 +1,7 @@
 /**
  * 时间点的展示格式化。
  *
- * 单独一个模块（而不是放在 `CodeCountdown.vue` 的 `<script setup>` 里）有两个理由：
+ * 单独一个模块（而不是放在 `CountdownBar.vue` 的 `<script setup>` 里）有两个理由：
  *
  *   1. ⚠ **`<script setup>` 里不能写 `export`** —— Vue 会直接编译失败：
  *      「`<script setup> cannot contain ES module exports`」。

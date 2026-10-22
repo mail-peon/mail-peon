@@ -14,20 +14,30 @@ import type {
   AiSettings,
   AppSettings,
   BlockedEntry,
+  Expiry,
   Mail,
   MailAccount,
   MailAddress,
+  MailFilterId,
   MailProviderId,
   MailRetention,
+  MailTypeMatch,
+  MailTypeRecord,
   Matcher,
   PromptRule,
   SyncCursor,
 } from '~/logic/types'
+import { BUILTIN_ADAPTERS } from '~/logic/mail-types/catalog'
+import { safeHttpUrl } from '~/logic/mail-types/url'
 import {
+  BUILTIN_CODE_ID,
+  BUILTIN_SUMMARY_ID,
   createDefaultAiSettings,
   createDefaultAppSettings,
   DEFAULT_RULE_ID,
   MAIL_RETENTION_OPTIONS,
+  mailStateFlagsFromLegacy,
+  normalizeMailStateFlags,
 } from '~/logic/types'
 
 // ---------------------------------------------------------------------------
@@ -424,6 +434,161 @@ export function isReservedRuleId(id: string): boolean {
 }
 
 // ---------------------------------------------------------------------------
+// 邮件类型适配器（Feature 08）
+// ---------------------------------------------------------------------------
+
+const KNOWN_BUILTIN_IDS = new Set<string>(BUILTIN_ADAPTERS.map(def => def.id))
+
+/** 失效信息：绝对时刻 + 进度条分母，两者必须同时有效 */
+export function normalizeExpiry(raw: unknown): Expiry | undefined {
+  if (!isPlainObject(raw))
+    return undefined
+  const at = num(raw.at, Number.NaN)
+  const totalSeconds = num(raw.totalSeconds, Number.NaN)
+  if (!Number.isFinite(at) || at <= 0)
+    return undefined
+  if (!Number.isFinite(totalSeconds) || totalSeconds <= 0)
+    return undefined
+  return { at, totalSeconds: Math.round(totalSeconds) }
+}
+
+/**
+ * 一条类型命中的归一。
+ *
+ * ⚠ 确认链接的校验在**存储层**就要做（`safeHttpUrl`）：历史数据 / 手改导出文件
+ *   都可能塞进一个 `javascript:` URL，而 UI 拿到的就是「点一下打开」的数据。
+ *   在这里挡掉比在每个展示 / 点击点重复判断可靠。
+ */
+export function normalizeMailTypeMatch(raw: unknown): MailTypeMatch | null {
+  if (!isPlainObject(raw))
+    return null
+
+  const adapterId = str(raw.adapterId).trim()
+  if (!adapterId)
+    return null
+
+  const adapterName = str(raw.adapterName).slice(0, 80)
+  const kind = str(raw.kind)
+
+  if (kind === 'code') {
+    const code = str(raw.code).trim()
+    if (!code)
+      return null
+    return { kind, adapterId, adapterName, code, expiry: normalizeExpiry(raw.expiry) }
+  }
+
+  if (kind === 'confirm') {
+    const url = safeHttpUrl(raw.url)
+    if (!url)
+      return null
+    return {
+      kind,
+      adapterId,
+      adapterName,
+      url,
+      host: new URL(url).host,
+      label: optionalStr(raw.label)?.slice(0, 80),
+      expiry: normalizeExpiry(raw.expiry),
+    }
+  }
+
+  if (kind === 'summary') {
+    const minimal = str(raw.minimal).slice(0, 200)
+    const text = str(raw.text).slice(0, 4000)
+    if (!minimal && !text)
+      return null
+    return { kind, adapterId, adapterName, minimal, text }
+  }
+
+  if (kind === 'custom') {
+    const text = str(raw.text).slice(0, 4000)
+    if (!text)
+      return null
+    return { kind, adapterId, adapterName, text }
+  }
+
+  return null
+}
+
+/** 命中数组的归一：去重（同一个 adapterId 只留第一条）、上限 20 */
+export function normalizeMailTypeMatches(raw: unknown): MailTypeMatch[] {
+  if (!Array.isArray(raw))
+    return []
+
+  const out: MailTypeMatch[] = []
+  const seen = new Set<string>()
+  for (const item of raw) {
+    const match = normalizeMailTypeMatch(item)
+    if (!match || seen.has(match.adapterId))
+      continue
+    seen.add(match.adapterId)
+    out.push(match)
+    if (out.length >= 20)
+      break
+  }
+  return out
+}
+
+/** 链接归一：只留 http(s)、去重、最多 10 条 */
+export function normalizeLinks(raw: unknown): string[] | undefined {
+  if (!Array.isArray(raw))
+    return undefined
+
+  const out: string[] = []
+  for (const item of raw) {
+    const url = safeHttpUrl(item)
+    if (!url || out.includes(url))
+      continue
+    out.push(url)
+    if (out.length >= 10)
+      break
+  }
+  return out.length ? out : undefined
+}
+
+/**
+ * 适配器记录归一。
+ *
+ * - `kind` 不信任输入：id 在 catalog 里才是 builtin，否则按 custom 处理；
+ * - builtin 只收 `enabled` / `userPrompt`（名称 / 提示词 / 优先级由 catalog 决定）；
+ * - custom 收整条，并补默认值。
+ */
+export function normalizeMailTypeRecord(raw: unknown, fallbackKey?: string): MailTypeRecord | null {
+  const value = asObject(raw)
+  const id = str(value.id, fallbackKey ?? '').trim()
+  if (!id)
+    return null
+
+  const kind: MailTypeRecord['kind'] = KNOWN_BUILTIN_IDS.has(id) ? 'builtin' : 'custom'
+  const createdAt = num(value.createdAt, Date.now())
+  const updatedAt = num(value.updatedAt, createdAt)
+
+  if (kind === 'builtin') {
+    return {
+      id,
+      kind,
+      enabled: value.enabled === undefined ? undefined : bool(value.enabled, true),
+      // 不设产品级字数上限：只做运行时类型归一
+      userPrompt: value.userPrompt === undefined ? undefined : str(value.userPrompt),
+      createdAt,
+      updatedAt,
+    }
+  }
+
+  return {
+    id,
+    kind,
+    enabled: bool(value.enabled, true),
+    name: str(value.name).trim().slice(0, 80) || '未命名类型',
+    prompt: str(value.prompt),
+    priority: num(value.priority, 100),
+    fallback: bool(value.fallback, false),
+    createdAt,
+    updatedAt,
+  }
+}
+
+// ---------------------------------------------------------------------------
 // 邮件
 // ---------------------------------------------------------------------------
 
@@ -441,6 +606,28 @@ export function normalizeMail(raw: unknown, fallbackKey?: string): Mail | null {
     ? value.copyStatus
     : 'none'
 
+  const legacyExpiresAt = positiveNumber(value.codeExpiresAt)
+  const legacyValidSeconds = positiveNumber(value.codeValidForSeconds)
+  const ai = normalizeAiOutput(value.ai, {
+    codeExpiresAt: legacyExpiresAt,
+    codeValidForSeconds: legacyValidSeconds,
+  })
+  const codeMatch = ai?.types.find(match => match.kind === 'code')
+  const code = (typeof value.code === 'string' && value.code) || codeMatch?.code || null
+
+  /*
+   * 状态位掩码：
+   *   - 新数据直接读 `stateFlags`；
+   *   - 老数据（只有 `ai.isAd` / `ai.urgency`）在这里迁移。
+   * ⚠ 必须在 `ai` 归一之后算：`normalizeAiOutput` 不负责状态位，避免两处都写。
+   */
+  const stateFlags = value.stateFlags !== undefined
+    ? normalizeMailStateFlags(value.stateFlags)
+    : (() => {
+        const legacyAi = isPlainObject(value.ai) ? value.ai : undefined
+        return mailStateFlagsFromLegacy(legacyAi?.isAd, legacyAi?.urgency)
+      })()
+
   return {
     id,
     accountId,
@@ -453,48 +640,40 @@ export function normalizeMail(raw: unknown, fallbackKey?: string): Mail | null {
     bodyHtml: undefined, // MVP 不存 HTML，归一化时直接丢掉存量里的
     receivedAt: num(value.receivedAt, Date.now()),
     processing,
-    ai: normalizeAiOutput(value.ai),
+    ai,
     copyStatus,
     read: bool(value.read, false),
     dismissed: value.dismissed === undefined ? undefined : bool(value.dismissed, false),
+    stateFlags,
+    links: normalizeLinks(value.links),
     /*
      * 回收站标记（v2）。
      *
      * ⚠ 必须是**正数**才认：`0` / 负数 / `NaN` 会让它落进 `by-trashedAt` 索引的
      *   诡异位置（`0` 排在最前），而且 UI 上会显示「1970 年删除的邮件」。
      *   归一成 `undefined` 就等于「不在这封邮件的回收站里」。
-     *
-     *   存量记录本来就没有这个字段 —— 归一到 `undefined` 正是要的语义（不在回收站）。
      */
-    trashedAt: (() => {
-      const at = num(value.trashedAt, Number.NaN)
-      return Number.isFinite(at) && at > 0 ? at : undefined
-    })(),
-    code: typeof value.code === 'string' && value.code ? value.code : null,
+    trashedAt: positiveNumber(value.trashedAt),
+    code,
     /*
      * 验证码失效时刻。
      *
      * ⚠ 必须是**正数**：`0` / 负数 / `NaN` 会让倒计时立刻显示「失效」，
      *   而那与「没有有效期信息」在 UI 上是两回事（后者根本不展示倒计时）。
-     *   归一成 `undefined` 就等于「这封邮件没写有效期」。
+     *   新数据优先用 match 里的 expiry；老数据只有顶层字段。
      */
-    codeExpiresAt: (() => {
-      const expiresAt = num(value.codeExpiresAt, Number.NaN)
-      return Number.isFinite(expiresAt) && expiresAt > 0 ? expiresAt : undefined
-    })(),
-    /*
-     * 进度条的分母。与 `codeExpiresAt` 同样要求是正数 ——
-     * `0` 会让进度条除零后渲染成 0% 宽，界面上表现为「条子是空的」，
-     * 那与「没有这个字段（不展示倒计时）」是两回事。
-     */
-    codeValidForSeconds: (() => {
-      const seconds = num(value.codeValidForSeconds, Number.NaN)
-      return Number.isFinite(seconds) && seconds > 0 ? seconds : undefined
-    })(),
+    codeExpiresAt: legacyExpiresAt ?? codeMatch?.expiry?.at,
+    codeValidForSeconds: legacyValidSeconds ?? codeMatch?.expiry?.totalSeconds,
     messageId: optionalStr(value.messageId),
     listUnsubscribe: optionalStr(value.listUnsubscribe),
     ruleId: optionalStr(value.ruleId),
   }
+}
+
+/** 正数才认；其余（0 / 负数 / NaN / 字符串垃圾）归 undefined */
+function positiveNumber(value: unknown): number | undefined {
+  const n = num(value, Number.NaN)
+  return Number.isFinite(n) && n > 0 ? n : undefined
 }
 
 /**
@@ -503,28 +682,56 @@ export function normalizeMail(raw: unknown, fallbackKey?: string): Mail | null {
  * ⚠ 这个函数放在 `normalizeMail` **之后**（而不是紧挨着它）：`tsc` 对
  *   「块级作用域变量在声明前被使用」是硬报错（TS2448），所以 `MAX_BODY_CHARS`
  *   必须先声明 —— 它现在住在文件上方的「地址 / 匹配器」段里。
+ *
+ * ## 老数据合成 match
+ *
+ * 升级前只有 `ai.code` / `ai.summary` / `ai.minimal`。这里把它们合成对应的
+ * match，UI 就不需要到处写「新数据读 types、老数据读 ai.code」的分支。
  */
-function normalizeAiOutput(raw: unknown): AiOutput | undefined {
+function normalizeAiOutput(
+  raw: unknown,
+  legacy?: { codeExpiresAt?: number, codeValidForSeconds?: number },
+): AiOutput | undefined {
   if (!isPlainObject(raw))
     return undefined
-  const urgency = raw.urgency === 'low' || raw.urgency === 'high' ? raw.urgency : 'normal'
-  const code = typeof raw.code === 'string' && raw.code ? raw.code : null
+
+  const types = normalizeMailTypeMatches(raw.types)
+
+  const legacyCode = typeof raw.code === 'string' && raw.code ? raw.code : null
+  const legacySeconds = positiveNumber(raw.validForSeconds)
+  if (legacyCode && !types.some(match => match.kind === 'code')) {
+    types.push({
+      kind: 'code',
+      adapterId: BUILTIN_CODE_ID,
+      adapterName: '',
+      code: legacyCode,
+      expiry: legacy?.codeExpiresAt && legacy?.codeValidForSeconds
+        ? { at: legacy.codeExpiresAt, totalSeconds: legacy.codeValidForSeconds }
+        : undefined,
+    })
+  }
+
+  const legacySummary = str(raw.summary)
+  const legacyMinimal = str(raw.minimal)
+  if ((legacySummary || legacyMinimal) && !types.some(match => match.kind === 'summary')) {
+    types.push({
+      kind: 'summary',
+      adapterId: BUILTIN_SUMMARY_ID,
+      adapterName: '',
+      minimal: legacyMinimal,
+      text: legacySummary,
+    })
+  }
+
+  const codeMatch = types.find((match): match is Extract<MailTypeMatch, { kind: 'code' }> => match.kind === 'code')
+  const summaryMatch = types.find((match): match is Extract<MailTypeMatch, { kind: 'summary' }> => match.kind === 'summary')
+
   return {
-    minimal: str(raw.minimal),
-    summary: str(raw.summary),
-    isAd: bool(raw.isAd, false),
-    code,
-    /*
-     * ⚠ 有效期必须是**正数**才算数：存量数据里可能出现 0 或负数
-     *   （早期版本、或模型输出的垃圾），而 `0` 会让倒计时立刻显示「失效」——
-     *   那比不显示更让用户困惑。归成 `null` 就等于「这封邮件没写有效期」，
-     *   UI 也就不展示倒计时。
-     */
-    validForSeconds: (() => {
-      const seconds = num(raw.validForSeconds, Number.NaN)
-      return Number.isFinite(seconds) && seconds > 0 ? seconds : null
-    })(),
-    urgency,
+    types,
+    minimal: summaryMatch?.minimal || legacyMinimal,
+    summary: summaryMatch?.text || legacySummary,
+    code: codeMatch?.code ?? legacyCode,
+    validForSeconds: codeMatch?.expiry?.totalSeconds ?? legacySeconds ?? null,
     degraded: raw.degraded === undefined ? undefined : bool(raw.degraded, false),
     error: optionalStr(raw.error),
   }
@@ -554,9 +761,7 @@ export function normalizeAppSettings(raw: unknown): AppSettings {
     autoCopyCode: bool(merged.autoCopyCode, defaults.autoCopyCode),
     blockedEnabled: bool(merged.blockedEnabled, defaults.blockedEnabled),
     notifyOnNew: bool(merged.notifyOnNew, defaults.notifyOnNew),
-    popupDefaultTab: merged.popupDefaultTab === 'all' || merged.popupDefaultTab === 'code' || merged.popupDefaultTab === 'ad'
-      ? merged.popupDefaultTab
-      : 'important',
+    popupDefaultTab: normalizePopupFilterId(merged.popupDefaultTab),
     mailRetention: normalizeRetention(merged.mailRetention, defaults.mailRetention),
     mailRetentionDays: Math.max(0, num(merged.mailRetentionDays, 0)),
     /*
@@ -566,6 +771,25 @@ export function normalizeAppSettings(raw: unknown): AppSettings {
     autoDeleteExpiredCode: bool(merged.autoDeleteExpiredCode, defaults.autoDeleteExpiredCode),
     schemaVersion: num(merged.schemaVersion, 1),
   }
+}
+
+/**
+ * 筛选 id 归一。
+ *
+ * - 旧版枚举：`'code'` 已经没有这个 tab 了，映射到 `adapter:builtin:code`；
+ * - 新格式：`'important' | 'all' | 'ad' | 'adapter:<id>'`；
+ * - 其它（乱写 / 指向已删除的适配器）→ `'important'`。
+ *   Popup 启动时还会再校验一次「这个适配器现在还在不在」，不在就回退。
+ */
+function normalizePopupFilterId(raw: unknown): MailFilterId {
+  const value = str(raw)
+  if (value === 'important' || value === 'all' || value === 'ad')
+    return value
+  if (value === 'code')
+    return `adapter:${BUILTIN_CODE_ID}`
+  if (value.startsWith('adapter:') && value.length > 'adapter:'.length)
+    return value as MailFilterId
+  return 'important'
 }
 
 export function normalizeAiSettings(raw: unknown): AiSettings {

@@ -27,6 +27,7 @@
 | 5 | [05-verification-code.md](./features/05-verification-code.md) | 验证码自动复制 |
 | 6 | [06-blocked-senders.md](./features/06-blocked-senders.md) | 排除邮箱（本地） |
 | 7 | [07-trash.md](./features/07-trash.md) | 回收站（状态变更 vs 硬删除、失效验证码自动删除） |
+| 8 | [08-mail-types.md](./features/08-mail-types.md) | **邮件类型适配器**（验证码 / 确认 / 自定义 / 总结、状态位掩码、动态筛选） |
 
 ### 设计（`design/`）
 
@@ -46,6 +47,7 @@
 | --- | --- |
 | [open-questions.md](./decisions/open-questions.md) | 待决策项（IMAP vs OAuth 等） |
 | [adr-0005-imap-needs-relay.md](./decisions/adr-0005-imap-needs-relay.md) | **IMAP 在 MV3 里必须经 WebSocket↔TCP 中继**（推翻 Q1 的「IMAP+密码直接可用」） |
+| [adr-0006-mail-type-adapters.md](./decisions/adr-0006-mail-type-adapters.md) | **邮件类型适配器**：`mailTypes` 仓库（catalog + override）、状态位掩码、模式 overlay |
 | [relay-deployment.md](./decisions/relay-deployment.md) | **中继的部署方案**：用户级自启 + Rust 单安装器（安装/卸载两个选项）；为什么「零额外安装」做不到 |
 | [imap-testing.md](./decisions/imap-testing.md) | **IMAP 验收指南（QQ 邮箱）**：QQ 侧授权码怎么拿、扩展怎么填、六条验收清单、故障定位表 |
 | [debugging-receiving.md](./decisions/debugging-receiving.md) | **排查：收到推送但界面没邮件** —— 两处控制台怎么开、日志断点对照表 |
@@ -74,7 +76,7 @@
 
 ## 当前状态
 
-> 最近更新：M1 + M2 功能代码落地，M3 / M4 的 UI 与交互也已接上。
+> 最近更新：Feature 08 邮件类型适配器（验证码 / 确认 / 自定义 / 总结 + 动态筛选）。
 
 - 仓库基于 [`antfu/vitesse-webext`](https://github.com/antfu/vitesse-webext) 模板。
 - **已完成（有单测覆盖）**
@@ -86,7 +88,7 @@
   - AI 层：4 家平台（OpenAI / DeepSeek / Anthropic / 自定义）+ zod 校验 + 降级
   - 极简 / 完整两套流水线（预筛、验证码提取与自动复制、规则匹配、广告判定）
   - 页面顶部 toast（closed shadow DOM）+ icon badge
-  - Popup / Sidepanel / Options（6 个子页）两套布局
+  - Popup / Sidepanel / Options（8 个子页）两套布局
 - **约定**
   - 验证门槛：`pnpm lint && pnpm typecheck && pnpm test && pnpm build` 全绿
   - 每完成一项功能，回来勾掉 `03-roadmap.md` 里对应的验收项

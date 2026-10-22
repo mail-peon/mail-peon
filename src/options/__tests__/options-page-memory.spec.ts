@@ -39,6 +39,7 @@ function stub(name: string) {
 vi.mock('~/options/pages/GeneralPage.vue', () => stub('general'))
 vi.mock('~/options/pages/AccountsPage.vue', () => stub('accounts'))
 vi.mock('~/options/pages/RulesPage.vue', () => stub('rules'))
+vi.mock('~/options/pages/MailTypesPage.vue', () => stub('adapters'))
 vi.mock('~/options/pages/AiPage.vue', () => stub('ai'))
 vi.mock('~/options/pages/BlockedPage.vue', () => stub('blocked'))
 vi.mock('~/options/pages/TrashPage.vue', () => stub('trash'))
@@ -102,7 +103,7 @@ describe('设置页的 tab 记忆', () => {
     await clickNav(wrapper, 'AI 配置')
 
     expect(selectedNav(wrapper)).toBe('AI 配置')
-    expect(readRememberedPage(['general', 'accounts', 'rules', 'ai', 'blocked', 'trash', 'about'], 'general')).toBe('ai')
+    expect(readRememberedPage(['general', 'accounts', 'rules', 'adapters', 'ai', 'blocked', 'trash', 'about'], 'general')).toBe('ai')
 
     wrapper.unmount()
   })

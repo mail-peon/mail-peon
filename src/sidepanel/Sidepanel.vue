@@ -1,23 +1,21 @@
 <script setup lang="ts">
-import type { Mail, PopupTab } from '~/logic/types'
-import { computed, ref } from 'vue'
+import type { ConfirmMatch, Mail, MailFilterId } from '~/logic/types'
+import { computed, ref, watch } from 'vue'
 import ConfirmDialog from '~/components/ConfirmDialog.vue'
 import EmptyState from '~/components/EmptyState.vue'
 import MailListItem from '~/components/MailListItem.vue'
-import { useMails, useSettings } from '~/logic/bridge'
+import { useMails, useMailTypes, useSettings } from '~/logic/bridge'
 import { useMailFocus } from '~/logic/mail-focus'
+import { parseSafeHttpUrl } from '~/logic/mail-types/url'
 import { t } from '~/logic/strings'
 import { useTrashConfirm } from '~/logic/trash-confirm'
 import { ERROR_DURATION, useAppMessage } from '~/logic/ui-message'
 import {
-  countByTab,
-  displayCount,
+  buildMailFilters,
   filterMails,
   minimalModeMails,
+  resolveFilterId,
   sortMails,
-  TAB_ORDER,
-  tabEmptyKey,
-  tabLabelKey,
 } from '~/popup/list-filter'
 
 /**
@@ -37,6 +35,7 @@ import {
 // ⚠ `reload` 这个名字已经被下面的 `useSettings()` 占了，重命名避免遮蔽
 const { mails, loading, loadFailed, justCopied, copyCode, setRead, dismiss, trash, reload: reloadMails } = useMails(300)
 const { app, reload } = useSettings()
+const { adapters } = useMailTypes()
 const uiMessage = useAppMessage()
 
 /** 「点 toast → 把这封滚到眼前」，与 Popup 共用同一套（见 `logic/mail-focus.ts`） */
@@ -69,16 +68,68 @@ async function onConfirmTrash() {
     uiMessage.error(t('mail.trashFailed'), ERROR_DURATION)
 }
 
-const activeTab = ref<PopupTab>('important')
-
+const activeFilter = ref<MailFilterId>('important')
 const minimalMode = computed(() => app.value?.minimalMode ?? true)
 const excludeAds = computed(() => app.value?.excludeAds ?? true)
 
-const counts = computed(() => countByTab(mails.value, { excludeAds: excludeAds.value }))
-const visibleMails = computed(() =>
-  sortMails(filterMails(mails.value, activeTab.value, { excludeAds: excludeAds.value })),
+const filters = computed(() =>
+  buildMailFilters(mails.value, adapters.value, { excludeAds: excludeAds.value }),
 )
+const visibleMails = computed(() =>
+  sortMails(filterMails(mails.value, activeFilter.value, { excludeAds: excludeAds.value })),
+)
+
+/*
+ * 筛选标签会随适配器开关 / 删除变化。如果当前选中的适配器被关掉 / 删掉，
+ * antd 的 tab 会一个都不选中 —— 这里把 activeFilter 拉回「重要」。
+ */
+watch(filters, (list) => {
+  if (!list.some(filter => filter.id === activeFilter.value))
+    activeFilter.value = resolveFilterId(list, 'important')
+})
 const codeMails = computed(() => minimalModeMails(mails.value))
+
+/** 默认筛选：与 Popup 同一套（等适配器加载完再套用） */
+const appliedDefault = ref(false)
+watch([app, adapters], () => {
+  if (!app.value || appliedDefault.value || !adapters.value.length)
+    return
+  activeFilter.value = resolveFilterId(filters.value, app.value.popupDefaultTab)
+  appliedDefault.value = true
+}, { immediate: true })
+
+/**
+ * 打开确认链接（逻辑与 Popup 相同：校验 → 新标签 → 标已读）。
+ * 侧边栏不自动标已读，但用户**主动点了确认**之后应该标。
+ */
+async function onConfirm(mail: Mail, match: ConfirmMatch) {
+  const url = parseSafeHttpUrl(match.url)
+  if (!url) {
+    uiMessage.error(t('mail.confirmInvalid'), ERROR_DURATION)
+    return
+  }
+
+  try {
+    await browser.tabs.create({ url: url.toString() })
+    if (!mail.read)
+      await setRead(mail, true)
+  }
+  catch (error) {
+    console.warn('[mail-peon] 打开确认链接失败', error)
+    uiMessage.error(t('mail.confirmFailed'), ERROR_DURATION)
+  }
+}
+
+/** 空态文案：状态筛选用固定文案，适配器筛选带上类型名 */
+function emptyText(filterId: MailFilterId, label: string): string {
+  if (filterId === 'important')
+    return t('popup.emptyImportant')
+  if (filterId === 'all')
+    return t('popup.emptyAll')
+  if (filterId === 'ad')
+    return t('popup.emptyAd')
+  return t('popup.emptyAdapter', { name: label })
+}
 
 void reload()
 
@@ -93,6 +144,9 @@ function openOptions() {
       <span class="brand">{{ t('app.name') }}</span>
       <a-tag v-if="minimalMode" class="mode-tag" :bordered="false">
         {{ t('app.minimalSuffix') }}
+      </a-tag>
+      <a-tag v-else class="mode-tag" :bordered="false">
+        {{ t('app.customSuffix') }}
       </a-tag>
       <a-button class="open-options" size="small" @click="openOptions">
         <span class="i-pixelarticons-settings-2" aria-hidden="true" />
@@ -123,6 +177,7 @@ function openOptions() {
             :focused="focusedId === mail.id"
             minimal
             @copy="(item: Mail) => copyCode(item)"
+            @confirm="onConfirm"
             @trash="(item: Mail) => askTrashConfirm(item)"
             @open="(item: Mail) => { if (!item.read) setRead(item, true) }"
           />
@@ -136,14 +191,14 @@ function openOptions() {
           侧边栏是 100vh 的固定高度，面板不撑满的话列表不会滚动。
           链条与 `Popup.vue` 里的完全相同，那边有更详细的说明。
       -->
-      <a-tabs v-model:active-key="activeTab" class="tabs" size="small">
-        <a-tab-pane v-for="tab in TAB_ORDER" :key="tab">
+      <a-tabs v-model:active-key="activeFilter" class="tabs" size="small">
+        <a-tab-pane v-for="filter in filters" :key="filter.id">
           <template #tab>
             <span class="tab-label">
-              {{ t(tabLabelKey(tab)) }}
+              {{ filter.label }}
               <a-badge
-                v-if="displayCount(counts[tab])"
-                :count="counts[tab]"
+                v-if="filter.count > 0"
+                :count="filter.count"
                 :overflow-count="99"
               />
             </span>
@@ -159,7 +214,7 @@ function openOptions() {
               :action-text="t('common.retry')"
               @action="reloadMails"
             />
-            <EmptyState v-else-if="!visibleMails.length" :text="t(tabEmptyKey(activeTab))" />
+            <EmptyState v-else-if="!visibleMails.length" :text="emptyText(filter.id, filter.label)" />
             <!-- `v-if` 放在外层 `<template>` 上 —— 理由见上面极简模式那段 -->
             <template v-if="visibleMails.length">
               <MailListItem
@@ -169,6 +224,7 @@ function openOptions() {
                 :just-copied="justCopied.has(mail.id)"
                 :focused="focusedId === mail.id"
                 @copy="(item: Mail) => copyCode(item)"
+                @confirm="onConfirm"
                 @read="(item: Mail, read: boolean) => setRead(item, read)"
                 @dismiss="(item: Mail) => dismiss(item)"
                 @trash="(item: Mail) => askTrashConfirm(item)"

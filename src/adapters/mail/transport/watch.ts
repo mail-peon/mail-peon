@@ -70,6 +70,22 @@ export function buildWatchRequest(account: MailAccount): Record<string, unknown>
   }
 }
 
+/** watch 通道的可选参数（测试用：`heartbeatMs: 0` 关闭心跳） */
+export interface WatchChannelOptions {
+  /**
+   * 心跳间隔（毫秒），默认 20 秒。
+   *
+   * ⚠ 这不是「协议心跳」，而是**给 MV3 续命**：Service Worker 空闲约 30 秒
+   *   就会被回收，而 watch 在 `watching` 之后可能几十分钟没有新邮件 ——
+   *   没有流量时 SW 会睡，WebSocket 随之断开。下一次 alarm 把它唤醒后
+   *   重新 `SELECT`，基线被重置，**沉睡期间到达的邮件就不会被推送**。
+   *
+   *   客户端每 20 秒发一个 JSON 帧（中继忽略它），让 WebSocket 保持活跃，
+   *   Chrome 就不会回收 SW。`0` = 关闭（测试用）。
+   */
+  heartbeatMs?: number
+}
+
 /**
  * 开一条 watch 连接，并在断开后**自动重连**。
  *
@@ -80,12 +96,14 @@ export function buildWatchRequest(account: MailAccount): Record<string, unknown>
  * @param relayUrl 中继地址（`ws://127.0.0.1:41316/`）
  * @param request watch 请求体（见 `buildWatchRequest`）
  * @param onEvent 收到事件时回调
+ * @param options 心跳等可选参数
  * @returns 停止函数
  */
 export function openWatchChannel(
   relayUrl: string,
   request: Record<string, unknown>,
   onEvent: (event: WatchEvent) => void,
+  options: WatchChannelOptions = {},
 ): () => void {
   /** 停止后不再重连 */
   let stopped = false
@@ -93,8 +111,39 @@ export function openWatchChannel(
   let socket: WebSocket | null = null
   /** 重连定时器 */
   let retryTimer: ReturnType<typeof setTimeout> | null = null
+  /** 心跳定时器（给 MV3 SW 续命） */
+  let heartbeatTimer: ReturnType<typeof setInterval> | null = null
   /** 连续失败次数（决定退避时长） */
   let attempt = 0
+
+  const heartbeatMs = options.heartbeatMs ?? 20_000
+
+  /** 发一个空操作帧，保持 WebSocket 活跃（中继会忽略它） */
+  function startHeartbeat(): void {
+    if (heartbeatTimer || heartbeatMs <= 0)
+      return
+    heartbeatTimer = setInterval(() => {
+      if (!socket || socket.readyState !== 1)
+        return
+      try {
+        socket.send(JSON.stringify({ type: 'ping' }))
+      }
+      catch {
+        // 写失败说明连接已经坏了；close 会触发退避重连
+        try {
+          socket.close()
+        }
+        catch {}
+      }
+    }, heartbeatMs)
+  }
+
+  function stopHeartbeat(): void {
+    if (!heartbeatTimer)
+      return
+    clearInterval(heartbeatTimer)
+    heartbeatTimer = null
+  }
 
   /*
    * 插件侧的退避比中继侧短：这里的失败大多是「中继没起 / 正在重启」，
@@ -130,6 +179,7 @@ export function openWatchChannel(
 
     ws.addEventListener('open', () => {
       attempt = 0
+      startHeartbeat()
       ws.send(JSON.stringify(request))
     })
 
@@ -205,6 +255,7 @@ export function openWatchChannel(
            *   正确的反馈是明确告诉他去改配置。
            */
           stopped = true
+          stopHeartbeat()
           onEvent({ type: 'state', state: 'failed', error: String(message.error ?? '未知原因'), fatal: true })
         }
       }
@@ -238,6 +289,7 @@ export function openWatchChannel(
 
   return () => {
     stopped = true
+    stopHeartbeat()
     if (retryTimer) {
       clearTimeout(retryTimer)
       retryTimer = null

@@ -1,6 +1,7 @@
 import type { MailConnectionHooks } from '~/adapters/mail/types'
 import type { MailPipeline } from '~/logic/ai/pipeline'
-import type { MailAccount } from '~/logic/types'
+import type { MailAccount, MailTypeRecord } from '~/logic/types'
+import { nanoid } from 'nanoid'
 import { onMessage } from 'webext-bridge/background'
 import { AI_PLATFORM_OPTIONS } from '~/adapters/ai/platforms'
 import { resetAccountCursor, testAccountConnection } from '~/adapters/mail/mailbox'
@@ -9,9 +10,18 @@ import { buildWatchRequest, openWatchChannel } from '~/adapters/mail/transport/w
 import { createMailPipeline, recordManualCopy } from '~/logic/ai/pipeline'
 import { createRuleCache } from '~/logic/ai/rule-engine'
 import { testAiConnection } from '~/logic/ai/summarize'
+import { resolveMailTypeAdapters } from '~/logic/mail-types/resolve'
 import { broadcastToExtension } from '~/logic/messaging'
 import { clearBadge, refreshBadge } from '~/logic/notification/badge'
 import { deleteAccount, listAccounts, listEnabledAccounts, markAccountError, upsertAccount } from '~/logic/store/accounts'
+import {
+  deleteMailTypeRecord,
+  listMailTypeRecords,
+  moveCustomMailType,
+  nextCustomPriority,
+  readMailTypeRecord,
+  upsertMailTypeRecord,
+} from '~/logic/store/mail-types'
 import {
   clearMails,
   clearMailsByAccount,
@@ -245,6 +255,18 @@ async function syncAfterCurrent() {
 const watchStops = new Map<string, () => void>()
 
 /**
+ * 上一次 watch 报给我们的 `EXISTS`（邮箱总封数）。
+ *
+ * ⚠ 这是**补漏的关键**：watch 重连时中继会重新 `SELECT`，把当时的 `EXISTS` 当新基线，
+ *   于是「插件睡着期间到达的邮件」不会被当作新邮件推送。这里拿上一次的值做比较：
+ *   新基线更大 ⇒ 沉睡期间确实有邮件到达 ⇒ 补一轮同步。
+ *
+ *   没有它时，真机表现就是：中继日志里 `exists` 从 36117 涨到 36119，
+ *   但插件一条推送都没收到 —— 下次手动点「立即同步」才看到。
+ */
+const watchExists = new Map<string, number>()
+
+/**
  * 重建中的标记 —— 防止并发重建把连接搞成重复。
  *
  * ⚠ 这个守卫是必需的，不是保险：`restartWatchChannels()` 是 `async` 的，而它会被
@@ -293,6 +315,7 @@ async function rebuildWatchChannels(): Promise<void> {
     catch {}
   }
   watchStops.clear()
+  watchExists.clear()
 
   let accounts: MailAccount[]
   try {
@@ -327,6 +350,7 @@ async function rebuildWatchChannels(): Promise<void> {
          *   （一个查 watch 连接，一个查同步链路）。
          */
         console.warn(`[mail-peon] 收到中继推送：${account.label} 有 ${event.exists} 封邮件 → 触发同步`)
+        watchExists.set(account.id, event.exists)
 
         /*
          * ⚠ 推送里只有「有几封」，所以这里走的是**普通的一轮同步** ——
@@ -343,9 +367,29 @@ async function rebuildWatchChannels(): Promise<void> {
         return
       }
 
+      if (event.state === 'watching') {
+        /*
+         * 新 watch 连上来了：中继会重新 SELECT，并把当前 EXISTS 当基线。
+         *
+         * ⚠ 这一步是**补漏**，不是重复推送：watch 断开期间（SW 被回收、
+         *   网络切换、中继重启）到达的邮件不会被 `mail` 事件推到我们这边，
+         *   但重连后的 EXISTS 会比上次大。看到这个差值就补一轮同步。
+         */
+        const previous = watchExists.get(account.id)
+        watchExists.set(account.id, event.exists)
+        if (previous === undefined || event.exists > previous) {
+          console.warn(
+            `[mail-peon] 监听基线变化：${account.label} ${previous ?? '首次'} → ${event.exists}，补一轮同步`,
+          )
+          void syncOnce().catch(error => console.warn('[mail-peon] 监听补漏同步失败', error))
+        }
+        return
+      }
+
       if (event.state === 'failed') {
         // 中继说重试无用（密码错 / 白名单拒绝）—— 记进账号状态，让 UI 能显示
         console.warn(`[mail-peon] 中继拒绝监听 ${account.label}：${event.error}`)
+        watchExists.delete(account.id)
         void markAccountError(account.id, event.error)
         return
       }
@@ -599,6 +643,14 @@ onMessage('accounts:upsert', async ({ data }) => {
   await ensureStoreReady()
   await upsertAccount(data.account)
   /*
+   * ⚠ **必须重建 watch**：账号可能是刚加的（此前没有连接），也可能是改了
+   *   密码 / 中继地址（旧连接还在用旧配置）。
+   *
+   *   漏掉这一步的症状正是「手动同步能拉到、自动推送一直不响」——
+   *   手动同步每次都从库里读新配置，而 watch 只在模块加载 / 浏览器启动时建立。
+   */
+  void restartWatchChannels()
+  /*
    * ⚠ 广播出去，否则「通用」页会一直显示旧的账号数。
    *
    *   这一页用 `v-show` 常驻（见 `Options.vue`），它 `onMounted` 里读的那次账号
@@ -617,6 +669,8 @@ onMessage('accounts:delete', async ({ data }) => {
    */
   await clearMailsByAccount(data.id)
   await deleteAccount(data.id)
+  // 停掉这个账号的 watch（重建会顺带清掉已删除账号的连接）
+  void restartWatchChannels()
   await refreshBadge()
   broadcastToExtension('data:changed', { reason: 'accounts' })
   return { ok: true as const }
@@ -735,6 +789,169 @@ onMessage('rules:move', async ({ data }) => {
 })
 
 // ---------------------------------------------------------------------------
+// 消息：邮件类型适配器（Feature 08）
+// ---------------------------------------------------------------------------
+
+/**
+ * 把「catalog + override + 自定义」合并成 UI 需要的运行时视图。
+ *
+ * 极简模式的开关锁定是**生效层**的事：这里返回的 `enabled` 已经是
+ * 「极简模式强制 code+confirm」之后的值，UI 只管渲染 + 禁用开关。
+ */
+async function effectiveMailTypes() {
+  const [records, app] = await Promise.all([listMailTypeRecords(), readAppSettings()])
+  return resolveMailTypeAdapters(records, {
+    minimalMode: app.minimalMode,
+    lang: 'zh',
+  })
+}
+
+/**
+ * 极简模式下适配器配置是**只读**的（模式 overlay 强制 code+confirm）。
+ *
+ * UI 已经禁用了开关与编辑按钮，这里再挡一道：后台是唯一可信的写入口，
+ * 不能只靠「界面上没有按钮」。
+ */
+async function adapterEditGuard(): Promise<{ ok: false, error: string } | null> {
+  const app = await readAppSettings()
+  return app.minimalMode
+    ? { ok: false as const, error: '极简模式下适配器配置被锁定，请切到「自定义」模式' }
+    : null
+}
+
+onMessage('mail-types:list', async () => {
+  await ensureStoreReady()
+  return { adapters: await effectiveMailTypes() }
+})
+
+/**
+ * 更新一条适配器。
+ *
+ * - 内置：只接受 `enabled` / `userPrompt`（名称 / 提示词 / 优先级由 catalog 决定）；
+ * - 自定义：接受 `name` / `prompt` / `fallback` / `enabled`。
+ *
+ * 不存在时对内置是「新建一条 override」，对自定义是错误（防止 UI 拿错 id）。
+ */
+onMessage('mail-types:update', async ({ data }) => {
+  await ensureStoreReady()
+  const guard = await adapterEditGuard()
+  if (guard)
+    return guard
+
+  const records = await listMailTypeRecords()
+  const existing = records.find(record => record.id === data.id)
+  const isBuiltin = data.id.startsWith('builtin:')
+
+  if (!isBuiltin && !existing)
+    return { ok: false as const, error: '自定义类型不存在' }
+
+  const now = Date.now()
+  const base: MailTypeRecord = existing ?? {
+    id: data.id,
+    kind: isBuiltin ? 'builtin' : 'custom',
+    createdAt: now,
+    updatedAt: now,
+  }
+
+  const next: MailTypeRecord = { ...base, updatedAt: now }
+
+  if (typeof data.patch.enabled === 'boolean')
+    next.enabled = data.patch.enabled
+
+  if (isBuiltin) {
+    if (typeof data.patch.userPrompt === 'string')
+      next.userPrompt = data.patch.userPrompt
+  }
+  else {
+    if (typeof data.patch.name === 'string')
+      next.name = data.patch.name
+    if (typeof data.patch.prompt === 'string')
+      next.prompt = data.patch.prompt
+    if (typeof data.patch.fallback === 'boolean')
+      next.fallback = data.patch.fallback
+  }
+
+  await upsertMailTypeRecord(next)
+  broadcastToExtension('data:changed', { reason: 'mail-types' })
+  return { ok: true as const }
+})
+
+onMessage('mail-types:create', async ({ data }) => {
+  await ensureStoreReady()
+  const guard = await adapterEditGuard()
+  if (guard)
+    return guard
+
+  const name = data.name.trim()
+  const prompt = data.prompt.trim()
+  if (!name)
+    return { ok: false as const, error: '请填写类型名' }
+  if (!prompt)
+    return { ok: false as const, error: '请填写提示词' }
+
+  const records = await listMailTypeRecords()
+  const now = Date.now()
+  const id = `custom:${nanoid(10)}`
+
+  await upsertMailTypeRecord({
+    id,
+    kind: 'custom',
+    name,
+    prompt,
+    enabled: true,
+    fallback: data.fallback === true,
+    priority: nextCustomPriority(records),
+    createdAt: now,
+    updatedAt: now,
+  })
+
+  broadcastToExtension('data:changed', { reason: 'mail-types' })
+  return { ok: true as const, id }
+})
+
+onMessage('mail-types:delete', async ({ data }) => {
+  await ensureStoreReady()
+  const guard = await adapterEditGuard()
+  if (guard)
+    return guard
+
+  // 内置不能删；删除请求对内置等价于「恢复默认」（清掉 override）
+  await deleteMailTypeRecord(data.id)
+  broadcastToExtension('data:changed', { reason: 'mail-types' })
+  return { ok: true as const }
+})
+
+onMessage('mail-types:reset', async ({ data }) => {
+  await ensureStoreReady()
+  const guard = await adapterEditGuard()
+  if (guard)
+    return guard
+
+  const existing = await readMailTypeRecord(data.id)
+  if (existing?.kind === 'custom')
+    return { ok: false as const, error: '自定义类型没有默认值' }
+
+  await deleteMailTypeRecord(data.id)
+  broadcastToExtension('data:changed', { reason: 'mail-types' })
+  return { ok: true as const }
+})
+
+onMessage('mail-types:move', async ({ data }) => {
+  await ensureStoreReady()
+  const guard = await adapterEditGuard()
+  if (guard)
+    return guard
+
+  const existing = await readMailTypeRecord(data.id)
+  if (!existing || existing.kind !== 'custom')
+    return { ok: false as const, error: '只有自定义类型可以排序' }
+
+  await moveCustomMailType(data.id, data.direction)
+  broadcastToExtension('data:changed', { reason: 'mail-types' })
+  return { ok: true as const }
+})
+
+// ---------------------------------------------------------------------------
 // 消息：设置
 // ---------------------------------------------------------------------------
 
@@ -774,6 +991,13 @@ onMessage('settings:set-app', async ({ data }) => {
    *   各界面在挂载时都会主动 `settings:get` 拉一次全量。
    */
   broadcastToExtension('settings:changed', { app })
+
+  /*
+   * 模式变了 ⇒ 适配器的「生效开关」也变了（极简模式强制 code+confirm）。
+   * 适配器页订阅的是 `data:changed`（它要重拉合并后的列表），所以这里补一条。
+   */
+  if (data.patch.minimalMode !== undefined)
+    broadcastToExtension('data:changed', { reason: 'mail-types' })
 
   return { app }
 })

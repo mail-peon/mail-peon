@@ -7,6 +7,7 @@ import type {
   Mail,
   MailAccount,
   MailTestResult,
+  MailTypeAdapter,
   PromptRule,
   StorageUsage,
   SyncSummary,
@@ -46,7 +47,7 @@ declare module 'webext-bridge' {
      * 切回「通用」时组件**不会重新挂载** —— 没有这条广播，那一页会一直显示
      * 「账号 · 0 个」，它上面的「立即同步增量」也就跟着说「没有启用的账号」。
      */
-    'data:changed': { reason: 'accounts' | 'rules' | 'settings' | 'trash' }
+    'data:changed': { reason: 'accounts' | 'rules' | 'settings' | 'trash' | 'mail-types' }
     /** bg → popup：用户点了某条 toast，希望定位到那封邮件 */
     'mail:focus': { mailId: string }
     /** content script → bg：toast 上的「点击复制」结果 */
@@ -118,6 +119,27 @@ declare module 'webext-bridge' {
     'rules:upsert': ProtocolWithReturn<{ rule: PromptRule }, { ok: true, id: string }>
     'rules:delete': ProtocolWithReturn<{ id: string }, { ok: true }>
     'rules:move': ProtocolWithReturn<{ id: string, direction: 'up' | 'down' }, { rules: PromptRule[] }>
+
+    // --- 邮件类型适配器（Feature 08）---
+    'mail-types:list': ProtocolWithReturn<undefined, { adapters: MailTypeAdapter[] }>
+    'mail-types:update': ProtocolWithReturn<{
+      id: string
+      patch: {
+        enabled?: boolean
+        userPrompt?: string
+        name?: string
+        prompt?: string
+        fallback?: boolean
+      }
+    }, { ok: boolean, error?: string }>
+    'mail-types:create': ProtocolWithReturn<{
+      name: string
+      prompt: string
+      fallback?: boolean
+    }, { ok: boolean, id?: string, error?: string }>
+    'mail-types:delete': ProtocolWithReturn<{ id: string }, { ok: boolean }>
+    'mail-types:reset': ProtocolWithReturn<{ id: string }, { ok: boolean, error?: string }>
+    'mail-types:move': ProtocolWithReturn<{ id: string, direction: 'up' | 'down' }, { ok: boolean, error?: string }>
 
     // --- 设置 ---
     'settings:get': ProtocolWithReturn<undefined, { app: AppSettings, ai: AiSettings }>

@@ -8,6 +8,7 @@ import AccountsPage from './pages/AccountsPage.vue'
 import AiPage from './pages/AiPage.vue'
 import BlockedPage from './pages/BlockedPage.vue'
 import GeneralPage from './pages/GeneralPage.vue'
+import MailTypesPage from './pages/MailTypesPage.vue'
 import RulesPage from './pages/RulesPage.vue'
 import TrashPage from './pages/TrashPage.vue'
 
@@ -23,19 +24,19 @@ import TrashPage from './pages/TrashPage.vue'
  *   漏了「配置项 ≠ 功能」这条区分。
  *
  *   所以极简模式保留 **5** 页：通用 / 账号 / AI 配置 / **回收站** / 关于；
- *   只隐藏**属于完整模式功能**的两页：提示词 / 屏蔽列表（以及通用页里的
+ *   只隐藏**属于自定义模式功能**的两页：提示词 / 屏蔽列表（以及通用页里的
  *   广告排除、保留数量等开关）。
  *
  *   ⚠ 回收站是后来加的，它**在两种模式下都显示** —— 它不是「功能」而是**数据出口**：
  *     「失效验证码自动删除」默认开着会往回收站里放东西，极简模式藏掉这一页，
  *     用户就找不到那些自动消失的验证码了，而那正是最需要回收站的时候。
  *
- * 用自己的一行 `activePage` 而不是引 vue-router：只有 7 个页面、没有深层链接、
+ * 用自己的一行 `activePage` 而不是引 vue-router：只有 8 个页面、没有深层链接、
  * 没有 history 需求 —— 而 vue-router 会往产物里加 20KB 并且要求 history API
  * （在 `chrome-extension://` 下要额外配 `createWebHashHistory`）。
  */
 
-type PageId = 'general' | 'accounts' | 'rules' | 'ai' | 'blocked' | 'trash' | 'about'
+type PageId = 'general' | 'accounts' | 'rules' | 'adapters' | 'ai' | 'blocked' | 'trash' | 'about'
 
 const { app, ai, loadFailed, reload } = useSettings()
 
@@ -43,6 +44,7 @@ const NAV: Array<{ id: PageId, key: string }> = [
   { id: 'general', key: 'options.navGeneral' },
   { id: 'accounts', key: 'options.navAccounts' },
   { id: 'rules', key: 'options.navRules' },
+  { id: 'adapters', key: 'options.navAdapters' },
   { id: 'ai', key: 'options.navAi' },
   { id: 'blocked', key: 'options.navBlocked' },
   { id: 'trash', key: 'options.navTrash' },
@@ -58,14 +60,14 @@ const NAV: Array<{ id: PageId, key: string }> = [
  *
  * ⚠ 记忆在**极简模式**下可能指向隐藏页（提示词 / 屏蔽列表）：那时由下面的
  *   `ensureVisiblePage()` 把它拉回「通用」。注意它**不覆盖记忆** ——
- *   记忆只在用户点导航时写（见 `select()`），切回完整模式还能回到提示词页。
+ *   记忆只在用户点导航时写（见 `select()`），切回自定义模式还能回到提示词页。
  */
 const activePage = ref<PageId>(readRememberedPage(NAV.map(item => item.id), 'general'))
 
 const minimalMode = computed(() => app.value?.minimalMode ?? true)
 
 /**
- * 极简模式隐藏的页面：它们对应的是**完整模式的功能**，不是配置前提。
+ * 极简模式隐藏的页面：它们对应的是**自定义模式的功能**，不是配置前提。
  *
  * ⚠ 「回收站」**不在这里** —— 它在两种模式下都显示。理由：
  *   「失效验证码自动删除」默认开着，而它会把邮件移进回收站；
@@ -158,6 +160,9 @@ function retryLoad() {
       <a-tag v-if="minimalMode" class="mode-tag" :bordered="false">
         {{ t('app.minimalSuffix') }}
       </a-tag>
+      <a-tag v-else class="mode-tag" :bordered="false">
+        {{ t('app.customSuffix') }}
+      </a-tag>
     </header>
 
     <a-layout class="body">
@@ -201,11 +206,12 @@ function retryLoad() {
         <template v-else>
           <GeneralPage v-show="activePage === 'general'" />
           <AccountsPage v-if="activePage === 'accounts'" />
+          <MailTypesPage v-else-if="activePage === 'adapters'" />
           <AiPage v-else-if="activePage === 'ai'" :settings="ai" />
           <!-- 回收站在两种模式下都显示（见 FULL_MODE_ONLY 的说明） -->
           <TrashPage v-else-if="activePage === 'trash'" />
           <AboutPage v-else-if="activePage === 'about'" />
-          <!-- 下面两页只在完整模式出现，与 visibleNav 的过滤保持一致 -->
+          <!-- 下面两页只在自定义模式出现，与 visibleNav 的过滤保持一致 -->
           <RulesPage v-else-if="activePage === 'rules' && !minimalMode" />
           <BlockedPage v-else-if="activePage === 'blocked' && !minimalMode" />
         </template>

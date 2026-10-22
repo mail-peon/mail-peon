@@ -19,6 +19,7 @@ const zhCN: StringTable = {
     /** 展示名（产品名），两侧的品牌条与各页标题都用它；包名仍是 `mail-peon` */
     name: 'Mail Peon',
     minimalSuffix: '极简模式',
+    customSuffix: '自定义',
   },
 
   common: {
@@ -62,14 +63,21 @@ const zhCN: StringTable = {
     emptyAll: '还没有收到邮件',
     emptyCode: '还没有收到验证码',
     emptyAd: '还没有营销邮件',
+    emptyAdapter: '还没有「{name}」类型的邮件',
     openOptions: '打开设置',
     openSidepanel: '打开完整面板',
-    codeHistory: '验证码记录',
-    codeEmpty: '还没有收到验证码',
+    codeHistory: '验证码 / 确认记录',
+    codeEmpty: '还没有收到验证码或确认邮件',
   },
 
   mail: {
     code: '验证码',
+    confirm: '确认邮件',
+    confirmHint: '这是一封需要确认的邮件，点下面的按钮继续。',
+    openConfirm: '打开确认链接',
+    confirmInvalid: '确认链接无效，已阻止打开',
+    confirmFailed: '打开确认链接失败',
+    customType: '自定义类型',
     /*
      * ⚠ 「读不到邮件」和「没有邮件」必须是两句不同的话。
      *
@@ -141,6 +149,7 @@ const zhCN: StringTable = {
     navGeneral: '通用',
     navAccounts: '账号',
     navRules: '提示词',
+    navAdapters: '适配器',
     navAi: 'AI 配置',
     navBlocked: '屏蔽列表',
     navTrash: '回收站',
@@ -201,10 +210,10 @@ const zhCN: StringTable = {
      *   而且两个标签长度差太多时「开关在中间」看起来并不居中。
      */
     modeMinimal: '极简模式',
-    modeFull: '完整功能',
+    modeFull: '自定义',
     /** 模式说明（开关下方，一行一个模式，共两行） */
-    modeMinimalDesc: '只提取验证码并自动复制；其它邮件不入库、不展示',
-    modeFullDesc: 'AI 总结 + 广告屏蔽 + 提示词规则 + 排除邮箱',
+    modeMinimalDesc: '固定启用「验证码」和「确认邮件」，其他适配器关闭；开关在「适配器」页锁定',
+    modeFullDesc: '自由启用 / 编辑 / 新增适配器，包含总结与自定义类型',
     /** 完整模式通用页的第一个卡片标题 */
     behavior: '行为',
     /** 完整模式通用页的最后一个卡片标题（导出 / 导入 / 清空） */
@@ -214,7 +223,7 @@ const zhCN: StringTable = {
     excludeAdsHint: '被判为广告的邮件仍会被 AI 处理，可在弹窗「营销」分区查看。',
     blockedEnabled: '启用排除邮箱',
     notifyOnNew: 'Badge 提示新邮件',
-    popupDefaultTab: '弹窗默认 Tab',
+    popupDefaultTab: '弹窗默认筛选',
     retention: '邮件保留数量',
     retentionUnlimited: '无限',
     retentionUnit: '条',
@@ -231,10 +240,10 @@ const zhCN: StringTable = {
     clearAll: '清空所有数据',
     privacyTitle: '隐私声明',
     privacyBody: '邮箱凭据当前以明文存储在本机浏览器中，不会上传到任何服务器。请勿在公共电脑使用本扩展。',
-    aiKeyMissing: '验证码提取需要先配置 AI Key',
+    aiKeyMissing: '验证码 / 确认邮件处理需要先配置 AI Key',
     aiKeyMissingAction: '去 AI 配置',
     accountCount: '账号 · {n} 个',
-    codeCount: '验证码记录：{n} 条',
+    codeCount: '验证码 / 确认记录：{n} 条',
     confirmClearMails: '确定要清空所有已保存的邮件吗？此操作不可撤销。',
     confirmClearAll: '确定要清空所有数据吗？账号、规则、设置、邮件将全部删除，此操作不可撤销。',
     /*
@@ -314,6 +323,48 @@ const zhCN: StringTable = {
     builtinTag: '兜底',
   },
 
+  adapters: {
+    title: '适配器',
+    intro: '每个适配器是一种邮件类型 + 一段提示词。每封邮件都会带上所有启用适配器的提示词。',
+    promptBudget: '提示词共 {chars} 字（约 {tokens} tokens）',
+    builtinTag: '内置',
+    customTag: '自定义',
+    fallbackTag: '兜底',
+    add: '新增自定义类型',
+    empty: '还没有自定义类型',
+    name: '类型名',
+    namePlaceholder: '账单提醒',
+    prompt: '提示词',
+    promptPlaceholder: '当邮件是账单 / 发票时，告诉我金额、到期日和是否需要付款。',
+    promptHint: '提示词追加在基础 system 之后，不能修改输出 JSON 结构。',
+    userPrompt: '用户补充规则（选填）',
+    userPromptPlaceholder: '例如：邮件里有两个验证码 A、B 时，只用 A。',
+    reset: '恢复默认',
+    resetDone: '已恢复默认',
+    enabled: '启用',
+    priority: '优先级 #{n}',
+    stackable: '可叠加',
+    fallback: '仅当没有其它类型命中时',
+    moveUp: '上移',
+    moveDown: '下移',
+    deleteConfirm: '类型「{name}」将被删除，此操作无法撤销。',
+    minimalLocked: '极简模式固定启用「验证码」和「确认邮件」；切到「自定义」模式后可调整。',
+    noPrompt: '尚未填写提示词，这个类型不会生效。',
+    unnamed: '未命名类型',
+    code: {
+      name: '验证码',
+      description: '提取一次性验证码并自动复制；有有效期时显示倒计时。',
+    },
+    confirm: {
+      name: '确认邮件',
+      description: '注册确认 / 邮箱验证 / 账号激活，提供一个确认按钮。',
+    },
+    summary: {
+      name: '总结',
+      description: '没有任何类型命中时生成摘要；命中其它类型时自动跳过。',
+    },
+  },
+
   ai: {
     /** 卡片标题（nav 里那项叫「AI 配置」，卡片里说明它是配置本体） */
     cardTitle: 'AI 配置',
@@ -361,10 +412,12 @@ const zhCN: StringTable = {
 
   about: {
     title: '关于 Mail Peon',
-    intro: '浏览器里的邮件助理，AI 挑出真正重要的邮件，验证码自动复制',
+    intro: '浏览器里的邮件助理，AI 挑出真正重要的邮件，验证码自动复制、确认邮件一键打开',
     modeTitle: '两种运行模式',
-    modeMinimalDesc: '极简模式只在看到含验证码的邮件时自动复制并弹提示，其它邮件直接丢弃。',
-    modeFullDesc: '完整模式提供 AI 总结、广告屏蔽、提示词规则与排除邮箱。',
+    modeMinimal: '极简模式',
+    modeFull: '自定义模式',
+    modeMinimalDesc: '固定启用「验证码」和「确认邮件」：验证码自动复制并弹提示；确认邮件只在卡片里给一个打开链接的按钮。其它邮件直接丢弃。',
+    modeFullDesc: '可自由启用、排序、新增邮件类型适配器；支持 AI 总结（兜底）、广告屏蔽、提示词规则与排除邮箱。',
     storageTitle: '数据存在哪',
     storageDesc: '账号、规则、邮件全部存在本机 IndexedDB，不会上传到任何服务器。',
     aiTitle: '邮件正文会发给谁',

@@ -15,8 +15,7 @@ import type { Mail } from '~/logic/types'
  *   真实邮件里常见的形态（见下面注释）。
  */
 
-export const CODE_HINTS: readonly RegExp[] = [
-  // --- 设计文档给的四条 ---
+export const CODE_HINTS: readonly RegExp[] = [ // --- 设计文档给的四条 ---
   /验[证証][码碼]/, // 中文（含繁体）
   /\bcode\b/i,
   /\botp\b/i,
@@ -37,18 +36,49 @@ export const CODE_HINTS: readonly RegExp[] = [
 ]
 
 /**
- * 这封邮件看起来像含验证码吗？
+ * 确认邮件的线索（Feature 08）。
  *
- * 扫描范围：**主题 + 正文前 1000 字**。
+ * ⚠ 极简模式同时跑「验证码 + 确认」两个适配器。如果不加这一组，一封
+ *   `Please confirm your email address` 会在预筛就被丢掉 —— 而它正是最该
+ *   被看到的邮件之一。
  *
- * ⚠ 只扫前 1000 字是有意的：验证码几乎总在邮件开头（"您的验证码是 xxx"），
- *   而扫全文会让「邮件底部有一行版权声明写着 © 2024」这类内容命中
- *   `\b\d{4,8}\b` —— 于是每封邮件都要白调一次 AI。1000 字是「覆盖开头几段」
- *   与「不误伤」之间的平衡点。
+ * 假阳性的代价只是白调一次 AI；假阴性会让用户**永远看不到确认邮件**，所以宁宽勿严。
  */
+export const CONFIRM_HINTS: readonly RegExp[] = [
+  /\bconfirm(?:ation|ed|ing)?\b/i,
+  /\bverify\s+your\s+(?:e-?mail|address|account)\b/i,
+  /\b(?:activate|activation)\b/i,
+  /\bsign[-\s]?up\b/i,
+  /确认.*(?:邮箱|邮件|账号|帐户)/,
+  /验证.*(?:邮箱|邮件)/,
+  /激活/,
+  /確認メール|メール認証|アカウントを有効/,
+  /이메일\s*(?:인증|확인)/,
+]
+
+function haystackOf(mail: Pick<Mail, 'subject' | 'bodyText' | 'snippet'>): string {
+  return `${mail.subject ?? ''} ${(mail.bodyText ?? mail.snippet ?? '').slice(0, 1000)}`
+}
+
+/** 这封邮件看起来像含验证码吗？（保留给单测 / 诊断） */
 export function looksLikeCodeEmail(mail: Pick<Mail, 'subject' | 'bodyText' | 'snippet'>): boolean {
-  const haystack = `${mail.subject ?? ''} ${(mail.bodyText ?? mail.snippet ?? '').slice(0, 1000)}`
+  const haystack = haystackOf(mail)
   return CODE_HINTS.some(pattern => pattern.test(haystack))
+}
+
+/** 这封邮件看起来像确认 / 激活邮件吗？ */
+export function looksLikeConfirmEmail(mail: Pick<Mail, 'subject' | 'bodyText' | 'snippet'>): boolean {
+  const haystack = haystackOf(mail)
+  return CONFIRM_HINTS.some(pattern => pattern.test(haystack))
+}
+
+/**
+ * 极简模式的预筛：验证码 OR 确认。
+ *
+ * 两条都不像 → 不调 AI、不入库。这是极简模式省钱的关键。
+ */
+export function looksLikeActionableEmail(mail: Pick<Mail, 'subject' | 'bodyText' | 'snippet'>): boolean {
+  return looksLikeCodeEmail(mail) || looksLikeConfirmEmail(mail)
 }
 
 /**

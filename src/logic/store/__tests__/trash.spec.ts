@@ -44,6 +44,7 @@ function makeMail(patch: Partial<Mail> = {}): Mail {
     processing: 'sent',
     copyStatus: 'none',
     read: false,
+    stateFlags: 0,
     ...patch,
   }
 }
@@ -84,12 +85,26 @@ describe('移入回收站 / 恢复', () => {
       codeExpiresAt: 1_700_000_300_000,
       snippet: '摘要片段',
       ai: {
+        types: [
+          {
+            kind: 'code',
+            adapterId: 'builtin:code',
+            adapterName: '',
+            code: '123456',
+            expiry: { at: 1_700_000_300_000, totalSeconds: 300 },
+          },
+          {
+            kind: 'summary',
+            adapterId: 'builtin:summary',
+            adapterName: '',
+            minimal: '验证码：123456',
+            text: 'AI 摘要',
+          },
+        ],
         minimal: '验证码：123456',
         summary: 'AI 摘要',
-        isAd: false,
         code: '123456',
         validForSeconds: 300,
-        urgency: 'high',
       },
     })
     await upsertMail(original)

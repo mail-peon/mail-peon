@@ -2,11 +2,12 @@ import type { Mail } from '~/logic/types'
 import { describe, expect, it } from 'vitest'
 import {
   cleanValidForSeconds,
-  MAX_VALID_FOR_SECONDS,
+  MAX_CODE_VALID_FOR_SECONDS,
   MIN_VALID_FOR_SECONDS,
-  parseAiOutput,
+  parseAiResult,
 } from '~/logic/ai/output-schema'
 import { deriveCodeExpiresAt, deriveCodeValidForSeconds } from '~/logic/ai/pipeline'
+import { resolveMailTypeAdapters } from '~/logic/mail-types/resolve'
 
 /**
  * 验证码有效期的解析与换算。
@@ -128,9 +129,9 @@ describe('cleanValidForSeconds：该丢的形态', () => {
   })
 
   it('大于上限 → null（把「7 天内发货」当有效期是最典型的误判）', () => {
-    expect(cleanValidForSeconds(MAX_VALID_FOR_SECONDS + 1)).toBeNull()
+    expect(cleanValidForSeconds(MAX_CODE_VALID_FOR_SECONDS + 1)).toBeNull()
     expect(cleanValidForSeconds('7 天')).toBeNull() // 「天」不在支持的单位里
-    expect(cleanValidForSeconds(24 * 3600)).toBe(MAX_VALID_FOR_SECONDS)
+    expect(cleanValidForSeconds(24 * 3600)).toBe(MAX_CODE_VALID_FOR_SECONDS)
   })
 
   it('naN / Infinity / 非字符串非数字 → null', () => {
@@ -142,53 +143,45 @@ describe('cleanValidForSeconds：该丢的形态', () => {
   })
 })
 
-describe('toAiOutput 把有效期装配进 AiOutput', () => {
+describe('parseAiResult 把有效期装配进 code match', () => {
+  const adapters = resolveMailTypeAdapters([], { minimalMode: false, lang: 'zh' })
+
   /*
-   * ⚠ `parseAiOutput` 收的是**模型的原始文本**（字符串），不是对象 ——
+   * ⚠ `parseAiResult` 收的是**模型的原始文本**（字符串），不是对象 ——
    *   它内部要处理代码块围栏、多余说明这些真实形态。传对象进去会在
    *   `text.trim()` 上炸（而且报错位置指向 schema，看不出真正原因）。
    *   所以这里统一用 `JSON.stringify` 造输入，与真实调用一致。
-   *
-   * 返回值也是 discriminated union（`{ ok: true, output }` / `{ ok: false, error }`），
-   * 不是 `AiOutput | null`。
    */
-  function parse(payload: Record<string, unknown>): ReturnType<typeof parseAiOutput> {
-    return parseAiOutput(JSON.stringify(payload))
+  function parse(payload: Record<string, unknown>) {
+    return parseAiResult(JSON.stringify(payload), { adapters, mail: mail() })
   }
 
   it('正常提取（AI 给「5 分钟」，装配成 300 秒）', () => {
     const result = parse({
-      minimal: '验证码：34949',
-      summary: '',
-      isAd: false,
-      code: '34949',
-      validForSeconds: '5 分钟',
-      urgency: 'high',
+      types: [
+        { adapterId: 'builtin:code', code: { value: '34949', validForSeconds: '5 分钟' } },
+      ],
     })
 
     expect(result.ok).toBe(true)
     if (!result.ok)
       throw new Error(result.error)
 
-    expect(result.output.code).toBe('34949')
-    expect(result.output.validForSeconds).toBe(300)
+    expect(result.result.output.code).toBe('34949')
+    expect(result.result.output.validForSeconds).toBe(300)
   })
 
   it('字段缺失时给 null（而不是 undefined）', () => {
     const result = parse({
-      minimal: 'x',
-      summary: '',
-      isAd: false,
-      code: null,
-      urgency: 'normal',
+      types: [{ adapterId: 'builtin:code', code: { value: null } }],
     })
 
     expect(result.ok).toBe(true)
     if (!result.ok)
       throw new Error(result.error)
 
-    expect(result.output.validForSeconds).toBeNull()
-    expect(result.output.code).toBeNull()
+    expect(result.result.output.validForSeconds).toBeNull()
+    expect(result.result.output.code).toBeNull()
   })
 })
 
@@ -211,6 +204,7 @@ function mail(patch: Partial<Mail> = {}): Mail {
     processing: 'sent',
     copyStatus: 'none',
     read: false,
+    stateFlags: 0,
     ...patch,
   }
 }
@@ -314,20 +308,22 @@ describe('真实邮件样本', () => {
    * 所以这一段故意喂一段**满是时长表述但 AI 没给出 validForSeconds** 的正文，
    * 断言没有任何「从正文推断」的入口存在。
    *
-   * 做法：`parseAiOutput` 的输入是**模型的原始文本**，不是邮件正文 ——
-   * 把邮件正文原样喂进去必须得到 `validForSeconds: null`，
+   * 做法：`parseAiResult` 的输入是**模型的原始文本**，不是邮件正文 ——
+   * 把邮件正文原样喂进去必须得到 `ok: false`，
    * 证明这个模块对正文内容一无所知。
    */
   it('把邮件正文当成模型输出喂进去 → 拿不到有效期（代码不读正文）', () => {
-    const result = parseAiOutput(REAL_BODY)
+    const adapters = resolveMailTypeAdapters([], { minimalMode: false, lang: 'zh' })
+    const result = parseAiResult(REAL_BODY, { adapters, mail: mail() })
 
     // 正文不是合法 JSON，应当走 schema 失败分支 —— 而不是「从中提取出 300」
     expect(result.ok).toBe(false)
   })
 
   it('正文里出现多个时长时，代码不做任何选择（因为没有输入）', () => {
+    const adapters = resolveMailTypeAdapters([], { minimalMode: false, lang: 'zh' })
     const noisyBody = '订单将在 5 分钟内发货。优惠券 30 天内有效。登录验证码 10 分钟内有效。'
-    const result = parseAiOutput(noisyBody)
+    const result = parseAiResult(noisyBody, { adapters, mail: mail() })
 
     expect(result.ok).toBe(false)
   })

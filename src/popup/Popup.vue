@@ -1,23 +1,21 @@
 <script setup lang="ts">
-import type { Mail, PopupTab } from '~/logic/types'
+import type { ConfirmMatch, Mail, MailFilterId } from '~/logic/types'
 import { computed, ref, watch } from 'vue'
 import ConfirmDialog from '~/components/ConfirmDialog.vue'
 import EmptyState from '~/components/EmptyState.vue'
 import MailListItem from '~/components/MailListItem.vue'
-import { useMails, useSettings } from '~/logic/bridge'
+import { useMails, useMailTypes, useSettings } from '~/logic/bridge'
 import { useMailFocus } from '~/logic/mail-focus'
+import { parseSafeHttpUrl } from '~/logic/mail-types/url'
 import { t } from '~/logic/strings'
 import { useTrashConfirm } from '~/logic/trash-confirm'
 import { ERROR_DURATION, useAppMessage } from '~/logic/ui-message'
 import {
-  countByTab,
-  displayCount,
+  buildMailFilters,
   filterMails,
   minimalModeMails,
+  resolveFilterId,
   sortMails,
-  TAB_ORDER,
-  tabEmptyKey,
-  tabLabelKey,
 } from './list-filter'
 
 /**
@@ -33,6 +31,7 @@ import {
  */
 const { mails, loading, loadFailed, justCopied, copyCode, setRead, dismiss, trash, markAllRead, reload } = useMails(200)
 const { app, ai, reload: reloadSettings } = useSettings()
+const { adapters } = useMailTypes()
 const uiMessage = useAppMessage()
 
 /**
@@ -44,45 +43,62 @@ const uiMessage = useAppMessage()
  */
 const { focusedId } = useMailFocus()
 
-const activeTab = ref<PopupTab>('important')
-
 /**
- * 默认 tab 由设置决定（`popupDefaultTab`）。
+ * 当前筛选。
  *
- * ⚠ 只在**首次**加载时套用：用户手动切到「全部」之后，background 广播一封新邮件
- *   会触发重载，如果每次都重置成默认 tab，用户会看到「刚切过去又被弹回来」。
+ * Feature 08 起不再是四个硬编码 tab：`buildMailFilters` 会按「状态 + 启用的适配器」
+ * 动态生成，`resolveFilterId` 负责把设置里那个可能已失效的 id 回退到「重要」。
  */
-const appliedDefault = ref(false)
-watch(app, (value) => {
-  if (value && !appliedDefault.value) {
-    activeTab.value = value.popupDefaultTab
-    appliedDefault.value = true
-  }
-}, { immediate: true })
+const activeFilter = ref<MailFilterId>('important')
 
 const minimalMode = computed(() => app.value?.minimalMode ?? true)
 const excludeAds = computed(() => app.value?.excludeAds ?? true)
 const hasAiKey = computed(() => !!ai.value?.apiKey)
 
-const counts = computed(() => countByTab(mails.value, { excludeAds: excludeAds.value }))
-
-const visibleMails = computed(() =>
-  sortMails(filterMails(mails.value, activeTab.value, { excludeAds: excludeAds.value })),
+const filters = computed(() =>
+  buildMailFilters(mails.value, adapters.value, { excludeAds: excludeAds.value }),
 )
 
-/** 极简模式：只挑含验证码的（`design/minimal-mode.md § 4.3`） */
+/**
+ * 默认筛选由设置决定（`popupDefaultTab`）。
+ *
+ * ⚠ 只在**首次**加载时套用：用户手动切到「全部」之后，background 广播一封新邮件
+ *   会触发重载，如果每次都重置成默认筛选，用户会看到「刚切过去又被弹回来」。
+ *
+ * ⚠ 要等适配器加载完再套用：默认值可能指向 `adapter:builtin:code`，
+ *   而适配器列表一开始是空的；那时套用会被回退成「重要」，永远轮不到真正的默认。
+ */
+const appliedDefault = ref(false)
+watch([app, adapters], () => {
+  if (!app.value || appliedDefault.value || !adapters.value.length)
+    return
+  activeFilter.value = resolveFilterId(filters.value, app.value.popupDefaultTab)
+  appliedDefault.value = true
+}, { immediate: true })
+
+const visibleMails = computed(() =>
+  sortMails(filterMails(mails.value, activeFilter.value, { excludeAds: excludeAds.value })),
+)
+
+/*
+ * 筛选标签会随适配器开关 / 删除变化。如果当前选中的适配器被关掉 / 删掉，
+ * antd 的 tab 会一个都不选中 —— 这里把 activeFilter 拉回「重要」。
+ */
+watch(filters, (list) => {
+  if (!list.some(filter => filter.id === activeFilter.value))
+    activeFilter.value = resolveFilterId(list, 'important')
+})
+
+/** 极简模式：只挑含验证码 / 确认的（`design/minimal-mode.md § 5.2`） */
 const codeMails = computed(() => minimalModeMails(mails.value))
 
 /**
  * 诊断输出：**库里有记录，当前视图却一条都没有**。
  *
  * ⚠ 只在「有数据但渲染为 0」时才打。这才是需要解释的情况：数据确实到了 Popup
- *   （`mail:list` 通了），只是被模式 / tab 过滤掉了。
- *
- *   正常打开 Popup（包括一条记录都没有）不写日志 —— 那是常态，不是线索，
- *   每次打开都刷一行「收到 0 条记录」只会把真正的异常淹掉。
+ *   （`mail:list` 通了），只是被模式 / 筛选过滤掉了。
  */
-watch([mails, activeTab, minimalMode], () => {
+watch([mails, activeFilter, minimalMode], () => {
   if (!mails.value.length)
     return
 
@@ -91,8 +107,8 @@ watch([mails, activeTab, minimalMode], () => {
     return
 
   const where = minimalMode.value
-    ? '极简模式（只渲染含验证码的）'
-    : `完整模式 tab「${activeTab.value}」`
+    ? '极简模式（只渲染验证码 / 确认）'
+    : `筛选「${activeFilter.value}」`
   console.warn(`[mail-peon] Popup 有 ${mails.value.length} 条记录，但当前视图 0 条：${where}`)
 }, { immediate: true })
 
@@ -115,6 +131,45 @@ void onOpened()
 
 function onCopy(mail: Mail) {
   void copyCode(mail)
+}
+
+/**
+ * 打开确认链接。
+ *
+ * ⚠ 这里是**唯一**把确认 URL 变成动作的地方：
+ *   - 存储 / 展示时已经校验过一次，打开前再校验一次（纵深防御）；
+ *   - 新标签打开，不在当前页导航；
+ *   - 点完把邮件标已读（用户已经处理了它）。
+ *
+ * 不做 toast、不自动打开、不做链接预览 —— 链接来自不可信邮件。
+ */
+async function onConfirm(mail: Mail, match: ConfirmMatch) {
+  const url = parseSafeHttpUrl(match.url)
+  if (!url) {
+    uiMessage.error(t('mail.confirmInvalid'), ERROR_DURATION)
+    return
+  }
+
+  try {
+    await browser.tabs.create({ url: url.toString() })
+    if (!mail.read)
+      await setRead(mail, true)
+  }
+  catch (error) {
+    console.warn('[mail-peon] 打开确认链接失败', error)
+    uiMessage.error(t('mail.confirmFailed'), ERROR_DURATION)
+  }
+}
+
+/** 空态文案：状态筛选用固定文案，适配器筛选带上类型名 */
+function emptyText(filterId: MailFilterId, label: string): string {
+  if (filterId === 'important')
+    return t('popup.emptyImportant')
+  if (filterId === 'all')
+    return t('popup.emptyAll')
+  if (filterId === 'ad')
+    return t('popup.emptyAd')
+  return t('popup.emptyAdapter', { name: label })
 }
 
 function onRead(mail: Mail, read: boolean) {
@@ -241,6 +296,7 @@ function onOpen(mail: Mail) {
             :focused="focusedId === mail.id"
             minimal
             @copy="onCopy"
+            @confirm="onConfirm"
             @trash="onTrash"
             @open="onOpen"
           />
@@ -255,10 +311,13 @@ function onOpen(mail: Mail) {
       </footer>
     </template>
 
-    <!-- ============ 完整模式：四个分区 ============ -->
+    <!-- ============ 自定义模式：动态筛选 ============ -->
     <template v-else>
       <header class="head">
         <span class="brand">{{ t('app.name') }}</span>
+        <a-tag class="mode-tag" :bordered="false">
+          {{ t('app.customSuffix') }}
+        </a-tag>
       </header>
 
       <!--
@@ -266,15 +325,17 @@ function onOpen(mail: Mail) {
           antd 的 Tabs 自己管面板的切换与保留。代价是要把「面板高度」一路撑到
           列表上（下面的 `:deep` 那几行），否则 480px 的弹窗里列表不会滚动
           —— 见 `.tabs` 的样式说明。
+
+        Feature 08：tab 由「状态 + 启用的适配器」动态生成，不再硬编码四个。
       -->
-      <a-tabs v-model:active-key="activeTab" class="tabs" size="small">
-        <a-tab-pane v-for="tab in TAB_ORDER" :key="tab">
+      <a-tabs v-model:active-key="activeFilter" class="tabs" size="small">
+        <a-tab-pane v-for="filter in filters" :key="filter.id">
           <template #tab>
             <span class="tab-label">
-              {{ t(tabLabelKey(tab)) }}
+              {{ filter.label }}
               <a-badge
-                v-if="displayCount(counts[tab])"
-                :count="counts[tab]"
+                v-if="filter.count > 0"
+                :count="filter.count"
                 :overflow-count="99"
               />
             </span>
@@ -290,7 +351,7 @@ function onOpen(mail: Mail) {
               :action-text="t('common.retry')"
               @action="reload"
             />
-            <EmptyState v-else-if="!visibleMails.length" :text="t(tabEmptyKey(activeTab))" />
+            <EmptyState v-else-if="!visibleMails.length" :text="emptyText(filter.id, filter.label)" />
             <!-- `v-if` 放在外层 `<template>` 上 —— 理由见上面极简模式那段 -->
             <template v-if="visibleMails.length">
               <MailListItem
@@ -300,6 +361,7 @@ function onOpen(mail: Mail) {
                 :just-copied="justCopied.has(mail.id)"
                 :focused="focusedId === mail.id"
                 @copy="onCopy"
+                @confirm="onConfirm"
                 @read="onRead"
                 @dismiss="onDismiss"
                 @trash="onTrash"

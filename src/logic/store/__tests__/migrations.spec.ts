@@ -263,8 +263,10 @@ describe('normalizeMail', () => {
       accountId: 'a',
       ai: { minimal: 'x', urgency: 'URGENT', isAd: 'yes' },
     })
-    expect(mail!.ai!.urgency).toBe('normal')
-    expect(mail!.ai!.isAd).toBe(false)
+    // 老字段迁移：非法 isAd / urgency 都归 0；minimal 合成一条 summary match
+    expect(mail!.stateFlags).toBe(0)
+    expect(mail!.ai!.types[0]?.kind).toBe('summary')
+    expect(mail!.ai!.minimal).toBe('x')
   })
 
   it('把字符串形态的发件人解析成结构化地址', () => {

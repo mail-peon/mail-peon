@@ -34,17 +34,24 @@ describe('schema', () => {
      *   改动版本号必须在 `upgrade()` 里追加分支**并且**同步这一行 ——
      *   这条断言的用途正是逼着人停下来想一次「老用户的库要怎么升上来」。
      */
-    expect(DB_VERSION).toBe(2)
+    /*
+     * ⚠ v3 = 新增邮件类型适配器仓库（`mailTypes`）。
+     *
+     *   改动版本号必须在 `upgrade()` 里追加分支**并且**同步这一行 ——
+     *   这条断言的用途正是逼着人停下来想一次「老用户的库要怎么升上来」。
+     */
+    expect(DB_VERSION).toBe(3)
   })
 
-  it('五个仓库的形状与设计文档一致', () => {
-    expect(STORES.map(store => store.name)).toEqual(['accounts', 'rules', 'mails', 'settings', 'meta'])
+  it('六个仓库的形状与设计文档一致', () => {
+    expect(STORES.map(store => store.name)).toEqual(['accounts', 'rules', 'mails', 'mailTypes', 'settings', 'meta'])
 
     const byName = Object.fromEntries(STORES.map(store => [store.name, store]))
     // 外部键仓库：keyPath 为 null
     expect(byName.accounts.keyPath).toBeNull()
     expect(byName.rules.keyPath).toBeNull()
     expect(byName.mails.keyPath).toBeNull()
+    expect(byName.mailTypes.keyPath).toBeNull()
     // 内部键仓库
     expect(byName.settings.keyPath).toBe('id')
     expect(byName.meta.keyPath).toBe('key')
@@ -60,7 +67,7 @@ describe('openDb', () => {
     const db = await openDb()
     // `objectStoreNames` / `indexNames` 是 DOMStringList，不是数组 —— 没有
     // `Symbol.iterator`，所以展开运算符用不了，得走 Array.from
-    expect(Array.from(db.objectStoreNames).sort()).toEqual(['accounts', 'mails', 'meta', 'rules', 'settings'])
+    expect(Array.from(db.objectStoreNames).sort()).toEqual(['accounts', 'mailTypes', 'mails', 'meta', 'rules', 'settings'])
 
     const tx = db.transaction('mails', 'readonly')
     expect(Array.from(tx.objectStore('mails').indexNames).sort()).toEqual(['by-accountId', 'by-receivedAt', 'by-trashedAt'])

@@ -1,4 +1,4 @@
-import type { Mail } from '~/logic/types'
+import type { Mail, MailTypeAdapter } from '~/logic/types'
 import { mount } from '@vue/test-utils'
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 import { ref } from 'vue'
@@ -43,6 +43,7 @@ const mocks = vi.hoisted(() => ({
   mails: { value: [] as Mail[] },
   app: { value: { minimalMode: true, excludeAds: true, popupDefaultTab: 'important' } },
   ai: { value: { apiKey: 'test-key' } },
+  adapters: { value: [] as MailTypeAdapter[] },
   /**
    * `justCopied` 必须是真的 Vue `ref`（理由见下面 `useMails` 的 mock）。
    *
@@ -94,6 +95,17 @@ vi.mock('~/logic/bridge', () => ({
     ai: mocks.ai,
     reload: vi.fn(async () => {}),
   }),
+  useMailTypes: () => ({
+    adapters: mocks.adapters,
+    reload: vi.fn(async () => {}),
+    setEnabled: vi.fn(async () => {}),
+    setUserPrompt: vi.fn(async () => {}),
+    create: vi.fn(async () => ({ ok: true })),
+    update: vi.fn(async () => {}),
+    remove: vi.fn(async () => {}),
+    move: vi.fn(async () => {}),
+    reset: vi.fn(async () => {}),
+  }),
   /*
    * `Popup` 通过 `useMailFocus()` 订阅「点 toast 定位邮件」。
    * 这里给一个什么都不做的实现 —— 那一套行为在
@@ -112,6 +124,11 @@ beforeAll(async () => {
   mocks.justCopied = ref(new Set<string>())
   mocks.loading = ref(false)
   mocks.loadFailed = ref(false)
+  // 这三个也必须是真 ref：Popup 里 `watch([app, adapters])` / `watch(mails, …)`
+  // 只接受 ref / reactive；普通 `{ value }` 会得到「Invalid watch source」警告
+  mocks.mails = ref([]) as unknown as { value: Mail[] }
+  mocks.app = ref({ minimalMode: true, excludeAds: true, popupDefaultTab: 'important' }) as unknown as { value: { minimalMode: boolean, excludeAds: boolean, popupDefaultTab: string } }
+  mocks.adapters = ref([]) as unknown as { value: MailTypeAdapter[] }
   mocks.reloadMails = async () => {}
   Popup = (await import('~/popup/Popup.vue')).default
 })
@@ -127,13 +144,20 @@ function codeMail(patch: Partial<Mail> = {}): Mail {
     receivedAt: Date.now(),
     processing: 'skipped',
     code: '34949',
+    stateFlags: 0,
     ai: {
+      types: [
+        {
+          kind: 'code',
+          adapterId: 'builtin:code',
+          adapterName: '',
+          code: '34949',
+        },
+      ],
       minimal: '验证码：34949',
       summary: '',
-      isAd: false,
       code: '34949',
       validForSeconds: 300,
-      urgency: 'high',
     },
     /*
      * ⚠ 默认用 `'none'`（还没复制过）而不是 `'copied'`。

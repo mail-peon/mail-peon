@@ -41,17 +41,34 @@ const mocks = vi.hoisted(() => ({
    */
   upsertMail: vi.fn(async (_mail: Mail, _retention?: unknown) => {}),
   readAiSettings: vi.fn(async () => ({ apiKey: 'k', platform: 'openai', model: 'm' })),
-  extractCodeOnly: vi.fn(async (_mail: Mail, _settings: unknown, _options?: unknown) => ({ code: '34949', validForSeconds: 300 })),
+  extractMinimalTypes: vi.fn(async (_mail: Mail, _adapters: unknown, _settings: unknown, _options?: unknown) => ([
+    {
+      kind: 'code' as const,
+      adapterId: 'builtin:code',
+      adapterName: '验证码',
+      code: '34949',
+      expiry: { at: Date.now() + 300_000, totalSeconds: 300 },
+    },
+  ])),
   /*
-   * 完整模式（`minimalMode: false`）走 `summarize` 而不是 `extractCodeOnly`。
+   * 完整模式（`minimalMode: false`）走 `summarize` 而不是 `extractMinimalTypes`。
    * 它必须能被**单条测试**改（下面那条完整模式的用例），所以放进 `mocks`。
    */
-  summarize: vi.fn(async (_mail: Mail, _rule: unknown, _settings: unknown, _options?: unknown) => ({
-    minimal: '验证码',
-    summary: '要点',
-    isAd: false,
-    code: '34949',
-    validForSeconds: 300,
+  summarize: vi.fn(async (_mail: Mail, _adapters: unknown, _rule: unknown, _settings: unknown, _options?: unknown) => ({
+    output: {
+      types: [
+        {
+          kind: 'code' as const,
+          adapterId: 'builtin:code',
+          adapterName: '验证码',
+          code: '34949',
+          expiry: { at: Date.now() + 300_000, totalSeconds: 300 },
+        },
+      ],
+      code: '34949',
+      validForSeconds: 300,
+    },
+    stateFlags: 0,
   })),
   copyToClipboard: vi.fn(async (_code: string) => true),
   showToast: vi.fn(async (_payload: unknown) => {}),
@@ -77,14 +94,23 @@ vi.mock('~/logic/store/settings', () => ({
    *   而失败信息指向 copyStatus，看不出是桩不完整。
    */
   readAppSettings: vi.fn(async () => ({ minimalMode: true, autoCopyCode: true, blockedEnabled: false })),
+  readRawSetting: vi.fn(async () => undefined),
   patchAiSettings: vi.fn(),
   patchAppSettings: vi.fn(),
 }))
 
 vi.mock('~/logic/ai/summarize', () => ({
-  extractCodeOnly: mocks.extractCodeOnly,
+  extractMinimalTypes: mocks.extractMinimalTypes,
   summarize: mocks.summarize,
   testAiConnection: vi.fn(),
+}))
+
+vi.mock('~/logic/store/mail-types', () => ({
+  /*
+   * 适配器走真实 catalog（`resolveMailTypeAdapters`），只需要把存储桩成空表：
+   * 内置验证码 / 确认 / 总结由 catalog 提供，极简模式会强制只启用 code+confirm。
+   */
+  listMailTypeRecords: vi.fn(async () => []),
 }))
 
 function mail(patch: Partial<Mail> = {}): Mail {
@@ -101,6 +127,7 @@ function mail(patch: Partial<Mail> = {}): Mail {
     processing: 'pending',
     copyStatus: 'none',
     read: false,
+    stateFlags: 0,
     ...patch,
   }
 }
@@ -133,7 +160,15 @@ function notifier(overrides: Partial<Notifier> = {}): Notifier {
 describe('剪贴板不阻塞入库', () => {
   beforeEach(() => {
     vi.clearAllMocks()
-    mocks.extractCodeOnly.mockResolvedValue({ code: '34949', validForSeconds: 300 })
+    mocks.extractMinimalTypes.mockResolvedValue([
+      {
+        kind: 'code',
+        adapterId: 'builtin:code',
+        adapterName: '验证码',
+        code: '34949',
+        expiry: { at: Date.now() + 300_000, totalSeconds: 300 },
+      },
+    ])
     mocks.copyToClipboard.mockResolvedValue(true)
     mocks.upsertMail.mockResolvedValue(undefined)
   })
@@ -198,11 +233,20 @@ describe('剪贴板不阻塞入库', () => {
       blockedEnabled: false,
     } as never)
     mocks.summarize.mockResolvedValue({
-      minimal: '验证码',
-      summary: '要点',
-      isAd: false,
-      code: '34949',
-      validForSeconds: 300,
+      output: {
+        types: [
+          {
+            kind: 'code',
+            adapterId: 'builtin:code',
+            adapterName: '验证码',
+            code: '34949',
+            expiry: { at: Date.now() + 300_000, totalSeconds: 300 },
+          },
+        ],
+        code: '34949',
+        validForSeconds: 300,
+      },
+      stateFlags: 0,
     })
     // 同样是一个永不 settle 的 promise（真机上挂在 content script 那条 sendMessage 上）
     mocks.copyToClipboard.mockImplementation(() => new Promise<boolean>(() => {}))

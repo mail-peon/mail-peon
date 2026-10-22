@@ -23,9 +23,9 @@ export const DB_NAME = 'mail-peon'
  *
  * 每次改动结构都要 +1，并在 `upgrade()` 里追加对应分支。
  */
-export const DB_VERSION = 2
+export const DB_VERSION = 3
 
-export type StoreName = 'accounts' | 'rules' | 'mails' | 'settings' | 'meta'
+export type StoreName = 'accounts' | 'rules' | 'mails' | 'mailTypes' | 'settings' | 'meta'
 
 export interface IndexSchema {
   name: string
@@ -80,6 +80,13 @@ export const STORES: readonly StoreSchema[] = [
     ],
   },
   {
+    // 邮件类型适配器（v3）：内置 override + 自定义类型。
+    // 条数很少（内置 3 个 + 用户自定义），不需要索引。
+    name: 'mailTypes',
+    keyPath: null,
+    indexes: [],
+  },
+  {
     // 单文档仓库：app / ai，值统一是 { id, value, updatedAt }
     name: 'settings',
     keyPath: 'id',
@@ -131,5 +138,21 @@ export function upgrade(db: IDBDatabase, oldVersion: number, tx: IDBTransaction)
     // 防御：万一某个中间版本已经建过（例如从更早的开发版升上来），别重复建
     if (!mails.indexNames.contains('by-trashedAt'))
       mails.createIndex('by-trashedAt', 'trashedAt')
+  }
+
+  /*
+   * v3：邮件类型适配器仓库。
+   *
+   * ⚠ 这里**不能**写成 `else if (oldVersion < 3)`。
+   *
+   *   上面的链是 `if (<1) … else if (<2) …`，而 v1 的库升到 v3 时只会命中
+   *   `<2` 那一支（补索引），`<3` 那一支永远不会执行 —— 结果是从 v1 升上来的
+   *   用户**没有 mailTypes 仓库**，第一次读写就抛 `NotFoundError`。
+   *   全新安装（oldVersion=0）已经由 `<1` 分支按当前 `STORES` 建好了，
+   *   所以这里显式跳过 0，只给 v1 / v2 的老库补建。
+   */
+  if (oldVersion >= 1 && oldVersion < 3) {
+    if (!db.objectStoreNames.contains('mailTypes'))
+      db.createObjectStore('mailTypes')
   }
 }

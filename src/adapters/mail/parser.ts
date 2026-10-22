@@ -1,7 +1,8 @@
 import type { MailAccount, MailAddress } from '~/logic/types'
 import PostalMime from 'postal-mime'
+import { safeHttpUrl } from '~/logic/mail-types/url'
 import { MAX_BODY_CHARS, normalizeAddresses } from '~/logic/store/migrations'
-import { fallbackMessageId, mailKey } from '~/logic/types'
+import { fallbackMessageId, mailKey, MailStateFlag } from '~/logic/types'
 
 /**
  * RFC822 → `Mail` 归一化（`ai-docs/features/01-mail-inbox-connect.md § 5`）。
@@ -35,6 +36,13 @@ export interface ParsedMail {
   date: number | null
   messageId: string | null
   listUnsubscribe: string | null
+  /**
+   * HTML `href` + 正文裸 URL（只留 http/https、去重、最多 10 条）。
+   *
+   * ⚠ 这是确认邮件的前置条件：`htmlToText` 只保留 `<a>` 的文字、丢掉 `href`，
+   *   只有 HTML 部分的确认邮件否则根本拿不到链接。
+   */
+  links: string[]
 }
 
 /**
@@ -62,6 +70,7 @@ export async function parseRawMail(source: Uint8Array): Promise<ParsedMail> {
     date: email.date ? Date.parse(email.date) || null : null,
     messageId: normalizeMessageId(email.messageId),
     listUnsubscribe: readHeader(email.headers, 'list-unsubscribe'),
+    links: extractLinks(html, text),
   }
 }
 
@@ -200,6 +209,44 @@ export function decodeHtmlEntities(value: string): string {
   })
 }
 
+/** 最多保留多少条链接（prompt 与 UI 都够用；太多只是噪声） */
+const MAX_LINKS = 10
+
+/** `<a href="...">` / 单引号 / 无引号三种写法（用 `\s` 锚定属性边界，避免匹配 `data-href`） */
+const HREF_RE = /<a\b[^>]*\shref\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))/gi
+
+/** 正文里的裸 URL；结尾的标点不算 URL 的一部分 */
+const BARE_URL_RE = /https?:\/\/[^\s<>"')}\]]+/gi
+
+/**
+ * 抽链接（HTML `href` + 正文裸 URL）。
+ *
+ * ⚠ 只从 HTML 抽 `href` 是不够的：有些邮件正文是纯文本，URL 直接裸写；
+ *   反过来有些邮件只有 HTML，`htmlToText` 又会把 `href` 丢掉。
+ *   两条路都走，才能覆盖确认邮件的两种常见形态。
+ */
+export function extractLinks(html: string, text: string): string[] {
+  const out = new Set<string>()
+
+  const add = (raw: string | undefined): void => {
+    if (!raw)
+      return
+    // 结尾的 `)` `]` `.` `,` `;` 通常是句子标点，不是 URL 的一部分
+    const candidate = decodeHtmlEntities(raw).trim().replace(/[),.;]+$/, '')
+    const url = safeHttpUrl(candidate)
+    if (url)
+      out.add(url)
+  }
+
+  for (const match of html.matchAll(HREF_RE))
+    add(match[1] ?? match[2] ?? match[3])
+
+  for (const match of text.matchAll(BARE_URL_RE))
+    add(match[0])
+
+  return [...out].slice(0, MAX_LINKS)
+}
+
 /** `snippet` = text 前 240 字（设计文档的字段定义） */
 export const SNIPPET_CHARS = 240
 
@@ -237,6 +284,8 @@ export function toMail(
     processing: 'pending',
     copyStatus: 'none',
     read: false,
+    stateFlags: MailStateFlag.None,
+    links: parsed.links.length ? parsed.links : undefined,
     messageId,
     listUnsubscribe: parsed.listUnsubscribe ?? undefined,
   }

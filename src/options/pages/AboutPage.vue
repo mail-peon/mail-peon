@@ -11,9 +11,9 @@ import { t } from '~/logic/strings'
  *   「需要装 peon-hall：扩展不能直接连 IMAP」 + 「下载 peon-hall」
  *   — 别的不安全过、不堆按钮、不画 alert。安全细节在 IMAP 配账号时再看。
  */
-const MODES: Array<{ name: string, desc: string }> = [
-  { name: t('about.modeMinimal'), desc: 'modeMinimalDesc' },
-  { name: t('about.modeFull'), desc: 'modeFullDesc' },
+const MODES: Array<{ nameKey: string, descKey: string }> = [
+  { nameKey: 'about.modeMinimal', descKey: 'about.modeMinimalDesc' },
+  { nameKey: 'about.modeFull', descKey: 'about.modeFullDesc' },
 ]
 
 /**
@@ -36,13 +36,13 @@ const PEON_HALL_DOWNLOAD_URL = 'https://github.com/mail-peon/peon-hall/releases/
     <a-card size="small" :title="t('about.modeTitle')">
       <a-typography-paragraph
         v-for="mode in MODES"
-        :key="mode.name"
+        :key="mode.nameKey"
         class="body"
       >
         <a-typography-text strong>
-          {{ mode.name }}
+          {{ t(mode.nameKey) }}
         </a-typography-text>
-        ：{{ t(`about.${mode.desc}`) }}
+        ：{{ t(mode.descKey) }}
       </a-typography-paragraph>
     </a-card>
 

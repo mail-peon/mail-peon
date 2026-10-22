@@ -26,6 +26,7 @@
 | `accounts` | `null`（外部键 `accountId`） | `by-email`, `by-enabled` | 邮箱账号（含 per-account blockedList） |
 | `rules` | `null`（外部键 `ruleId`） | `by-enabled`, `by-priority` | PromptRule |
 | `mails` | `null`（外部键 `<accountId>:<messageId>`） | `by-accountId`, `by-receivedAt`, `by-trashedAt` | 邮件；按 receivedAt 保留最近 N 封（回收站里的不占名额） |
+| `mailTypes` | `null`（外部键 `id`） | — | 邮件类型适配器：内置 override + 自定义类型（v3） |
 | `settings` | `'id'` | — | 单文档：`app` / `ai` |
 | `meta` | `'key'` | — | 迁移标记、初始化标记 |
 
@@ -423,9 +424,9 @@ async function init(): Promise<void> {
 
 ```ts
 export const DB_NAME = 'mail-peon'
-export const DB_VERSION = 2
+export const DB_VERSION = 3
 
-export type StoreName = 'accounts' | 'rules' | 'mails' | 'settings' | 'meta'
+export type StoreName = 'accounts' | 'rules' | 'mails' | 'mailTypes' | 'settings' | 'meta'
 
 export interface StoreSchema {
   name: StoreName
@@ -447,6 +448,7 @@ export const STORES: readonly StoreSchema[] = [
     { name: 'by-receivedAt', keyPath: 'receivedAt' },
     { name: 'by-trashedAt', keyPath: 'trashedAt' }, // v2：回收站
   ] },
+  { name: 'mailTypes', keyPath: null, indexes: [] }, // v3：适配器
   { name: 'settings', keyPath: 'id', indexes: [] },
   { name: 'meta', keyPath: 'key', indexes: [] },
 ]
@@ -474,6 +476,18 @@ export function upgrade(db: IDBDatabase, oldVersion: number, tx: IDBTransaction)
     const mails = tx.objectStore('mails')
     if (!mails.indexNames.contains('by-trashedAt'))
       mails.createIndex('by-trashedAt', 'trashedAt')
+  }
+
+  /*
+   * v3：适配器仓库。
+   *
+   * ⚠ 这里**不能**写成 `else if (oldVersion < 3)`：v1 的库升到 v3 时只会命中
+   *   `<2` 那一支，`<3` 永远不执行 —— 结果是「从 v1 升上来的用户没有 mailTypes」。
+   *   全新安装（0）已由 `<1` 分支按 STORES 建好，所以这里只补 v1 / v2 的老库。
+   */
+  if (oldVersion >= 1 && oldVersion < 3) {
+    if (!db.objectStoreNames.contains('mailTypes'))
+      db.createObjectStore('mailTypes')
   }
 }
 ```

@@ -56,6 +56,10 @@ vi.mock('~/logic/bridge', () => ({
     syncNow: vi.fn(async () => ({ started: true })),
     syncStatus: vi.fn(async () => null),
   }),
+  useMailTypes: () => ({
+    adapters: ref([]),
+    reload: vi.fn(async () => {}),
+  }),
   onDataChanged: () => () => {},
   onSyncDone: () => () => {},
   useMails: () => ({

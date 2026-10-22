@@ -9,10 +9,11 @@
 ## 0. 总览
 
 ```
-DB: mail-peon (v2)
+DB: mail-peon (v3)
 ├─ accounts (外键 accountId)            → MailAccount[]
 ├─ rules    (外键 ruleId)               → PromptRule[]
 ├─ mails    (外键 <accountId>:<messageId>) → Mail[]   索引含 by-trashedAt（v2）
+├─ mailTypes(外键 id)                   → MailTypeRecord[]（v3：内置 override + 自定义）
 ├─ settings (内键 id: 'app' | 'ai')     → 单文档
 └─ meta     (内键 key)                  → 迁移标记
 ```
@@ -128,6 +129,15 @@ interface Mail {
   read: boolean
   dismissed?: boolean                // 用户标记不再显示（卡片展开后的「不再显示」按钮）
 
+  /**
+   * 邮件内部状态标签（位掩码，`MailStateFlag`）。
+   * Ad = 1<<0 / Urgent = 1<<1 / LowPriority = 1<<2。
+   * ⚠ `isAd` / `urgency` 不再放在 `ai` 里；老数据归一化时迁移到这里。
+   */
+  stateFlags: number
+  /** HTML href + 正文裸 URL（≤10，仅 http/https）；确认链接 / AI prompt 用 */
+  links?: string[]
+
   // 验证码（极简模式的核心产出）
   /** 顶层 `code`：UI 与 badge 用的便宜判据，避免每处都去翻 `ai` */
   code?: string | null
@@ -155,23 +165,74 @@ interface Mail {
 
 ```ts
 interface AiOutput {
-  minimal: string                   // ≤60 字
-  summary: string                   // ≤600 字
-  isAd: boolean
-  code?: string | null
+  /** 命中的类型（已按优先级排序、已应用兜底）—— 唯一真相 */
+  types: MailTypeMatch[]
   /**
-   * AI 从邮件里读到的有效期（**秒**）。
-   * ⚠ 模型看不到当前时间，所以只能给相对时长；换算成绝对时刻是 pipeline 的事。
-   * ⚠ 只在邮件**明确写了**有效期时才给值 —— 不许猜一个「常见值」。
+   * 兼容旧 UI 的派生字段（新代码尽量读 types）。
+   * 新邮件由 pipeline 从 types 派生；老数据没有 types 时由归一化合成。
    */
+  minimal?: string
+  summary?: string
+  code?: string | null
   validForSeconds?: number | null
-  urgency: 'low' | 'normal' | 'high'
   degraded?: boolean                // AI 失败走降级时为 true
   error?: string                    // 降级原因
 }
 ```
 
+> `isAd` / `urgency` 已迁到 `Mail.stateFlags`（位掩码）。
 > AI 输出 zod schema 校验（见 [`ai-prompt-design.md`](./ai-prompt-design.md)）。
+
+### 邮件类型适配器（Feature 08）
+
+```ts
+const MailStateFlag = {
+  None: 0,
+  Ad: 1 << 0,           // 营销 / 推广 / 自动通知
+  Urgent: 1 << 1,       // 需要立刻处理
+  LowPriority: 1 << 2,  // 低优先级（与 Urgent 互斥）
+} as const
+
+interface MailTypeAdapter {          // 运行时视图（catalog + override 合并）
+  id: string                         // 'builtin:code' | 'custom:<id>'
+  kind: 'builtin' | 'custom'
+  ui: 'code' | 'confirm' | 'summary' | null
+  name: string
+  description: string
+  enabled: boolean                   // 极简模式下由模式覆盖
+  priority: number                   // 越小越靠前
+  fallback: boolean                  // true = 仅当没有非兜底类型命中
+  prompt: string
+  userPrompt?: string
+}
+
+interface MailTypeRecord {           // IDB `mailTypes`（外部键 id）
+  id: string
+  kind: 'builtin' | 'custom'
+  enabled?: boolean
+  userPrompt?: string                // 内置 override
+  name?: string                      // 自定义
+  prompt?: string                    // 自定义
+  priority?: number                  // 自定义
+  fallback?: boolean                 // 自定义
+  createdAt: number
+  updatedAt: number
+}
+
+type MailTypeMatch =
+  | { kind: 'code',    adapterId: string, adapterName: string, code: string, expiry?: Expiry }
+  | { kind: 'confirm', adapterId: string, adapterName: string, url: string, host: string, label?: string, expiry?: Expiry }
+  | { kind: 'summary', adapterId: string, adapterName: string, minimal: string, text: string }
+  | { kind: 'custom',  adapterId: string, adapterName: string, text: string }
+
+interface Expiry {
+  at: number                         // 绝对失效时刻（epoch ms）
+  totalSeconds: number               // 进度条分母
+}
+```
+
+- 内置适配器**不落库**：catalog 在代码里，`mailTypes` 只存 override 与自定义。
+- 详细规则见 [`../features/08-mail-types.md`](../features/08-mail-types.md)。
 
 ---
 
@@ -187,7 +248,7 @@ interface AppSettings {
   autoCopyCode: boolean              // 默认 true；两种模式都尊重它（极简模式不再强制 true）
   blockedEnabled: boolean            // 默认 true（仅完整模式生效）
   notifyOnNew: boolean               // master switch；默认 true
-  popupDefaultTab: 'important' | 'all' | 'code' | 'ad'   // 默认 'important'（仅完整模式生效）
+  popupDefaultTab: string            // 筛选 id：'important' | 'all' | 'ad' | 'adapter:<id>'
   /** IDB 内邮件保留份数；滚动淘汰。`'unlimited'` = 不淘汰（仅完整模式生效；极简模式写死 50） */
   mailRetention: 100 | 200 | 500 | 1000 | 'unlimited'   // 默认 100
   mailRetentionDays?: number         // M3+：默认 0 = 不按时间清理
@@ -225,8 +286,7 @@ export const defaultAppSettings: AppSettings = {
   autoCopyCode: true,
   blockedEnabled: true,
   notifyOnNew: true,
-  popupDefaultTab: 'important',
-  mailRetention: 100,
+  popupDefaultTab: 'important',     // 旧值 'code' 会映射到 'adapter:builtin:code'  mailRetention: 100,
   mailRetentionDays: 0,
   autoDeleteExpiredCode: true,      // 失效验证码自动清走
   schemaVersion: 1,
@@ -247,7 +307,8 @@ export const defaultAiSettings: AiSettings = {
 
 | 字段 | 计算 |
 | --- | --- |
-| `_visibility: 'normal' \| 'ad' \| 'code' \| 'pending'` | `mailVisibility()`（见 `popup/list-filter.ts`）。⚠ 被屏蔽的邮件**根本不入库**，所以没有 `'blocked'` 这一档 |
+| `_visibility: 'normal' \| 'ad' \| 'code' \| 'pending'` | `mailVisibility()`（见 `popup/list-filter.ts`）。⚠ 被屏蔽的邮件**根本不入库**，所以没有 `'blocked'` 这一档；`ad` 现在由 `stateFlags & Ad` 判断 |
+| `_isImportant` | `!Ad && (!LowPriority \|\| 命中验证码/确认)`，再排除 pending / dismissed（见 `popup/list-filter.ts`） |
 | `_urgencyRank` | `urgencyRank()`：`high=2, normal=1, low=0` |
 | `_isFromRule(rule)` | `pickRule(mail, rules) === rule` |
 

@@ -1,10 +1,9 @@
-import type { Mail } from '~/logic/types'
+import type { Mail, MailTypeAdapter } from '~/logic/types'
 import { describe, expect, it } from 'vitest'
-import { decodeHtmlEntities, htmlToText, normalizeMessageId, parseRawMail, toMail } from '~/adapters/mail/parser'
-import { cleanCode, fallbackOutput, heuristicCode, heuristicIsAd, parseAiOutput, parseJsonLoose } from '~/logic/ai/output-schema'
-import { looksLikeCodeEmail, matchedCodeHint } from '~/logic/ai/prefilter'
+import { decodeHtmlEntities, extractLinks, htmlToText, normalizeMessageId, parseRawMail, toMail } from '~/adapters/mail/parser'
+import { cleanCode, fallbackResult, heuristicCode, heuristicIsAd, parseAiResult, parseJsonLoose } from '~/logic/ai/output-schema'
+import { looksLikeActionableEmail, looksLikeCodeEmail, matchedCodeHint } from '~/logic/ai/prefilter'
 import {
-  buildMinimalSystemPrompt,
   buildSystemPrompt,
   buildUserContent,
   EN_SYSTEM_PROMPT,
@@ -12,8 +11,9 @@ import {
   truncateBody,
   ZH_SYSTEM_PROMPT,
 } from '~/logic/ai/prompt-build'
+import { resolveMailTypeAdapters } from '~/logic/mail-types/resolve'
 import { senderLabel, toastCaption } from '~/logic/notification/copy'
-import { badgeCount, mailKey, mailVisibility } from '~/logic/types'
+import { badgeCount, mailKey, MailStateFlag, mailVisibility } from '~/logic/types'
 
 /**
  * AI 层与派生 UI 字段的单测（`03-roadmap.md` M2 验收 + `features/02 § 6.2` 的 badge 规则）。
@@ -39,9 +39,22 @@ function makeMail(patch: Partial<Mail> = {}): Mail {
     processing: 'sent',
     copyStatus: 'none',
     read: false,
+    stateFlags: 0,
     messageId,
     ...patch,
   }
+}
+
+function fullAdapters(): MailTypeAdapter[] {
+  return resolveMailTypeAdapters([], { minimalMode: false, lang: 'zh' })
+}
+
+function minimalAdapters(): MailTypeAdapter[] {
+  return resolveMailTypeAdapters([], { minimalMode: true, lang: 'zh' })
+}
+
+function parseContext(mail: Mail = makeMail(), adapters: MailTypeAdapter[] = fullAdapters()) {
+  return { adapters, mail }
 }
 
 // ---------------------------------------------------------------------------
@@ -88,6 +101,19 @@ describe('looksLikeCodeEmail', () => {
   it('matchedCodeHint 指出命中的是哪条线索（诊断用）', () => {
     expect(matchedCodeHint({ subject: '验证码', bodyText: '', snippet: '' })).toContain('验')
     expect(matchedCodeHint({ subject: 'hi', bodyText: 'nothing here', snippet: '' })).toBeNull()
+  })
+
+  it('极简预筛放行「确认邮件」（否则最该看到的邮件会被丢掉）', () => {
+    expect(looksLikeActionableEmail({
+      subject: 'Please confirm your email address',
+      bodyText: 'Click the button below to confirm.',
+      snippet: '',
+    })).toBe(true)
+    expect(looksLikeActionableEmail({
+      subject: '请确认你的邮箱',
+      bodyText: '点击链接完成激活。',
+      snippet: '',
+    })).toBe(true)
   })
 })
 
@@ -155,6 +181,7 @@ describe('toMail', () => {
     date: 1000,
     messageId: 'mid',
     listUnsubscribe: null,
+    links: [],
   }
 
   it('receivedAt 优先用 provider 给的服务器时间（Date 头是发件人写的，可伪造）', () => {
@@ -193,6 +220,12 @@ describe('toMail', () => {
     expect(mail.processing).toBe('pending')
     expect(mail.read).toBe(false)
     expect(mail.copyStatus).toBe('none')
+    expect(mail.stateFlags).toBe(0)
+  })
+
+  it('links 落库（确认邮件只有 HTML 部分时靠它）', () => {
+    const mail = toMail({ ...parsed, links: ['https://example.com/confirm'] }, { id: 'acc-1' })
+    expect(mail.links).toEqual(['https://example.com/confirm'])
   })
 })
 
@@ -200,6 +233,20 @@ describe('htmlToText / decodeHtmlEntities', () => {
   it('保留链接文字、剔除标签', () => {
     expect(htmlToText('<a href="https://x.com">点这里</a>')).toContain('点这里')
     expect(htmlToText('<a href="https://x.com">点这里</a>')).not.toContain('href')
+  })
+
+  it('extractLinks 同时抽 HTML href 与正文裸 URL', () => {
+    const links = extractLinks(
+      '<a href="https://example.com/confirm?a=1">点这里</a><a href="mailto:x@y.com">邮件</a>',
+      '也可以直接打开 https://example.com/fallback 。',
+    )
+    expect(links).toContain('https://example.com/confirm?a=1')
+    expect(links).toContain('https://example.com/fallback')
+    expect(links.some(link => link.startsWith('mailto:'))).toBe(false)
+  })
+
+  it('extractLinks 挡掉 javascript: / data: 这类链接', () => {
+    expect(extractLinks('<a href="javascript:alert(1)">x</a>', 'data:text/html,hi')).toEqual([])
   })
 
   it('注释与 head 被剔除', () => {
@@ -278,79 +325,125 @@ describe('parseJsonLoose', () => {
   })
 })
 
-describe('parseAiOutput', () => {
-  it('完整合法的输出被接受', () => {
-    const result = parseAiOutput(JSON.stringify({
-      minimal: '验证码：123456',
-      summary: '一句话',
-      isAd: false,
-      code: '123456',
-      urgency: 'high',
-    }))
+describe('parseAiResult（多类型 + 状态位 + 兜底）', () => {
+  it('接受多类型同时命中，并转出状态位', () => {
+    const result = parseAiResult(JSON.stringify({
+      types: [
+        { adapterId: 'builtin:code', code: { value: '123456', validForSeconds: 300 } },
+        { adapterId: 'builtin:confirm', confirm: { url: 'https://example.com/confirm/abc', label: 'Confirm' } },
+      ],
+      states: ['urgent'],
+    }), parseContext())
+
     expect(result.ok).toBe(true)
     if (result.ok) {
-      expect(result.output.code).toBe('123456')
-      expect(result.output.urgency).toBe('high')
+      expect(result.result.output.types.map(match => match.kind)).toEqual(['code', 'confirm'])
+      expect(result.result.output.code).toBe('123456')
+      expect(result.result.stateFlags & MailStateFlag.Urgent).toBeTruthy()
     }
   })
 
-  it('缺字段 / 类型不对时用安全默认兜住（不让整条记录掉进降级）', () => {
-    const result = parseAiOutput(JSON.stringify({ minimal: 'x' }))
+  it('兜底：验证码命中时丢掉总结（需求 8）', () => {
+    const result = parseAiResult(JSON.stringify({
+      types: [
+        { adapterId: 'builtin:code', code: { value: '123456' } },
+        { adapterId: 'builtin:summary', summary: { minimal: '一行', text: '摘要' } },
+      ],
+      states: [],
+    }), parseContext())
+
     expect(result.ok).toBe(true)
     if (result.ok) {
-      expect(result.output.summary).toBe('')
-      expect(result.output.isAd).toBe(false)
-      expect(result.output.urgency).toBe('normal')
-      expect(result.output.code).toBeNull()
+      expect(result.result.output.types.map(match => match.kind)).toEqual(['code'])
+      expect(result.result.output.summary).toBeUndefined()
     }
   })
 
-  it('urgent 这种非法枚举值退回 normal', () => {
-    const result = parseAiOutput(JSON.stringify({ minimal: 'x', urgency: 'URGENT' }))
+  it('没有任何非兜底命中时，总结仍在', () => {
+    const result = parseAiResult(JSON.stringify({
+      types: [
+        { adapterId: 'builtin:summary', summary: { minimal: '一行', text: '摘要' } },
+      ],
+    }), parseContext())
+
+    expect(result.ok).toBe(true)
+    if (result.ok) {
+      expect(result.result.output.types).toHaveLength(1)
+      expect(result.result.output.summary).toBe('摘要')
+    }
+  })
+
+  it('未知 / 未启用的 adapterId 被丢掉（防止模型幻觉）', () => {
+    const result = parseAiResult(JSON.stringify({
+      types: [
+        { adapterId: 'custom:not-exist', custom: { text: '不该出现' } },
+        { adapterId: 'builtin:code', code: { value: '123456' } },
+      ],
+    }), parseContext())
+
     expect(result.ok).toBe(true)
     if (result.ok)
-      expect(result.output.urgency).toBe('normal')
+      expect(result.result.output.types.map(match => match.kind)).toEqual(['code'])
   })
 
-  it('code 字段异常不会让整条记录降级（summary 仍然保留）', () => {
-    /*
-     * 提示词要求 `[A-Za-z0-9]{4,12}`，但 code 字段的 zod schema 刻意宽松：
-     * 用一个字符串把整条记录打掉，会连本来完全可用的 summary 一起丢掉 ——
-     * 而那正是用户最需要的那部分。
-     */
-    const tooLong = parseAiOutput(JSON.stringify({ minimal: 'x', summary: 'y', code: '1234567890123' }))
-    expect(tooLong.ok).toBe(true)
-    if (tooLong.ok) {
-      expect(tooLong.output.summary).toBe('y')
-      expect(tooLong.output.code).toBeNull()
-    }
+  it('非法验证码不会打掉整条结果，但该 match 被丢弃', () => {
+    const result = parseAiResult(JSON.stringify({
+      types: [
+        { adapterId: 'builtin:code', code: { value: '1234567890123' } },
+        { adapterId: 'builtin:summary', summary: { minimal: '一行', text: '摘要' } },
+      ],
+    }), parseContext())
 
-    const pureLetters = parseAiOutput(JSON.stringify({ minimal: 'x', summary: 'y', code: 'nothing here' }))
-    expect(pureLetters.ok).toBe(true)
-    if (pureLetters.ok) {
-      expect(pureLetters.output.summary).toBe('y')
-      // 纯字母候选一律拒绝：真实验证码几乎都含数字，纯字母多半是正文单词
-      expect(pureLetters.output.code).toBeNull()
+    expect(result.ok).toBe(true)
+    if (result.ok) {
+      expect(result.result.output.code).toBeNull()
+      // 验证码没命中 ⇒ 总结是唯一命中，保留
+      expect(result.result.output.summary).toBe('摘要')
     }
   })
 
-  it('被连字符 / 空格分组的验证码会被拼回去（很多平台为可读性这么写）', () => {
-    const result = parseAiOutput(JSON.stringify({ minimal: 'x', summary: 'y', code: '123-456' }))
+  it('被连字符 / 空格分组的验证码会被拼回去', () => {
+    for (const value of ['123-456', '123 456']) {
+      const result = parseAiResult(JSON.stringify({
+        types: [{ adapterId: 'builtin:code', code: { value } }],
+      }), parseContext())
+      expect(result.ok).toBe(true)
+      if (result.ok)
+        expect(result.result.output.code).toBe('123456')
+    }
+  })
+
+  it('确认链接只接受 http/https（挡掉 javascript:）', () => {
+    const result = parseAiResult(JSON.stringify({
+      types: [
+        { adapterId: 'builtin:confirm', confirm: { url: 'javascript:alert(1)' } },
+      ],
+    }), parseContext())
+
     expect(result.ok).toBe(true)
     if (result.ok)
-      expect(result.output.code).toBe('123456')
+      expect(result.result.output.types).toHaveLength(0)
+  })
 
-    const spaced = parseAiOutput(JSON.stringify({ minimal: 'x', summary: 'y', code: '123 456' }))
-    expect(spaced.ok).toBe(true)
-    if (spaced.ok)
-      expect(spaced.output.code).toBe('123456')
+  it('urgent / low 互斥：两个都给时只保留 urgent', () => {
+    const result = parseAiResult(JSON.stringify({ types: [], states: ['urgent', 'low'] }), parseContext())
+    expect(result.ok).toBe(true)
+    if (result.ok) {
+      expect(result.result.stateFlags & MailStateFlag.Urgent).toBeTruthy()
+      expect(result.result.stateFlags & MailStateFlag.LowPriority).toBeFalsy()
+    }
   })
 
   it('不是 JSON 时返回 ok:false 与原因（调用方据此重试 / 降级）', () => {
-    const result = parseAiOutput('模型说了一堆话但没给 JSON')
+    const result = parseAiResult('模型说了一堆话但没给 JSON', parseContext())
     expect(result.ok).toBe(false)
     if (!result.ok)
       expect(result.error).toBeTruthy()
+  })
+
+  it('缺 types 字段是结构性错误（不能当成「没有命中」静默放过）', () => {
+    const result = parseAiResult('{}', parseContext())
+    expect(result.ok).toBe(false)
   })
 })
 
@@ -358,32 +451,40 @@ describe('parseAiOutput', () => {
 // 降级
 // ---------------------------------------------------------------------------
 
-describe('fallbackOutput', () => {
+describe('fallbackResult', () => {
   it('标记 degraded 并带上原因', () => {
-    const output = fallbackOutput(makeMail(), '网络超时')
-    expect(output.degraded).toBe(true)
-    expect(output.error).toBe('网络超时')
+    const result = fallbackResult(makeMail(), fullAdapters(), '网络超时')
+    expect(result.output.degraded).toBe(true)
+    expect(result.output.error).toBe('网络超时')
   })
 
-  it('minimal 用「发件人：主题」兜底（用户至少知道是谁发来的）', () => {
-    const output = fallbackOutput(makeMail({ subject: '你的订单已发货' }), 'boom')
-    expect(output.minimal).toContain('GitHub')
-    expect(output.minimal).toContain('你的订单已发货')
-  })
-
-  it('summary 里带上邮件的正文片段（「AI 挂了也要能看到邮件」）', () => {
-    const output = fallbackOutput(makeMail({ snippet: '这是正文的开头' }), 'boom')
-    expect(output.summary).toContain('这是正文的开头')
-  })
-
-  it('urgency 不猜（一律 normal）', () => {
-    expect(fallbackOutput(makeMail(), 'boom').urgency).toBe('normal')
+  it('总结用「发件人：主题」+ 正文片段兜底（AI 挂了也要能看到邮件）', () => {
+    const result = fallbackResult(
+      makeMail({ subject: '你的订单已发货', snippet: '这是正文的开头' }),
+      fullAdapters(),
+      'boom',
+    )
+    const summary = result.output.types.find(match => match.kind === 'summary')
+    expect(summary).toBeTruthy()
+    if (summary?.kind === 'summary') {
+      expect(summary.minimal).toContain('GitHub')
+      expect(summary.minimal).toContain('你的订单已发货')
+      expect(summary.text).toContain('这是正文的开头')
+    }
   })
 
   it('无主题时不产生「undefined」这种字样', () => {
-    const output = fallbackOutput(makeMail({ subject: '' }), 'boom')
-    expect(output.minimal).not.toContain('undefined')
-    expect(output.summary).toContain('(无主题)')
+    const result = fallbackResult(makeMail({ subject: '' }), fullAdapters(), 'boom')
+    const summary = result.output.types.find(match => match.kind === 'summary')
+    if (summary?.kind === 'summary') {
+      expect(summary.minimal).not.toContain('undefined')
+      expect(summary.text).toContain('(无主题)')
+    }
+  })
+
+  it('带 List-Unsubscribe 时降级也标广告位', () => {
+    const result = fallbackResult(makeMail({ listUnsubscribe: '<mailto:x@y.com>' }), fullAdapters(), 'boom')
+    expect(result.stateFlags & MailStateFlag.Ad).toBeTruthy()
   })
 })
 
@@ -418,20 +519,24 @@ describe('启发式', () => {
 describe('prompt-build', () => {
   const zhBrowser = 'zh-CN'
   const settings = { platform: 'openai', apiKey: 'k', outputLanguage: 'auto-browser' as const }
+  const base = { adapters: fullAdapters(), rule: null, settings, browserLang: zhBrowser, mode: 'full' as const }
 
   it('中文浏览器用中文模板，英文浏览器用英文模板', () => {
-    expect(buildSystemPrompt(null, settings, 'zh-CN')).toContain(ZH_SYSTEM_PROMPT)
-    expect(buildSystemPrompt(null, settings, 'en-US')).toContain(EN_SYSTEM_PROMPT)
+    expect(buildSystemPrompt({ ...base, browserLang: 'zh-CN' })).toContain(ZH_SYSTEM_PROMPT)
+    expect(buildSystemPrompt({ ...base, browserLang: 'en-US' })).toContain(EN_SYSTEM_PROMPT)
   })
 
   it('auto-email 一律走英文模板 + 一句自适应指令（不做 JS 端语言检测）', () => {
-    const prompt = buildSystemPrompt(null, { ...settings, outputLanguage: 'auto-email' }, 'zh-CN')
+    const prompt = buildSystemPrompt({
+      ...base,
+      settings: { ...settings, outputLanguage: 'auto-email' },
+    })
     expect(prompt).toContain(EN_SYSTEM_PROMPT)
     expect(prompt).toContain('same language as the email')
   })
 
   it('非中文浏览器 + auto-browser 时带上「用 XX 语言回答」', () => {
-    expect(buildSystemPrompt(null, settings, 'ja-JP')).toContain('Respond in ja-JP.')
+    expect(buildSystemPrompt({ ...base, browserLang: 'ja-JP' })).toContain('Respond in ja-JP.')
   })
 
   it('system prompt 必须含 "JSON" 字样（DeepSeek 的硬要求，否则可能返回空对象）', () => {
@@ -440,31 +545,44 @@ describe('prompt-build', () => {
     expect(MINIMAL_SYSTEM_PROMPT.toLowerCase()).toContain('json')
   })
 
-  it('用户规则拼在基础模板**之后**，并标注为「不违反 schema 才生效」', () => {
-    const prompt = buildSystemPrompt(
-      { id: 'r1', name: 'GitHub 通知', prompt: '告诉我哪个仓库有新 PR' },
-      settings,
-      zhBrowser,
-    )
-    // 顺序：基础模板在前，用户规则在后（放前面会被模型当成覆盖性指令）
+  it('适配器段带 id / 名称 / 提示词，并且排在基础模板之后', () => {
+    const prompt = buildSystemPrompt(base)
+    expect(prompt).toContain('[builtin:code]')
+    expect(prompt).toContain('[builtin:confirm]')
+    expect(prompt).toContain('[builtin:summary]')
+    expect(prompt.indexOf(ZH_SYSTEM_PROMPT)).toBeLessThan(prompt.indexOf('[builtin:code]'))
+  })
+
+  it('用户规则拼在基础模板与适配器**之后**，并标注为「不违反 schema 才生效」', () => {
+    const prompt = buildSystemPrompt({
+      ...base,
+      rule: { id: 'r1', name: 'GitHub 通知', prompt: '告诉我哪个仓库有新 PR' },
+    })
+    // 顺序：基础模板 → 适配器 → 用户规则
     expect(prompt.indexOf(ZH_SYSTEM_PROMPT)).toBeLessThan(prompt.indexOf('告诉我哪个仓库有新 PR'))
+    expect(prompt.indexOf('[builtin:code]')).toBeLessThan(prompt.indexOf('告诉我哪个仓库有新 PR'))
     expect(prompt).toContain('GitHub 通知')
     expect(prompt).toContain('不违反上面的 JSON Schema')
   })
 
   it('内置默认规则不附加「当前规则」段', () => {
-    const prompt = buildSystemPrompt(
-      { id: '__default__', name: '默认规则（内置）', prompt: '不该出现' },
-      settings,
-      zhBrowser,
-    )
+    const prompt = buildSystemPrompt({
+      ...base,
+      rule: { id: '__default__', name: '默认规则（内置）', prompt: '不该出现' },
+    })
     expect(prompt).not.toContain('不该出现')
   })
 
-  it('极简模式不吃用户规则（极简模式没有多规则匹配这项能力）', () => {
-    const prompt = buildMinimalSystemPrompt(settings, zhBrowser)
+  it('极简模式不吃用户规则，也不带总结适配器', () => {
+    const prompt = buildSystemPrompt({
+      ...base,
+      adapters: minimalAdapters(),
+      mode: 'minimal',
+      rule: { id: 'r1', name: '规则', prompt: '不该出现' },
+    })
     expect(prompt).toContain(MINIMAL_SYSTEM_PROMPT)
     expect(prompt).not.toContain('当前规则')
+    expect(prompt).not.toContain('[builtin:summary]')
   })
 
   it('截断标注原文长度（模型与用户都要知道这不是全文）', () => {
@@ -481,6 +599,12 @@ describe('prompt-build', () => {
   it('用户消息里 List-Unsubscribe 单独列出（广告判定最可靠的单点信号）', () => {
     const content = buildUserContent(makeMail({ listUnsubscribe: '<mailto:u@x.com>' }))
     expect(content).toContain('List-Unsubscribe: <mailto:u@x.com>')
+  })
+
+  it('用户消息里单独列出 Links（只有 HTML 的确认邮件靠它）', () => {
+    const content = buildUserContent(makeMail({ links: ['https://example.com/confirm/abc'] }))
+    expect(content).toContain('--- Links ---')
+    expect(content).toContain('https://example.com/confirm/abc')
   })
 
   it('用户消息带齐 From / Subject / Date（判断性质最关键的三个信号）', () => {
@@ -507,22 +631,22 @@ describe('mailVisibility', () => {
   })
 
   it('广告 + 排除开启 → ad', () => {
-    const mail = makeMail({ ai: { minimal: '', summary: '', isAd: true, urgency: 'low' } })
+    const mail = makeMail({ stateFlags: MailStateFlag.Ad | MailStateFlag.LowPriority })
     expect(mailVisibility(mail, app)).toBe('ad')
   })
 
   it('广告 + 排除关闭 → normal（回到主列表）', () => {
-    const mail = makeMail({ ai: { minimal: '', summary: '', isAd: true, urgency: 'low' } })
+    const mail = makeMail({ stateFlags: MailStateFlag.Ad | MailStateFlag.LowPriority })
     expect(mailVisibility(mail, { excludeAds: false })).toBe('normal')
   })
 
   it('有验证码 → code（优先级高于 normal）', () => {
-    const mail = makeMail({ ai: { minimal: '', summary: '', isAd: false, code: '123456', urgency: 'normal' } })
+    const mail = makeMail({ code: '123456' })
     expect(mailVisibility(mail, app)).toBe('code')
   })
 
   it('广告优先级高于验证码（营销邮件里的验证码不该进主列表 —— 但仍在「验证码」分区可查）', () => {
-    const mail = makeMail({ ai: { minimal: '', summary: '', isAd: true, code: '123456', urgency: 'low' } })
+    const mail = makeMail({ stateFlags: MailStateFlag.Ad, code: '123456' })
     expect(mailVisibility(mail, app)).toBe('ad')
   })
 })
@@ -544,17 +668,16 @@ describe('badgeCount（features/02 § 6.2）', () => {
   })
 
   it('广告不计入（开启排除时）', () => {
-    const ad = makeMail({ ai: { minimal: '', summary: '', isAd: true, urgency: 'low' } })
+    const ad = makeMail({ stateFlags: MailStateFlag.Ad | MailStateFlag.LowPriority })
     expect(badgeCount([ad], app)).toBe(0)
     // 关掉排除 → 回到计数
     expect(badgeCount([ad], { excludeAds: false })).toBe(1)
   })
 
   it('验证码：复制成功不计入，复制失败要计入（用户得手动复制）', () => {
-    const ai = { minimal: '', summary: '', isAd: false, code: '123456', urgency: 'normal' as const }
-    expect(badgeCount([makeMail({ ai, copyStatus: 'copied' })], app)).toBe(0)
-    expect(badgeCount([makeMail({ ai, copyStatus: 'failed' })], app)).toBe(1)
-    expect(badgeCount([makeMail({ ai, copyStatus: 'none' })], app)).toBe(1)
+    expect(badgeCount([makeMail({ code: '123456', copyStatus: 'copied' })], app)).toBe(0)
+    expect(badgeCount([makeMail({ code: '123456', copyStatus: 'failed' })], app)).toBe(1)
+    expect(badgeCount([makeMail({ code: '123456', copyStatus: 'none' })], app)).toBe(1)
   })
 })
 

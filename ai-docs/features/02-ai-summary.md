@@ -1,8 +1,13 @@
 # Feature 02 · AI 总结 + 通知反馈
 
+> **Feature 08 起（重要变化）**：总结不再是「每封必出」，而是内置适配器
+> `builtin:summary`，并且是**兜底**——只有没有其它类型命中时才生成。
+> `isAd` / `urgency` 也不再是 AI 输出字段，而是 `Mail.stateFlags` 位掩码。
+> 类型 / 适配器总设计见 [`08-mail-types.md`](./08-mail-types.md)。
+>
 > 对应里程碑：**MVP**。两种模式共用 AI 层，但走不同的 prompt / 路径：
-> - **完整模式**：每封新邮件经 AI 处理，输出"最简（minimal）"与"总结（summary）"；**不调系统通知**——只更新 icon badge + Popup / Sidepanel 展示
-> - **极简模式**：AI 只用来提取验证码（极简 prompt），输出 `{ code }`；不命中 → 邮件丢弃
+> - **自定义模式**：每封新邮件经 AI 处理，输出类型命中 + 状态位；总结按兜底规则生成；**不调系统通知**——只更新 icon badge + Popup / Sidepanel 展示
+> - **极简模式**：AI 只用来提取验证码 / 确认链接（极简 prompt）；不命中 → 邮件丢弃
 >
 > 完整模式的通知细节详见 [`../design/page-toast.md`](../design/page-toast.md)；极简模式的简化提示词详见 [`../design/minimal-mode.md` § 3.4](../design/minimal-mode.md)。
 >

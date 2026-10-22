@@ -189,31 +189,209 @@ export function createDefaultRule(): PromptRule {
 
 export type Urgency = 'low' | 'normal' | 'high'
 
-export interface AiOutput {
-  /** ≤60 字，一行。用于 badge / Popup 列表 */
+/**
+ * 邮件内部状态标签（**位掩码**）。
+ *
+ * 这些是「邮件本身是什么」的标签，和用户可见的**类型**（验证码 / 确认 / 自定义）
+ * 是两回事：一封验证码邮件可以同时是 `Ad`，一封营销邮件也可以同时是 `LowPriority`。
+ *
+ * 用位运算而不是多个布尔字段：一个数字能表达多个标签，存储与筛选都便宜
+ * （`flags & Ad` 一次判断），加新状态只是加一个 bit。
+ */
+export const MailStateFlag = {
+  None: 0,
+  /** 营销 / 推广 / 自动通知（原 `AiOutput.isAd`） */
+  Ad: 1 << 0,
+  /** 需要立刻处理（原 `urgency = 'high'`） */
+  Urgent: 1 << 1,
+  /** 低优先级（原 `urgency = 'low'`）；与 `Urgent` 互斥 */
+  LowPriority: 1 << 2,
+} as const
+
+export type MailStateFlags = number
+
+/** 已知位的掩码：归一化时把未来 / 垃圾位清掉 */
+export const MAIL_STATE_ALL
+  = MailStateFlag.Ad | MailStateFlag.Urgent | MailStateFlag.LowPriority
+
+/** 是否包含某个状态位 */
+export function hasMailState(flags: number | undefined, flag: number): boolean {
+  return ((flags ?? 0) & flag) !== 0
+}
+
+/**
+ * 归一化位掩码。
+ *
+ * ⚠ `Urgent` 与 `LowPriority` 同时出现是非法状态（模型 / 老数据 / 手改都可能）。
+ *   保留 `Urgent`、丢掉 `LowPriority`：宁可让用户多看一眼，也不要让紧急邮件被静音。
+ */
+export function normalizeMailStateFlags(value: unknown): MailStateFlags {
+  const raw = typeof value === 'number' && Number.isFinite(value) ? value : 0
+  let flags = raw & MAIL_STATE_ALL
+  if (flags & MailStateFlag.Urgent)
+    flags &= ~MailStateFlag.LowPriority
+  return flags
+}
+
+/** 老数据迁移：`ai.isAd` / `ai.urgency` → 位掩码 */
+export function mailStateFlagsFromLegacy(
+  isAd: unknown,
+  urgency: unknown,
+): MailStateFlags {
+  let flags = 0
+  if (isAd === true)
+    flags |= MailStateFlag.Ad
+  if (urgency === 'high')
+    flags |= MailStateFlag.Urgent
+  if (urgency === 'low')
+    flags |= MailStateFlag.LowPriority
+  return normalizeMailStateFlags(flags)
+}
+
+/** AI 输出的状态字符串 → 位掩码（模型只给语义，位运算由 JS 做） */
+export function mailStateFlagsFromStates(states: readonly string[] | undefined): MailStateFlags {
+  let flags = 0
+  for (const state of states ?? []) {
+    if (state === 'ad')
+      flags |= MailStateFlag.Ad
+    else if (state === 'urgent')
+      flags |= MailStateFlag.Urgent
+    else if (state === 'low')
+      flags |= MailStateFlag.LowPriority
+  }
+  return normalizeMailStateFlags(flags)
+}
+
+// ---------------------------------------------------------------------------
+// 邮件类型适配器（Feature 08）
+// ---------------------------------------------------------------------------
+
+/** 内置适配器 id（固定串：UI / prompt / 历史数据都靠它） */
+export const BUILTIN_CODE_ID = 'builtin:code'
+export const BUILTIN_CONFIRM_ID = 'builtin:confirm'
+export const BUILTIN_SUMMARY_ID = 'builtin:summary'
+
+export type BuiltinMailTypeId
+  = typeof BUILTIN_CODE_ID
+    | typeof BUILTIN_CONFIRM_ID
+    | typeof BUILTIN_SUMMARY_ID
+
+/** 内置类型的专属 UI；`null` = 自定义类型（只有一段文本） */
+export type MailTypeUi = 'code' | 'confirm' | 'summary' | null
+
+/** 失效信息：绝对时刻 + 进度条分母 */
+export interface Expiry {
+  /** 绝对失效时刻（epoch ms） */
+  at: number
+  /** 总有效期秒数（进度条分母） */
+  totalSeconds: number
+}
+
+interface MailTypeMatchBase {
+  adapterId: string
+  /** 冗余存储：适配器被改名 / 删除后，历史邮件仍能显示当时的名字 */
+  adapterName: string
+}
+
+export interface CodeMatch extends MailTypeMatchBase {
+  kind: 'code'
+  code: string
+  expiry?: Expiry
+}
+
+export interface ConfirmMatch extends MailTypeMatchBase {
+  kind: 'confirm'
+  url: string
+  /** URL 的 host（UI 显示目标域名用；冗余存储避免每次解析） */
+  host: string
+  label?: string
+  expiry?: Expiry
+}
+
+export interface SummaryMatch extends MailTypeMatchBase {
+  kind: 'summary'
   minimal: string
-  /** ≤600 字，结构化要点（markdown） */
-  summary: string
-  isAd: boolean
+  text: string
+}
+
+export interface CustomMatch extends MailTypeMatchBase {
+  kind: 'custom'
+  text: string
+}
+
+export type MailTypeMatch = CodeMatch | ConfirmMatch | SummaryMatch | CustomMatch
+
+/** 运行时视图：内置 catalog + 用户 override 合并后的适配器 */
+export interface MailTypeAdapter {
+  id: string
+  kind: 'builtin' | 'custom'
+  ui: MailTypeUi
+  name: string
+  description: string
+  enabled: boolean
+  /** 越小越靠前 */
+  priority: number
+  /** true = 仅当没有任何非兜底类型命中时才输出 */
+  fallback: boolean
+  prompt: string
+  /** 内置类型的用户补充规则 */
+  userPrompt?: string
+}
+
+/** IDB `mailTypes` 的持久化记录（内置只存 override，自定义整条存） */
+export interface MailTypeRecord {
+  id: string
+  kind: 'builtin' | 'custom'
+  enabled?: boolean
+  /** 内置 override */
+  userPrompt?: string
+  /** 自定义 */
+  name?: string
+  prompt?: string
+  priority?: number
+  fallback?: boolean
+  createdAt: number
+  updatedAt: number
+}
+
+/** `MailTypeRecord` 的字段白名单 */
+export const MAIL_TYPE_RECORD_FIELDS: Record<keyof MailTypeRecord, true> = {
+  id: true,
+  kind: true,
+  enabled: true,
+  userPrompt: true,
+  name: true,
+  prompt: true,
+  priority: true,
+  fallback: true,
+  createdAt: true,
+  updatedAt: true,
+}
+
+export interface AiOutput {
+  /** 命中的类型（已按优先级排序、已应用兜底）—— 唯一真相 */
+  types: MailTypeMatch[]
+  /**
+   * 兼容旧 UI 的派生字段。
+   *
+   * ⚠ 新邮件由 pipeline 从 `types` 派生；老数据没有 `types` 时由归一化合成。
+   *   新代码尽量直接用 `types` / 下面那些 helper，不要继续扩散这些字段。
+   */
+  minimal?: string
+  summary?: string
   code?: string | null
   /**
    * 验证码的**有效期秒数**（AI 从正文里读到的）。
    *
-   * 实例：「此验证码将在 5 分钟内有效。」→ `300`。
-   *
    * ⚠ 刻意让 AI 输出**相对秒数**而不是绝对时间。理由有两条：
    *
    *   1. 模型看不到当前时间，让它算 `expiresAt` 等于让它瞎猜；
-   *   2. 邮件里的表述本来就是相对的，而且**从发信时刻起算**
-   *      （「5 分钟内有效」= 从发信那一刻算 5 分钟）。
+   *   2. 邮件里的表述本来就是相对的，而且**从发信时刻起算**。
    *      换算成绝对时间是我们的事，不是它的事。
    *
    * `null` = 邮件里**没有明确**写有效期。
-   * ⚠ 不要拿「常见值」（如 300）去猜 —— 猜错会让用户以为还有 5 分钟，
-   *   而实际早就失效了，那比不显示更糟。
    */
   validForSeconds?: number | null
-  urgency: Urgency
   /** AI 失败走降级时为 true */
   degraded?: boolean
   /** 降级原因 */
@@ -269,6 +447,23 @@ export interface Mail {
   read: boolean
   /** 用户标记不再显示 */
   dismissed?: boolean
+
+  /**
+   * 邮件内部状态标签（位掩码，见 `MailStateFlag`）。
+   *
+   * ⚠ 从 Feature 08 起，`isAd` / `urgency` 不再放在 `ai` 里 —— 它们不属于
+   *   任何「类型」，而是邮件自身的状态。`ad + urgent` 可以同时成立。
+   */
+  stateFlags: MailStateFlags
+
+  /**
+   * 从 HTML `href` 与正文裸链接里抽到的 URL（≤10，仅 http/https）。
+   *
+   * 为什么单独存：`htmlToText` 只保留 `<a>` 的文字、丢掉 `href`，只有 HTML 部分的
+   * 确认邮件因此拿不到链接。存下来之后 AI prompt 与确认按钮都能用。
+   * ⚠ 链接里可能带一次性 token：只存本地、不写日志。
+   */
+  links?: string[]
 
   /**
    * 进入回收站的时刻（`Date.now()`）。
@@ -352,6 +547,8 @@ export const MAIL_FIELDS: Record<keyof Mail, true> = {
   copyStatus: true,
   read: true,
   dismissed: true,
+  stateFlags: true,
+  links: true,
   trashedAt: true,
   code: true,
   codeExpiresAt: true,
@@ -369,6 +566,97 @@ export const MAIL_FIELDS: Record<keyof Mail, true> = {
  */
 export function mailKey(accountId: string, messageId: string): string {
   return `${accountId}:${messageId}`
+}
+
+// ---------------------------------------------------------------------------
+// 类型命中的便捷读取（UI / 筛选共用）
+// ---------------------------------------------------------------------------
+
+/** 命中的类型（没有就是空数组） */
+export function mailTypeMatches(mail: Pick<Mail, 'ai'>): MailTypeMatch[] {
+  return mail.ai?.types ?? []
+}
+
+/** 是否命中某个适配器 */
+export function hasMailType(mail: Pick<Mail, 'ai'>, adapterId: string): boolean {
+  return mailTypeMatches(mail).some(match => match.adapterId === adapterId)
+}
+
+/** 某个 kind 的全部命中（按存储顺序 = 优先级顺序） */
+export function matchesOfKind<K extends MailTypeMatch['kind']>(
+  mail: Pick<Mail, 'ai'>,
+  kind: K,
+): Extract<MailTypeMatch, { kind: K }>[] {
+  return mailTypeMatches(mail).filter(
+    (match): match is Extract<MailTypeMatch, { kind: K }> => match.kind === kind,
+  )
+}
+
+/**
+ * 验证码命中（含**老数据兜底**）。
+ *
+ * ⚠ 老邮件没有 `ai.types`，只有顶层 `code` / `ai.code`。直接读 `matchesOfKind`
+ *   会让它们在升级后突然「没有验证码」—— 复制按钮、badge、筛选全失效。
+ *   这里把老字段合成一个 match，UI 不需要到处写兼容分支。
+ */
+export function codeMatchOf(mail: Pick<Mail, 'code' | 'ai' | 'codeExpiresAt' | 'codeValidForSeconds'>): CodeMatch | null {
+  const existing = mailTypeMatches(mail).find((match): match is CodeMatch => match.kind === 'code')
+  if (existing) {
+    // 新数据 match 里自带 expiry；老数据 / 测试可能只有顶层字段，补进去
+    if (existing.expiry)
+      return existing
+    const fallbackExpiry = mail.codeExpiresAt && mail.codeValidForSeconds
+      ? { at: mail.codeExpiresAt, totalSeconds: mail.codeValidForSeconds }
+      : undefined
+    return fallbackExpiry ? { ...existing, expiry: fallbackExpiry } : existing
+  }
+
+  const code = mail.code ?? mail.ai?.code
+  if (!code)
+    return null
+
+  const expiry = mail.codeExpiresAt && mail.codeValidForSeconds
+    ? { at: mail.codeExpiresAt, totalSeconds: mail.codeValidForSeconds }
+    : undefined
+
+  return {
+    kind: 'code',
+    adapterId: BUILTIN_CODE_ID,
+    // 老数据没有存名字；UI 会用 i18n 的默认名兜底
+    adapterName: '',
+    code,
+    expiry,
+  }
+}
+
+/** 总结命中（含老数据兜底：`ai.summary` / `ai.minimal`） */
+export function summaryMatchOf(mail: Pick<Mail, 'ai'>): SummaryMatch | null {
+  const existing = mailTypeMatches(mail).find((match): match is SummaryMatch => match.kind === 'summary')
+  if (existing)
+    return existing
+
+  const summary = mail.ai?.summary
+  const minimal = mail.ai?.minimal
+  if (!summary && !minimal)
+    return null
+
+  return {
+    kind: 'summary',
+    adapterId: BUILTIN_SUMMARY_ID,
+    adapterName: '',
+    minimal: minimal ?? '',
+    text: summary ?? '',
+  }
+}
+
+/**
+ * 这封邮件有没有「需要用户动作」的类型（验证码 / 确认）。
+ *
+ * 用途：「重要」筛选里的特例 —— 验证码 / 确认邮件即使被 AI 标了 low，
+ * 也必须留在重要里（用户正等着它）。
+ */
+export function hasActionableType(mail: Pick<Mail, 'code' | 'ai' | 'codeExpiresAt' | 'codeValidForSeconds'>): boolean {
+  return codeMatchOf(mail) !== null || matchesOfKind(mail, 'confirm').length > 0
 }
 
 /** 从键反解 `accountId`（`by-accountId` 索引够用，这里只服务兜底路径） */
@@ -445,21 +733,32 @@ export const MAIL_RETENTION_OPTIONS: readonly MailRetention[] = [100, 200, 500, 
 /** 极简模式写死的保留份数（`design/minimal-mode.md § 3.5`） */
 export const MINIMAL_RETENTION = 50
 
-export type PopupTab = 'important' | 'all' | 'code' | 'ad'
+/**
+ * 列表筛选 id。
+ *
+ * - `important` / `all` / `ad`：**状态**筛选（重要是派生条件，ad 是 `MailStateFlag.Ad`）
+ * - `adapter:<adapterId>`：筛出命中某个适配器的邮件（内置 + 自定义）
+ *
+ * ⚠ 从 Feature 08 起不再硬编码四个 tab —— 自定义适配器会动态变成筛选标签。
+ */
+export type MailFilterId = 'all' | 'important' | 'ad' | `adapter:${string}`
+
+/** @deprecated 用 `MailFilterId`（保留别名是为了平滑迁移旧调用点） */
+export type PopupTab = MailFilterId
 
 export interface AppSettings {
-  /** 两套运行模式：极简（只验证码） / 完整（全部功能） */
+  /** 两套运行模式：极简（固定验证码 + 确认） / 自定义（用户配置适配器） */
   minimalMode: boolean
-  /** 仅完整模式生效 */
+  /** 仅自定义模式生效 */
   excludeAds: boolean
   /** 极简模式强制为 true */
   autoCopyCode: boolean
-  /** 仅完整模式生效 */
+  /** 仅自定义模式生效 */
   blockedEnabled: boolean
   /** master switch；关掉后不动 badge */
   notifyOnNew: boolean
-  /** 仅完整模式生效 */
-  popupDefaultTab: PopupTab
+  /** 仅自定义模式生效；值见 `MailFilterId` */
+  popupDefaultTab: MailFilterId
   mailRetention: MailRetention
   /** M3+：默认 0 = 不按时间清理 */
   mailRetentionDays: number
@@ -554,17 +853,26 @@ export type MailVisibility = 'normal' | 'ad' | 'code' | 'pending'
 export function mailVisibility(mail: Mail, app: Pick<AppSettings, 'excludeAds'>): MailVisibility {
   if (mail.processing === 'pending' && !mail.ai)
     return 'pending'
-  if (mail.ai?.isAd && app.excludeAds)
+  if (hasMailState(mail.stateFlags, MailStateFlag.Ad) && app.excludeAds)
     return 'ad'
-  if (mail.ai?.code)
+  if (codeMatchOf(mail))
     return 'code'
   return 'normal'
 }
 
 const URGENCY_RANK: Record<Urgency, number> = { high: 2, normal: 1, low: 0 }
 
-export function urgencyRank(mail: Mail): number {
-  return URGENCY_RANK[mail.ai?.urgency ?? 'normal']
+/**
+ * 紧急度排序值（`high=2 / normal=1 / low=0`）。
+ *
+ * 从位掩码反推：`Urgent` → high，`LowPriority` → low，其余 normal。
+ */
+export function urgencyRank(mail: Pick<Mail, 'stateFlags'>): number {
+  if (hasMailState(mail.stateFlags, MailStateFlag.Urgent))
+    return URGENCY_RANK.high
+  if (hasMailState(mail.stateFlags, MailStateFlag.LowPriority))
+    return URGENCY_RANK.low
+  return URGENCY_RANK.normal
 }
 
 /**
@@ -578,10 +886,10 @@ export function badgeCount(mails: Mail[], app: Pick<AppSettings, 'excludeAds'>):
       return false
     if (mail.processing === 'pending')
       return false
-    if (mail.ai?.isAd && app.excludeAds)
+    if (hasMailState(mail.stateFlags, MailStateFlag.Ad) && app.excludeAds)
       return false
     // 验证码：复制成功的不打扰；复制失败的仍要提醒（用户得手动复制）
-    if (mail.ai?.code && mail.copyStatus === 'copied')
+    if (codeMatchOf(mail) && mail.copyStatus === 'copied')
       return false
     return true
   }).length

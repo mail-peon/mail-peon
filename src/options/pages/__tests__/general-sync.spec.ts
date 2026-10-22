@@ -101,6 +101,10 @@ vi.mock('~/logic/bridge', () => ({
     setApp: mocks.setApp,
     reload: vi.fn(async () => {}),
   }),
+  useMailTypes: () => ({
+    adapters: { value: [] },
+    reload: vi.fn(async () => {}),
+  }),
 }))
 
 /**

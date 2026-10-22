@@ -174,13 +174,13 @@ describe('openWatchChannel', () => {
   })
 
   /** 建一条通道并返回「假 socket + 收到的事件」 */
-  function open(accountPatch: Partial<MailAccount> = {}) {
+  function open(accountPatch: Partial<MailAccount> = {}, options: { heartbeatMs?: number } = { heartbeatMs: 0 }) {
     const events: WatchEvent[] = []
     const request = buildWatchRequest(account(accountPatch))
     if (!request)
       throw new Error('测试账号配置不完整')
 
-    const stop = openWatchChannel('ws://127.0.0.1:41316/', request, event => events.push(event))
+    const stop = openWatchChannel('ws://127.0.0.1:41316/', request, event => events.push(event), options)
     const socket = FakeWebSocket.instances.at(-1)
     if (!socket)
       throw new Error('没有创建 WebSocket')
@@ -345,6 +345,25 @@ describe('openWatchChannel', () => {
     await vi.advanceTimersByTimeAsync(120000)
 
     expect(FakeWebSocket.instances.length).toBe(before)
+    vi.useRealTimers()
+  })
+
+  it('心跳：定期发一帧，保持 MV3 Service Worker 活跃', async () => {
+    vi.useFakeTimers()
+    const { socket, stop } = open({}, { heartbeatMs: 1000 })
+    socket.emit('open', {})
+
+    // 第一帧是 watch 请求
+    expect(socket.sent).toHaveLength(1)
+
+    await vi.advanceTimersByTimeAsync(1000)
+    expect(socket.sent).toHaveLength(2)
+    expect(JSON.parse(socket.sent[1])).toEqual({ type: 'ping' })
+
+    // 停止后不再发
+    stop()
+    await vi.advanceTimersByTimeAsync(5000)
+    expect(socket.sent).toHaveLength(2)
     vi.useRealTimers()
   })
 })

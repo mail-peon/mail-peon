@@ -72,6 +72,7 @@ function makeMail(patch: Partial<Mail> = {}): Mail {
     code: '34949',
     copyStatus: 'none',
     read: false,
+    stateFlags: 0,
     ...patch,
   }
 }
@@ -331,5 +332,72 @@ describe('删除按钮的样式契约', () => {
 
   it('再悬停按钮本身才变红', () => {
     expect(ruleBody(css, '\\.trash:hover')).toMatch(/color:\s*var\(--mp-danger\)/)
+  })
+})
+
+describe('多类型面板（验证码 + 确认）', () => {
+  const expiresAt = Date.now() + 300_000
+
+  it('两个面板同时渲染，倒计时叠两行，确认按钮只有一个', () => {
+    const wrapper = mountItem({
+      code: '123456',
+      codeExpiresAt: expiresAt,
+      codeValidForSeconds: 300,
+      ai: {
+        types: [
+          {
+            kind: 'code',
+            adapterId: 'builtin:code',
+            adapterName: '验证码',
+            code: '123456',
+            expiry: { at: expiresAt, totalSeconds: 300 },
+          },
+          {
+            kind: 'confirm',
+            adapterId: 'builtin:confirm',
+            adapterName: '确认邮件',
+            url: 'https://example.com/confirm/abc',
+            host: 'example.com',
+            expiry: { at: expiresAt, totalSeconds: 300 },
+          },
+        ],
+      },
+    })
+
+    expect(wrapper.findAll('.panel.is-code')).toHaveLength(1)
+    expect(wrapper.findAll('.panel.is-confirm')).toHaveLength(1)
+    expect(wrapper.findAll('.strip .row')).toHaveLength(2)
+
+    const buttons = wrapper.findAll('.panel.is-confirm button')
+    expect(buttons).toHaveLength(1)
+    expect(buttons[0].text()).toContain('打开确认链接')
+    expect(wrapper.find('.host').text()).toBe('example.com')
+
+    wrapper.unmount()
+  })
+
+  it('点确认按钮会 emit confirm（打开动作由 Popup / Sidepanel 负责）', async () => {
+    const wrapper = mountItem({
+      ai: {
+        types: [
+          {
+            kind: 'confirm',
+            adapterId: 'builtin:confirm',
+            adapterName: '确认邮件',
+            url: 'https://example.com/confirm/abc',
+            host: 'example.com',
+          },
+        ],
+      },
+    })
+
+    await wrapper.find('.panel.is-confirm button').trigger('click')
+
+    expect(wrapper.emitted('confirm')).toHaveLength(1)
+    const [mail, match] = wrapper.emitted('confirm')![0] as [Mail, { url: string }]
+    expect(mail.id).toBe((wrapper.props('mail') as Mail).id)
+    expect(match.url).toBe('https://example.com/confirm/abc')
+
+    wrapper.unmount()
   })
 })

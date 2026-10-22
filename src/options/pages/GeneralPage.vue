@@ -1,8 +1,8 @@
 <script setup lang="ts">
-import type { AppSettings, MailRetention, PopupTab, StorageUsage, SyncSummary } from '~/logic/types'
+import type { AppSettings, MailFilterId, MailRetention, StorageUsage, SyncSummary } from '~/logic/types'
 import { computed, onMounted, onUnmounted, ref } from 'vue'
 import ConfirmDialog from '~/components/ConfirmDialog.vue'
-import { onDataChanged, onSyncDone, send, useAccounts, useSettings } from '~/logic/bridge'
+import { onDataChanged, onSyncDone, send, useAccounts, useMailTypes, useSettings } from '~/logic/bridge'
 import { useConfirmAction } from '~/logic/confirm-action'
 import { t } from '~/logic/strings'
 import { MAIL_RETENTION_OPTIONS } from '~/logic/types'
@@ -25,6 +25,7 @@ import { ERROR_DURATION, useAppMessage, WARNING_DURATION } from '~/logic/ui-mess
 
 const { app, ai, setApp, reload } = useSettings()
 const { accounts, syncNow, syncStatus, reload: reloadAccounts } = useAccounts()
+const { adapters } = useMailTypes()
 
 /**
  * 「正在跑一轮同步」。
@@ -200,19 +201,19 @@ const usage = ref<{ count: number, bytesApprox: number } | null>(null)
 const codeCount = ref(0)
 
 /**
- * 「默认打开哪个 tab」的下拉选项。
+ * 「默认打开哪个筛选」的下拉选项。
  *
- * ⚠ 文案走 `strings.ts` 里已有的那四个键（`popup.tabXxx`），**不再各写一遍** ——
- *   这里曾经硬编码着「重要 / 全部 / 验证码 / 营销」，而同一个东西在
- *   `logic/strings.ts` 里还有一份。两份文案迟早会漂（改了一处、另一处还是旧的，
- *   同一个 tab 在弹窗里和设置里叫两个名字）。
+ * Feature 08 起筛选是动态的（状态 + 启用的适配器），所以选项也从适配器列表生成，
+ * 不再硬编码四个。`总结` 不作为筛选标签，跳过。
  */
-const POPUP_TABS: Array<{ value: PopupTab, label: string }> = [
+const POPUP_TABS = computed<Array<{ value: MailFilterId, label: string }>>(() => [
   { value: 'important', label: t('popup.tabImportant') },
   { value: 'all', label: t('popup.tabAll') },
-  { value: 'code', label: t('popup.tabCode') },
+  ...adapters.value
+    .filter(adapter => adapter.ui !== 'summary')
+    .map(adapter => ({ value: `adapter:${adapter.id}` as MailFilterId, label: adapter.name })),
   { value: 'ad', label: t('popup.tabAd') },
-]
+])
 
 /**
  * ⚠ 这一页用 `v-show` 挂在 Options 里（见 `Options.vue`），所以它**在打开设置页时
@@ -310,7 +311,7 @@ const usageText = computed(() => {
 })
 
 /**
- * 模式切换（开关在中间，左边「极简模式」、右边「完整功能」）。
+ * 模式切换（开关在中间，左边「极简模式」、右边「自定义」）。
  *
  * ⚠ `a-switch` 的语义是「开 = 右侧那项」。所以 checked 是 `!minimalMode`，
  *   而**不是** `minimalMode` —— 写反了会得到一个「往右拨却变成极简」的开关，
@@ -533,7 +534,7 @@ async function onImportFile(event: Event) {
     <!-- ============ 模式切换（两套布局共用） ============ -->
     <a-card size="small" :title="t('general.mode')">
       <!--
-        一行靠左：`极简模式 (开关) 完整功能`。
+        一行靠左：`极简模式 (开关) 自定义`。
         两个标签是**短标签**（括号里的解释在下面两行）——
         长标签挤在开关两边会把它推歪。
       -->
@@ -600,7 +601,7 @@ async function onImportFile(event: Event) {
       </a-card>
     </template>
 
-    <!-- ============ 完整模式的通用页 ============ -->
+    <!-- ============ 自定义模式的通用页 ============ -->
     <template v-else>
       <a-card size="small" :title="t('general.behavior')">
         <div class="checks">
@@ -646,7 +647,7 @@ async function onImportFile(event: Event) {
             class="field-control"
             :value="app?.popupDefaultTab ?? 'important'"
             :options="POPUP_TABS"
-            @update:value="(value: unknown) => patch({ popupDefaultTab: value as PopupTab })"
+            @update:value="(value: unknown) => patch({ popupDefaultTab: value as MailFilterId })"
           />
         </div>
       </a-card>
@@ -753,7 +754,7 @@ async function onImportFile(event: Event) {
 }
 
 /*
- * 模式切换：`极简模式 (开关) 完整功能`，**靠左**一行。
+ * 模式切换：`极简模式 (开关) 自定义`，**靠左**一行。
  *
  * ⚠ 不用 `justify-content: center` 居中：这一行下面的两段说明是左对齐的，
  *   开关居中的话整张卡片会看起来「一半居中一半靠左」。

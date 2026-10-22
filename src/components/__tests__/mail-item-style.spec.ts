@@ -56,6 +56,16 @@ const css = source
   .slice(source.indexOf('<style scoped>'))
   .replace(/\/\*[\s\S]*?\*\//g, '')
 
+/**
+ * 复制按钮的样式契约现在住在 `CodeTypePanel.vue`（Feature 08 把三个类型面板拆开了）。
+ *
+ * ⚠ 它仍然是「验证码那一行的文字按钮」，所以契约不变，只是文件换了。
+ */
+const codePanelSource = readFileSync(resolve(process.cwd(), 'src/components/mail-types/CodeTypePanel.vue'), 'utf8')
+const codePanelCss = codePanelSource
+  .slice(codePanelSource.indexOf('<style scoped>'))
+  .replace(/\/\*[\s\S]*?\*\//g, '')
+
 describe('垃圾桶按钮的位置与外观', () => {
   /*
    * ⚠ 位置的定义在**热区**（`.trash-zone`）上，按钮只是填满它
@@ -196,7 +206,7 @@ describe('垃圾桶按钮的可访问性', () => {
 
 describe('复制按钮的样式契约', () => {
   it('是文字按钮（无边框、无底色）', () => {
-    const body = ruleBody(css, '\\.copy')
+    const body = ruleBody(codePanelCss, '\\.copy')
     expect(body).toMatch(/border:\s*0/)
     expect(body).toMatch(/background:\s*transparent/)
   })
@@ -206,10 +216,10 @@ describe('复制按钮的样式契约', () => {
    *   两者互斥地出现在同一位置，盒模型差一点就会让那一行跳动。
    */
   it('复制成功是绿色，且与复制按钮同字号', () => {
-    const done = ruleBody(css, '\\.copy-done')
+    const done = ruleBody(codePanelCss, '\\.copy-done')
     expect(done).toMatch(/color:\s*var\(--mp-success\)/)
 
-    const copySize = /font-size:\s*(\d+)px/.exec(ruleBody(css, '\\.copy'))
+    const copySize = /font-size:\s*(\d+)px/.exec(ruleBody(codePanelCss, '\\.copy'))
     const doneSize = /font-size:\s*(\d+)px/.exec(done)
     expect(copySize?.[1]).toBe(doneSize?.[1])
   })

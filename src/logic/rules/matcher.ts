@@ -1,5 +1,5 @@
 import type { AppSettings, Mail, PromptRule } from '~/logic/types'
-import { createDefaultRule, DEFAULT_RULE_ID } from '~/logic/types'
+import { createDefaultRule, DEFAULT_RULE_ID, MailStateFlag } from '~/logic/types'
 import { senderAddress } from './blocked'
 
 /**
@@ -122,17 +122,26 @@ export function shouldAutoCopyCode(
 }
 
 /**
- * 广告判定（`features/04-exclude-ads.md § 3`）。
+ * 规则对**邮件状态位**的覆盖（Feature 08 起 `isAd` 迁到位掩码）。
  *
- * ```
- * rule.alwaysSkipAd === true  → isAd 强制 false（用户主动认领的发件人绕过过滤）
- * 否则                          → 用 AI 输出的 isAd
- * ```
+ * `rule.alwaysSkipAd === true` → 清掉 `Ad` 位（用户主动认领的发件人绕过广告过滤）。
  *
- * 设计文档提到的 `rule.prompt?.forceAd` 那条分支**刻意不实现**：
- *   prompt 是字符串（用户写的自然语言提示词），在它上面挂一个 `forceAd` 布尔字段
- *   是文档里的笔误残留，代码里没有对应的数据模型。等真有需求时按
- *   `PromptRule.alwaysForceAd` 那样的显式字段加，而不是从提示词文本里猜。
+ * 用「清 bit」而不是「改布尔」：状态位里可能同时有 `Urgent` / `LowPriority`，
+ * 规则只该动它负责的那一位。
+ */
+export function applyRuleStateFlags(
+  flags: number,
+  rule: Pick<PromptRule, 'alwaysSkipAd'> | null,
+): number {
+  if (rule?.alwaysSkipAd === true)
+    return flags & ~MailStateFlag.Ad
+  return flags
+}
+
+/**
+ * @deprecated 用 `applyRuleStateFlags`（Feature 08 起 isAd 是状态位，不是 AI 输出字段）。
+ *
+ * 保留这个纯函数是为了历史用例能继续表达「规则能推翻 AI 的广告判定」这条语义。
  */
 export function resolveIsAd(
   aiIsAd: boolean,

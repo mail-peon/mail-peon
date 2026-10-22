@@ -46,6 +46,19 @@ async function mountPage() {
 }
 
 describe('aboutPage - peon-hall 下载入口', () => {
+  it('两种运行模式的标题渲染成文案，而不是原始 i18n key', async () => {
+    const wrapper = await mountPage()
+    const text = wrapper.text()
+
+    // `t()` 查不到时返回键名本身 —— 界面会直接显示 about.modeMinimal
+    expect(text).not.toContain('about.modeMinimal')
+    expect(text).not.toContain('about.modeFull')
+    expect(text).toContain('极简模式')
+    expect(text).toContain('自定义模式')
+    // 极简模式的描述已更新为「验证码 + 确认邮件」
+    expect(text).toContain('确认邮件')
+  })
+
   it('渲染「配套桌面端（peon-hall）」卡片', async () => {
     const wrapper = await mountPage()
     const titles = wrapper.findAll('.ant-card-head-title').map(node => node.text())

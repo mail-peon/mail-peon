@@ -36,7 +36,15 @@ import { createMailPipeline } from '~/logic/ai/pipeline'
 
 const mocks = vi.hoisted(() => ({
   upsertMail: vi.fn(async (_mail: unknown, _retention?: unknown) => {}),
-  extractCodeOnly: vi.fn(async (_mail: unknown, _settings: unknown, _options?: unknown) => ({ code: '34949', validForSeconds: 300 })),
+  extractMinimalTypes: vi.fn(async (_mail: unknown, _adapters: unknown, _settings: unknown, _options?: unknown) => ([
+    {
+      kind: 'code' as const,
+      adapterId: 'builtin:code',
+      adapterName: '验证码',
+      code: '34949',
+      expiry: { at: Date.now() + 300_000, totalSeconds: 300 },
+    },
+  ])),
   copyToClipboard: vi.fn(async (_code: string) => true),
   showToast: vi.fn(async (_payload: unknown) => {}),
   notifyMailUpdated: vi.fn((_mailId: string) => {}),
@@ -49,15 +57,19 @@ vi.mock('~/logic/store/mails', () => ({
 
 vi.mock('~/logic/store/settings', () => ({
   readAiSettings: vi.fn(async () => ({ apiKey: 'k', platform: 'openai', model: 'm' })),
-  readAppSettings: vi.fn(async () => ({ minimalMode: true, blockedEnabled: false })),
+  readAppSettings: vi.fn(async () => ({ minimalMode: true, autoCopyCode: true, blockedEnabled: false })),
   patchAiSettings: vi.fn(),
   patchAppSettings: vi.fn(),
 }))
 
 vi.mock('~/logic/ai/summarize', () => ({
-  extractCodeOnly: mocks.extractCodeOnly,
+  extractMinimalTypes: mocks.extractMinimalTypes,
   summarize: vi.fn(),
   testAiConnection: vi.fn(),
+}))
+
+vi.mock('~/logic/store/mail-types', () => ({
+  listMailTypeRecords: vi.fn(async () => []),
 }))
 
 function mail(): Mail {
@@ -73,6 +85,7 @@ function mail(): Mail {
     processing: 'pending',
     copyStatus: 'none',
     read: false,
+    stateFlags: 0,
   }
 }
 
@@ -103,7 +116,15 @@ function notifier(overrides: Partial<Notifier> = {}): Notifier {
 describe('toast 投递失败不阻塞入库', () => {
   beforeEach(() => {
     vi.clearAllMocks()
-    mocks.extractCodeOnly.mockResolvedValue({ code: '34949', validForSeconds: 300 })
+    mocks.extractMinimalTypes.mockResolvedValue([
+      {
+        kind: 'code',
+        adapterId: 'builtin:code',
+        adapterName: '验证码',
+        code: '34949',
+        expiry: { at: Date.now() + 300_000, totalSeconds: 300 },
+      },
+    ])
     mocks.copyToClipboard.mockResolvedValue(true)
     mocks.upsertMail.mockResolvedValue(undefined)
     mocks.showToast.mockResolvedValue(undefined)

@@ -69,6 +69,7 @@ function makeMail(patch: Partial<Mail> = {}): Mail {
     processing: 'sent',
     copyStatus: 'none',
     read: false,
+    stateFlags: 0,
     messageId,
     ...patch,
   }
@@ -272,7 +273,21 @@ describe('mails 仓库', () => {
       bodyText: undefined,
       bodyHtml: undefined,
       processing: 'skipped',
-      ai: { minimal: '验证码：123456', summary: '', isAd: false, code: '123456', urgency: 'high' },
+      ai: {
+        types: [
+          {
+            kind: 'code',
+            adapterId: 'builtin:code',
+            adapterName: '',
+            code: '123456',
+            expiry: { at: 1_700_000_300_000, totalSeconds: 300 },
+          },
+        ],
+        minimal: '验证码：123456',
+        summary: '',
+        code: '123456',
+        validForSeconds: 300,
+      },
       copyStatus: 'copied',
     })
     await upsertMail(minimal, MINIMAL_RETENTION)
