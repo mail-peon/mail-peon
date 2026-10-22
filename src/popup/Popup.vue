@@ -341,7 +341,7 @@ function onOpen(mail: Mail) {
           @click="refresh"
         >
           <span
-            class="i-pixelarticons-reload refresh-icon"
+            class="i-pixelarticons-refresh refresh-icon"
             :class="{ spinning: refreshing }"
             aria-hidden="true"
           />
