@@ -341,7 +341,7 @@ function onOpen(mail: Mail) {
           @click="refresh"
         >
           <span
-            class="i-pixelarticons-refresh refresh-icon"
+            class="i-solar-refresh-line-duotone refresh-icon"
             :class="{ spinning: refreshing }"
             aria-hidden="true"
           />
@@ -556,7 +556,7 @@ function onOpen(mail: Mail) {
 
 @keyframes mp-refresh-spin {
   to {
-    transform: rotate(360deg);
+    transform: rotate(-360deg);
   }
 }
 

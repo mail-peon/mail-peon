@@ -48,6 +48,7 @@
     "@antfu/eslint-config": "^9.5.1",
     "@ffflorian/jszip-cli": "^3.16.8",
     "@iconify-json/pixelarticons": "^1.2.4",
+    "@iconify-json/solar": "^1.2.13",
     "@types/node": "^26.6.3",
     "@types/webextension-polyfill": "^0.12.6",
     "@types/ws": "^8.18.2",
