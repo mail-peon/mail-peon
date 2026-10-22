@@ -8,6 +8,7 @@ import {
   normalizeBlockedList,
   normalizeCursor,
   normalizeMail,
+  normalizeMailTypeRecord,
   normalizeMatchers,
   normalizeRetention,
   normalizeRule,
@@ -310,6 +311,40 @@ describe('normalizeAppSettings', () => {
 
   it('负数的 mailRetentionDays 被夹到 0', () => {
     expect(normalizeAppSettings({ mailRetentionDays: -5 }).mailRetentionDays).toBe(0)
+  })
+})
+
+describe('normalizeMailTypeRecord', () => {
+  it('保留适配器参数，并丢掉非原始值', () => {
+    const record = normalizeMailTypeRecord({
+      id: 'builtin:code',
+      kind: 'builtin',
+      params: {
+        autoCopyCode: false,
+        retries: 3,
+        label: 'ok',
+        nested: { nope: true },
+        fn: () => {},
+      },
+      createdAt: 1,
+      updatedAt: 1,
+    })
+
+    expect(record?.params).toEqual({
+      autoCopyCode: false,
+      retries: 3,
+      label: 'ok',
+    })
+  })
+
+  it('没有参数时保持 undefined（而不是空对象）', () => {
+    const record = normalizeMailTypeRecord({
+      id: 'builtin:code',
+      kind: 'builtin',
+      createdAt: 1,
+      updatedAt: 1,
+    })
+    expect(record?.params).toBeUndefined()
   })
 })
 

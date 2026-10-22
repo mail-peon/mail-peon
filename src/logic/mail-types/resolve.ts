@@ -1,7 +1,7 @@
 import type { BuiltinAdapterDef } from './catalog'
 import type { MailTypeAdapter, MailTypeRecord } from '~/logic/types'
 import { t } from '~/logic/strings'
-import { BUILTIN_SUMMARY_ID } from '~/logic/types'
+import { BUILTIN_CODE_ID, BUILTIN_SUMMARY_ID } from '~/logic/types'
 import { BUILTIN_ADAPTERS, MINIMAL_MODE_ADAPTER_IDS } from './catalog'
 
 /**
@@ -58,6 +58,7 @@ export function resolveMailTypeAdapters(
       fallback: def.defaultFallback,
       prompt: def.prompt[options.lang],
       userPrompt: record?.userPrompt,
+      params: record?.params,
     })
   }
 
@@ -76,6 +77,7 @@ export function resolveMailTypeAdapters(
       priority: record.priority ?? 100 + index,
       fallback: record.fallback ?? false,
       prompt: record.prompt ?? '',
+      params: record.params,
     })
   })
 
@@ -104,6 +106,20 @@ export function adapterById(adapters: MailTypeAdapter[], id: string): MailTypeAd
 /** 这封邮件该不该跑总结（总结是兜底，且可被用户关闭） */
 export function summaryAdapterEnabled(adapters: MailTypeAdapter[]): boolean {
   return adapters.some(adapter => adapter.id === BUILTIN_SUMMARY_ID && adapter.enabled)
+}
+
+/**
+ * 「验证码自动复制」的运行时取值。
+ *
+ * 优先用验证码适配器的 `params.autoCopyCode`；没有显式参数时回退到旧的
+ * `app.autoCopyCode`（兼容升级前关掉过这个开关的用户）。
+ */
+export function adapterAutoCopyCode(
+  adapters: MailTypeAdapter[],
+  fallback: boolean,
+): boolean {
+  const value = adapters.find(adapter => adapter.id === BUILTIN_CODE_ID)?.params?.autoCopyCode
+  return typeof value === 'boolean' ? value : fallback
 }
 
 /** 提示词总字数（配置页预算提示用；只算**生效**的适配器） */

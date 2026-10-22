@@ -1,7 +1,7 @@
 import type { RuleCache } from './rule-engine'
 import type { Notifier, ToastPayload } from '~/logic/notification/types'
 import type { AiSettings, AppSettings, CodeMatch, Mail, MailAccount, MailRetention, PromptRule } from '~/logic/types'
-import { resolveMailTypeAdapters } from '~/logic/mail-types/resolve'
+import { adapterAutoCopyCode, resolveMailTypeAdapters } from '~/logic/mail-types/resolve'
 import { toastCaption } from '~/logic/notification/copy'
 import { applyRuleStateFlags, shouldAutoCopyCode } from '~/logic/rules/matcher'
 import { listMailTypeRecords } from '~/logic/store/mail-types'
@@ -205,10 +205,13 @@ export function createMailPipeline(deps: MailPipelineDeps): MailPipeline {
     const codeMatch = types.find((match): match is CodeMatch => match.kind === 'code')
 
     /*
-     * 3. 自动复制（`autoCopyCode` 是一个**普通开关**，极简模式不再恒 true）。
+     * 3. 自动复制（验证码适配器的 `params.autoCopyCode`，极简模式不再恒 true）。
      *    关掉时验证码照旧提取、入库，只是不写剪贴板，toast 给「点击复制」。
      */
-    const autoCopy = shouldAutoCopyCode(app, null)
+    const autoCopy = shouldAutoCopyCode(
+      { autoCopyCode: adapterAutoCopyCode(adapters, app.autoCopyCode) },
+      null,
+    )
     const copied = codeMatch && autoCopy ? await copyWithTimeout(notifier, codeMatch.code) : false
     const toastStatus: 'copied' | 'failed' | 'manual'
       = autoCopy ? (copied ? 'copied' : 'failed') : 'manual'
@@ -293,14 +296,17 @@ export function createMailPipeline(deps: MailPipelineDeps): MailPipeline {
     }
 
     /*
-     * 验证码：`autoCopyCode` 可关，`rule.alwaysCopyCode` 可强制开
+     * 验证码：适配器参数 `autoCopyCode` 可关，`rule.alwaysCopyCode` 可强制开
      * （决策表见 `features/05-verification-code.md § 2`）。
      */
     let toastStatus: 'copied' | 'failed' | 'manual' | null = null
     let copied = false
 
     if (codeMatch) {
-      const autoCopy = shouldAutoCopyCode(app, rule)
+      const autoCopy = shouldAutoCopyCode(
+        { autoCopyCode: adapterAutoCopyCode(adapters, app.autoCopyCode) },
+        rule,
+      )
       copied = autoCopy ? await copyWithTimeout(notifier, codeMatch.code) : false
       stored.copyStatus = autoCopy ? (copied ? 'copied' : 'failed') : 'none'
       toastStatus = autoCopy ? (copied ? 'copied' : 'failed') : 'manual'

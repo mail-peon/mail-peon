@@ -710,6 +710,12 @@ export function useMailTypes() {
     await reload()
   }
 
+  /** 适配器自己的参数（当前只有验证码的 `autoCopyCode`） */
+  async function setParams(id: string, params: Record<string, unknown>) {
+    await send('mail-types:update', { id, patch: { params } }, { ok: false })
+    await reload()
+  }
+
   async function create(input: MailTypeCreateInput) {
     const result = await send<{ ok: boolean, id?: string, error?: string }>(
       'mail-types:create',
@@ -720,7 +726,7 @@ export function useMailTypes() {
     return result
   }
 
-  async function update(id: string, patch: { name?: string, prompt?: string, fallback?: boolean }) {
+  async function update(id: string, patch: { name?: string, prompt?: string, fallback?: boolean, params?: Record<string, unknown> }) {
     await send('mail-types:update', { id, patch }, { ok: false })
     await reload()
   }
@@ -751,7 +757,7 @@ export function useMailTypes() {
     dataChangeListeners.delete(reload)
   })
 
-  return { adapters, reload, setEnabled, setUserPrompt, create, update, remove, move, reset }
+  return { adapters, reload, setEnabled, setUserPrompt, setParams, create, update, remove, move, reset }
 }
 
 export { onMessage, send, sendMessage }

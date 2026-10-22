@@ -336,6 +336,13 @@ export interface MailTypeAdapter {
   prompt: string
   /** 内置类型的用户补充规则 */
   userPrompt?: string
+  /**
+   * 适配器自己的参数（可选，按 adapter 解释）。
+   *
+   * 目前只有内置「验证码」用 `autoCopyCode`；自定义类型不展示参数，但字段保留，
+   * 以后加参数不用再改存储形状。
+   */
+  params?: Record<string, unknown>
 }
 
 /** IDB `mailTypes` 的持久化记录（内置只存 override，自定义整条存） */
@@ -345,6 +352,8 @@ export interface MailTypeRecord {
   enabled?: boolean
   /** 内置 override */
   userPrompt?: string
+  /** 适配器自己的参数（见 `MailTypeAdapter.params`） */
+  params?: Record<string, unknown>
   /** 自定义 */
   name?: string
   prompt?: string
@@ -360,6 +369,7 @@ export const MAIL_TYPE_RECORD_FIELDS: Record<keyof MailTypeRecord, true> = {
   kind: true,
   enabled: true,
   userPrompt: true,
+  params: true,
   name: true,
   prompt: true,
   priority: true,
@@ -751,12 +761,17 @@ export interface AppSettings {
   minimalMode: boolean
   /** 仅自定义模式生效 */
   excludeAds: boolean
-  /** 极简模式强制为 true */
-  autoCopyCode: boolean
   /** 仅自定义模式生效 */
   blockedEnabled: boolean
   /** master switch；关掉后不动 badge */
   notifyOnNew: boolean
+  /**
+   * @deprecated 自动复制已经迁到「验证码」适配器的 `params.autoCopyCode`。
+   *
+   * 这里保留只为兼容存量数据：适配器没有显式参数时，pipeline 用它做回退。
+   * 通用设置页不再展示这个开关。
+   */
+  autoCopyCode: boolean
   /**
    * 后台自动检查新邮件的间隔（分钟）。
    *

@@ -220,7 +220,6 @@ const zhCN: StringTable = {
     behavior: '行为',
     /** 完整模式通用页的最后一个卡片标题（导出 / 导入 / 清空） */
     data: '数据',
-    autoCopyCode: '验证码自动复制',
     excludeAds: '排除广告 / 营销邮件',
     excludeAdsHint: '被判为广告的邮件仍会被 AI 处理，可在弹窗「营销」分区查看。',
     blockedEnabled: '启用排除邮箱',
@@ -353,12 +352,14 @@ const zhCN: StringTable = {
     moveUp: '上移',
     moveDown: '下移',
     deleteConfirm: '类型「{name}」将被删除，此操作无法撤销。',
-    minimalLocked: '极简模式固定启用「验证码」和「确认邮件」；切到「自定义」模式后可调整。',
+    minimalLocked: '极简模式固定启用「验证码」和「确认邮件」；适配器开关需切到「自定义」模式，验证码的自动复制可随时调整。',
     noPrompt: '尚未填写提示词，这个类型不会生效。',
     unnamed: '未命名类型',
     code: {
       name: '验证码',
-      description: '提取一次性验证码并自动复制；有有效期时显示倒计时。',
+      description: '提取一次性验证码，可自动复制；有有效期时显示倒计时。',
+      autoCopyCode: '自动复制验证码',
+      autoCopyCodeHint: '提取到验证码后写入剪贴板；关闭后仍会入库，toast 里给「点击复制」。',
     },
     confirm: {
       name: '确认邮件',

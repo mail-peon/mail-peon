@@ -805,14 +805,22 @@ async function effectiveMailTypes() {
 /**
  * 极简模式下适配器配置是**只读**的（模式 overlay 强制 code+confirm）。
  *
- * UI 已经禁用了开关与编辑按钮，这里再挡一道：后台是唯一可信的写入口，
- * 不能只靠「界面上没有按钮」。
+ * 例外：适配器自己的 `params` 仍然可写 —— 例如「验证码自动复制」已经从通用设置
+ * 迁到验证码适配器里，它控制的是行为，不是「这个类型生不生效」。如果连它也锁住，
+ * 极简模式用户就再也关不掉自动复制了。
  */
-async function adapterEditGuard(): Promise<{ ok: false, error: string } | null> {
+async function adapterEditGuard(
+  patch?: Record<string, unknown>,
+): Promise<{ ok: false, error: string } | null> {
   const app = await readAppSettings()
-  return app.minimalMode
-    ? { ok: false as const, error: '极简模式下适配器配置被锁定，请切到「自定义」模式' }
-    : null
+  if (!app.minimalMode)
+    return null
+
+  const keys = Object.keys(patch ?? {})
+  if (keys.length > 0 && keys.every(key => key === 'params'))
+    return null
+
+  return { ok: false as const, error: '极简模式下适配器开关被锁定，请切到「自定义」模式' }
 }
 
 onMessage('mail-types:list', async () => {
@@ -823,14 +831,14 @@ onMessage('mail-types:list', async () => {
 /**
  * 更新一条适配器。
  *
- * - 内置：只接受 `enabled` / `userPrompt`（名称 / 提示词 / 优先级由 catalog 决定）；
- * - 自定义：接受 `name` / `prompt` / `fallback` / `enabled`。
+ * - 内置：只接受 `enabled` / `userPrompt` / `params`（名称 / 提示词 / 优先级由 catalog 决定）；
+ * - 自定义：接受 `name` / `prompt` / `fallback` / `enabled` / `params`。
  *
  * 不存在时对内置是「新建一条 override」，对自定义是错误（防止 UI 拿错 id）。
  */
 onMessage('mail-types:update', async ({ data }) => {
   await ensureStoreReady()
-  const guard = await adapterEditGuard()
+  const guard = await adapterEditGuard(data.patch)
   if (guard)
     return guard
 
@@ -853,6 +861,9 @@ onMessage('mail-types:update', async ({ data }) => {
 
   if (typeof data.patch.enabled === 'boolean')
     next.enabled = data.patch.enabled
+
+  if (data.patch.params && typeof data.patch.params === 'object' && !Array.isArray(data.patch.params))
+    next.params = { ...(next.params ?? {}), ...data.patch.params }
 
   if (isBuiltin) {
     if (typeof data.patch.userPrompt === 'string')

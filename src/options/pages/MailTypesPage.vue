@@ -6,6 +6,7 @@ import { useMailTypes, useSettings } from '~/logic/bridge'
 import { useConfirmAction } from '~/logic/confirm-action'
 import { adapterPromptChars, estimatePromptTokens } from '~/logic/mail-types/resolve'
 import { t } from '~/logic/strings'
+import { BUILTIN_CODE_ID } from '~/logic/types'
 import { useAppMessage } from '~/logic/ui-message'
 
 /**
@@ -19,7 +20,7 @@ import { useAppMessage } from '~/logic/ui-message'
  * - 不设个数 / 字数硬上限：只显示提示词预算，提醒「每封邮件都会带上」。
  */
 
-const { adapters, setEnabled, setUserPrompt, create, update, remove, move, reset } = useMailTypes()
+const { adapters, setEnabled, setUserPrompt, setParams, create, update, remove, move, reset } = useMailTypes()
 const { app } = useSettings()
 const uiMessage = useAppMessage()
 
@@ -58,8 +59,23 @@ async function saveUserPrompt(adapter: MailTypeAdapter) {
   uiMessage.success(t('common.save'))
 }
 
+/** 验证码适配器的参数：没有显式值时回退到旧的全局设置（升级兼容） */
+function autoCopyCode(adapter: MailTypeAdapter): boolean {
+  const value = adapter.params?.autoCopyCode
+  if (typeof value === 'boolean')
+    return value
+  return app.value?.autoCopyCode ?? true
+}
+
+async function onAutoCopyToggle(adapter: MailTypeAdapter, value: boolean | string | number) {
+  await setParams(adapter.id, { autoCopyCode: Boolean(value) })
+}
+
 async function resetBuiltin(adapter: MailTypeAdapter) {
   await reset(adapter.id)
+  // 恢复默认后自动复制也回到默认开启（否则旧版的全局 false 会继续兜底）
+  if (adapter.id === BUILTIN_CODE_ID)
+    await setParams(adapter.id, { autoCopyCode: true })
   userPromptDraft[adapter.id] = ''
   uiMessage.success(t('adapters.resetDone'))
 }
@@ -205,6 +221,22 @@ function onDelete(adapter: MailTypeAdapter) {
       <p class="meta">
         #{{ adapter.priority }} · {{ adapter.fallback ? t('adapters.fallback') : t('adapters.stackable') }}
       </p>
+
+      <!--
+        验证码自己的参数。极简模式下适配器开关锁定，但「自动复制」是行为开关，
+        不是「类型生不生效」，所以不跟着禁用。
+      -->
+      <div v-if="adapter.id === BUILTIN_CODE_ID" class="adapter-param">
+        <a-checkbox
+          :checked="autoCopyCode(adapter)"
+          @update:checked="(value: boolean | string | number) => onAutoCopyToggle(adapter, value)"
+        >
+          {{ t('adapters.code.autoCopyCode') }}
+        </a-checkbox>
+        <p class="mp-hint">
+          {{ t('adapters.code.autoCopyCodeHint') }}
+        </p>
+      </div>
 
       <a-collapse ghost class="prompt-collapse">
         <a-collapse-panel key="prompt" :header="t('adapters.userPrompt')">
@@ -462,6 +494,16 @@ function onDelete(adapter: MailTypeAdapter) {
   margin: 6px 0 0;
   font-size: 11px;
   color: var(--mp-text-faint);
+}
+
+.adapter-param {
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid var(--mp-border);
+}
+
+.adapter-param .mp-hint {
+  margin: 4px 0 0 24px;
 }
 
 .prompt-collapse {

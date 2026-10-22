@@ -310,7 +310,8 @@ interface SettingDoc<T> {
 
 interface AppSettings {
   excludeAds: boolean // 默认 true
-  autoCopyCode: boolean // 默认 true
+  /** @deprecated 已迁到验证码适配器的 `params.autoCopyCode`；仅旧数据回退 */
+  autoCopyCode?: boolean
   /**
    * 排除邮箱总开关；默认 true。
    * 完整模式「通用」页可关（关掉后 `isBlocked` 短路，per-account 的
@@ -318,6 +319,7 @@ interface AppSettings {
    */
   blockedEnabled: boolean
   notifyOnNew: boolean // master switch；默认 true
+  checkIntervalMinutes: number // 自动检查间隔，默认 5，范围 1–60
   popupDefaultTab: 'important' | 'all' | 'code' | 'ad' // 默认 'important'
   mailRetentionDays: number // M3+：默认 0 = 不按时间清理
   /** IDB 内邮件保留份数；滚动淘汰。`'unlimited'` = 不淘汰。回收站里的不占名额 */

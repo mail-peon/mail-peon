@@ -130,6 +130,7 @@ declare module 'webext-bridge' {
         name?: string
         prompt?: string
         fallback?: boolean
+        params?: Record<string, unknown>
       }
     }, { ok: boolean, error?: string }>
     'mail-types:create': ProtocolWithReturn<{

@@ -82,9 +82,12 @@ async function processMinimal(mail: Mail, app: AppSettings): Promise<MailOutcome
   if (!extracted.types.length)
     return 'skipped'          // 没命中 → 丢弃，不写库
 
-  // 3. 验证码：自动复制（尊重全局 autoCopyCode，带超时）
+  // 3. 验证码：自动复制（验证码适配器的 params.autoCopyCode，带超时）
   const codeMatch = extracted.types.find(m => m.kind === 'code')
-  const copied = codeMatch && shouldAutoCopyCode(app, null)
+  const copied = codeMatch && shouldAutoCopyCode(
+    { autoCopyCode: adapterAutoCopyCode(adapters, app.autoCopyCode) },
+    null,
+  )
     ? await copyWithTimeout(notifier, codeMatch.code)
     : false
 

@@ -16,6 +16,7 @@ const mocks = vi.hoisted(() => ({
   app: [] as unknown as { value: { minimalMode: boolean } },
   setEnabled: vi.fn(async () => {}),
   setUserPrompt: vi.fn(async () => {}),
+  setParams: vi.fn(async () => {}),
   create: vi.fn(async () => ({ ok: true })),
   update: vi.fn(async () => {}),
   remove: vi.fn(async () => {}),
@@ -28,6 +29,7 @@ vi.mock('~/logic/bridge', () => ({
     adapters: mocks.adapters,
     setEnabled: mocks.setEnabled,
     setUserPrompt: mocks.setUserPrompt,
+    setParams: mocks.setParams,
     create: mocks.create,
     update: mocks.update,
     remove: mocks.remove,
@@ -90,6 +92,24 @@ describe('mailTypesPage 的模式锁定', () => {
 
     const add = wrapper.findAll('button').find(node => node.text().includes('新增自定义类型'))
     expect(add?.attributes('disabled')).toBeUndefined()
+
+    wrapper.unmount()
+  })
+
+  it('验证码的「自动复制」在极简模式下仍可调整', async () => {
+    setMode(true)
+    const wrapper = mount(MailTypesPage, { attachTo: document.body })
+
+    const autoCopy = wrapper.findAll('.ant-checkbox-wrapper')
+      .find(node => node.text().includes('自动复制验证码'))
+    expect(autoCopy).toBeTruthy()
+    expect(autoCopy?.classes()).not.toContain('ant-checkbox-wrapper-disabled')
+
+    await autoCopy?.find('input').trigger('click')
+    expect(mocks.setParams).toHaveBeenCalledWith(
+      'builtin:code',
+      expect.objectContaining({ autoCopyCode: expect.any(Boolean) }),
+    )
 
     wrapper.unmount()
   })

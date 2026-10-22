@@ -578,21 +578,6 @@ async function onImportFile(event: Event) {
     <!-- ============ 极简模式的通用页 ============ -->
     <template v-if="minimalMode">
       <a-card size="small">
-        <!--
-          ⚠ 这里**不是** disabled。
-             「验证码自动复制」在极简模式里也是一个普通开关：关掉之后验证码照旧
-             提取、照旧进列表，只是不写剪贴板 —— toast 上给「点击复制」按钮兜底
-             （见 `logic/ai/pipeline.ts` 的 `processMinimal`）。
-        -->
-        <a-checkbox
-          :checked="app?.autoCopyCode ?? true"
-          @update:checked="(value: boolean) => patch({ autoCopyCode: value })"
-        >
-          {{ t('general.autoCopyCode') }}
-        </a-checkbox>
-
-        <a-divider class="divider" />
-
         <div class="field">
           <span class="field-label">{{ t('general.autoCheck') }}</span>
           <div class="field-control interval-control">
@@ -647,13 +632,6 @@ async function onImportFile(event: Event) {
               {{ t('general.excludeAdsHint') }}
             </p>
           </div>
-
-          <a-checkbox
-            :checked="app?.autoCopyCode ?? true"
-            @update:checked="(value: boolean) => patch({ autoCopyCode: value })"
-          >
-            {{ t('general.autoCopyCode') }}
-          </a-checkbox>
 
           <a-checkbox
             :checked="app?.blockedEnabled ?? true"

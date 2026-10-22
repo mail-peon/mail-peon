@@ -549,10 +549,27 @@ export function normalizeLinks(raw: unknown): string[] | undefined {
 }
 
 /**
+ * 适配器参数归一：只保留原始值（string / number / boolean）。
+ *
+ * 参数是「每个适配器自己解释」的可选字段，存储层不猜语义；但也不能把对象里的
+ * 任意结构原样写回 IDB（可能带 undefined / 函数 / 循环引用）。空对象归一成
+ * `undefined`，与「没有参数」保持同一种形状。
+ */
+function normalizeAdapterParams(raw: unknown): Record<string, unknown> | undefined {
+  const value = asObject(raw)
+  const out: Record<string, unknown> = {}
+  for (const [key, item] of Object.entries(value)) {
+    if (typeof item === 'string' || typeof item === 'number' || typeof item === 'boolean')
+      out[key] = item
+  }
+  return Object.keys(out).length ? out : undefined
+}
+
+/**
  * 适配器记录归一。
  *
  * - `kind` 不信任输入：id 在 catalog 里才是 builtin，否则按 custom 处理；
- * - builtin 只收 `enabled` / `userPrompt`（名称 / 提示词 / 优先级由 catalog 决定）；
+ * - builtin 只收 `enabled` / `userPrompt` / `params`（名称 / 提示词 / 优先级由 catalog 决定）；
  * - custom 收整条，并补默认值。
  */
 export function normalizeMailTypeRecord(raw: unknown, fallbackKey?: string): MailTypeRecord | null {
@@ -564,6 +581,7 @@ export function normalizeMailTypeRecord(raw: unknown, fallbackKey?: string): Mai
   const kind: MailTypeRecord['kind'] = KNOWN_BUILTIN_IDS.has(id) ? 'builtin' : 'custom'
   const createdAt = num(value.createdAt, Date.now())
   const updatedAt = num(value.updatedAt, createdAt)
+  const params = normalizeAdapterParams(value.params)
 
   if (kind === 'builtin') {
     return {
@@ -572,6 +590,7 @@ export function normalizeMailTypeRecord(raw: unknown, fallbackKey?: string): Mai
       enabled: value.enabled === undefined ? undefined : bool(value.enabled, true),
       // 不设产品级字数上限：只做运行时类型归一
       userPrompt: value.userPrompt === undefined ? undefined : str(value.userPrompt),
+      params,
       createdAt,
       updatedAt,
     }
@@ -585,6 +604,7 @@ export function normalizeMailTypeRecord(raw: unknown, fallbackKey?: string): Mai
     prompt: str(value.prompt),
     priority: num(value.priority, 100),
     fallback: bool(value.fallback, false),
+    params,
     createdAt,
     updatedAt,
   }

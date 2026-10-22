@@ -2,6 +2,7 @@ import type { MailTypeRecord } from '~/logic/types'
 import { describe, expect, it } from 'vitest'
 import { BUILTIN_ADAPTERS } from '~/logic/mail-types/catalog'
 import {
+  adapterAutoCopyCode,
   adapterById,
   adapterPromptChars,
   estimatePromptTokens,
@@ -89,6 +90,23 @@ describe('resolveMailTypeAdapters', () => {
     ], { minimalMode: false, lang: 'zh' })
 
     expect(adapterById(adapters, BUILTIN_CODE_ID)?.enabled).toBe(false)
+  })
+
+  it('验证码适配器的 params 参与自动复制取值，缺省回退', () => {
+    const withParams = resolveMailTypeAdapters([
+      {
+        id: BUILTIN_CODE_ID,
+        kind: 'builtin',
+        params: { autoCopyCode: false },
+        createdAt: 1,
+        updatedAt: 1,
+      },
+    ], { minimalMode: false, lang: 'zh' })
+    expect(adapterAutoCopyCode(withParams, true)).toBe(false)
+
+    const withoutParams = resolveMailTypeAdapters([], { minimalMode: false, lang: 'zh' })
+    expect(adapterAutoCopyCode(withoutParams, false)).toBe(false)
+    expect(adapterAutoCopyCode(withoutParams, true)).toBe(true)
   })
 
   it('极简模式只生效 code + confirm，且自定义 / 总结关闭', () => {

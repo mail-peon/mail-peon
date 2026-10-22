@@ -204,6 +204,8 @@ interface MailTypeAdapter {          // 运行时视图（catalog + override 合
   fallback: boolean                  // true = 仅当没有非兜底类型命中
   prompt: string
   userPrompt?: string
+  /** 适配器自己的参数；当前验证码用 `autoCopyCode`，自定义不展示 */
+  params?: Record<string, unknown>
 }
 
 interface MailTypeRecord {           // IDB `mailTypes`（外部键 id）
@@ -211,6 +213,7 @@ interface MailTypeRecord {           // IDB `mailTypes`（外部键 id）
   kind: 'builtin' | 'custom'
   enabled?: boolean
   userPrompt?: string                // 内置 override
+  params?: Record<string, unknown>   // 内置 / 自定义均可选；自定义暂不展示
   name?: string                      // 自定义
   prompt?: string                    // 自定义
   priority?: number                  // 自定义
@@ -245,9 +248,12 @@ interface AppSettings {
   /** 两套运行模式：极简（只验证码） / 完整（全部功能） */
   minimalMode: boolean               // 默认 true
   excludeAds: boolean                // 默认 true（仅完整模式生效）
-  autoCopyCode: boolean              // 默认 true；两种模式都尊重它（极简模式不再强制 true）
+  /** @deprecated 已迁到验证码适配器的 `params.autoCopyCode`；仅作旧数据回退 */
+  autoCopyCode?: boolean
   blockedEnabled: boolean            // 默认 true（仅完整模式生效）
   notifyOnNew: boolean               // master switch；默认 true
+  /** 后台自动检查新邮件的间隔（分钟）；默认 5，范围 1–60 */
+  checkIntervalMinutes: number
   popupDefaultTab: string            // 筛选 id：'important' | 'all' | 'ad' | 'adapter:<id>'
   /** IDB 内邮件保留份数；滚动淘汰。`'unlimited'` = 不淘汰（仅完整模式生效；极简模式写死 50） */
   mailRetention: 100 | 200 | 500 | 1000 | 'unlimited'   // 默认 100
@@ -283,9 +289,9 @@ interface AiSettings {
 export const defaultAppSettings: AppSettings = {
   minimalMode: true,                // 默认极简
   excludeAds: true,
-  autoCopyCode: true,
   blockedEnabled: true,
   notifyOnNew: true,
+  checkIntervalMinutes: 5,
   popupDefaultTab: 'important',     // 旧值 'code' 会映射到 'adapter:builtin:code'  mailRetention: 100,
   mailRetentionDays: 0,
   autoDeleteExpiredCode: true,      // 失效验证码自动清走

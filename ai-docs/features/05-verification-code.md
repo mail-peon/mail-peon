@@ -12,11 +12,11 @@
 
 | # | 目标 |
 | --- | --- |
-| G1 | 全局开关 `autoCopyCode`，**默认 ON**。两种模式都尊重它 —— 极简模式**不再强制为 true**（关掉后验证码照旧提取并入库，只是不写剪贴板，toast 给"复制"文字按钮兜底） |
+| G1 | 「验证码」适配器自己的参数 `params.autoCopyCode`，**默认 ON**。两种模式都尊重它 —— 极简模式**不再强制为 true**（关掉后验证码照旧提取并入库，只是不写剪贴板，toast 给"复制"文字按钮兜底） |
 | G2 | AI 输出 `code` 字段非空时 → 自动复制 → 顶部 toast 显示 `发件人 · 邮箱` + 放大的 `验证码 XXX` + 第三行灰色的 `√ 已复制`（见 [`../design/page-toast.md § 3.3`](../design/page-toast.md)） |
 | G3 | 自动复制**失败**时 → 顶部 toast 第三行"自动复制失败" + "复制"文字按钮 + Popup 卡片保留复制按钮 |
 | G4 | 关闭自动复制开关 → 顶部 toast 同样弹出（"复制"文字按钮，不写状态词），Popup 卡片也有复制按钮 |
-| G5 | 单条 PromptRule 的 `alwaysCopyCode` 可强制开启本规则时自动复制（即便全局关） |
+| G5 | 单条 PromptRule 的 `alwaysCopyCode` 可强制开启本规则时自动复制（即便适配器参数关闭） |
 | G6 | 验证码视觉标识（即使没复制成功，UI 也要识别出来） |
 | G7 | **极简模式**下：邮件正文根本不存，只存验证码；详细见 [`../design/minimal-mode.md`](../design/minimal-mode.md) |
 
@@ -26,9 +26,9 @@
 
 ## 2. 决策表
 
-> `autoCopy` = `settings.autoCopyCode || rule.alwaysCopyCode`
+> `autoCopy` = `codeAdapter.params.autoCopyCode || rule.alwaysCopyCode`
 >
-> ⚠ 判据里**不看 `minimalMode`**：极简模式与完整模式用同一个开关
+> ⚠ 判据里**不看 `minimalMode`**：极简模式与完整模式用同一个适配器参数
 > （模式决定的是走哪条处理链，不是要不要复制）。
 
 | autoCopy | AI.code 有值 | Toast | Popup 列表 | Popup 复制按钮 |
@@ -65,7 +65,8 @@ async function copyToClipboard(text: string): Promise<boolean> {
 ```ts
 // background
 async function onAiResult(mail, output) {
-  const autoCopy = settings.autoCopyCode || (pickedRule?.alwaysCopyCode ?? false)
+  const autoCopy = codeAdapter.params?.autoCopyCode !== false
+    || (pickedRule?.alwaysCopyCode ?? false)
   const tab = await getActiveTab()
 
   if (!output.code) return   // 没验证码，不弹 toast
@@ -232,7 +233,7 @@ AI（读邮件）──▶ validForSeconds（秒）
 | `Mail.codeValidForSeconds?: number` | 总有效期**秒数**（进度条的分母） |
 | `Mail.ai.validForSeconds?: number \| null` | AI 读到的原始时长（秒） |
 | `Mail.copyStatus` | 只由**自动复制**写；手动复制的反馈是纯前端瞬时的，不落库 |
-| `Settings.autoCopyCode` / `Settings.autoDeleteExpiredCode` | 两个开关 |
+| `MailTypeRecord.params.autoCopyCode` / `Settings.autoDeleteExpiredCode` | 两个开关（前者在「适配器 · 验证码」里） |
 | `PromptRule.alwaysCopyCode?: boolean` | 规则级覆盖 |
 
 > ⚠️ `codeExpiresAt` 与 `codeValidForSeconds` **同生同灭**（见 `deriveCodeExpiry`）。
