@@ -826,7 +826,7 @@ async function adapterEditGuard(
   if (keys.length > 0 && keys.every(key => key === 'params'))
     return null
 
-  return { ok: false as const, error: '极简模式下适配器开关被锁定，请切到「自定义」模式' }
+  return { ok: false as const, error: '极简模式下分类规则开关被锁定，请切到「自定义」模式' }
 }
 
 onMessage('mail-types:list', async () => {

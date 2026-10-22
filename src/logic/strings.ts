@@ -151,7 +151,7 @@ const zhCN: StringTable = {
     navGeneral: '通用',
     navAccounts: '账号',
     navRules: '提示词',
-    navAdapters: '适配器',
+    navAdapters: '分类规则',
     navAi: 'AI 配置',
     navBlocked: '屏蔽列表',
     navTrash: '回收站',
@@ -212,8 +212,8 @@ const zhCN: StringTable = {
     modeMinimal: '极简模式',
     modeFull: '自定义',
     /** 模式说明（开关下方，一行一个模式，共两行） */
-    modeMinimalDesc: '固定启用「验证码」和「确认邮件」，其他适配器关闭；开关在「适配器」页锁定',
-    modeFullDesc: '自由启用 / 编辑 / 新增适配器，包含总结与自定义类型',
+    modeMinimalDesc: '固定启用「验证码」和「确认邮件」，其他分类规则关闭；开关在「分类规则」页锁定',
+    modeFullDesc: '自由启用 / 编辑 / 新增分类规则，包含总结与自定义类型',
     /** 完整模式通用页的第一个卡片标题 */
     behavior: '行为',
     /** 完整模式通用页的最后一个卡片标题（导出 / 导入 / 清空） */
@@ -325,8 +325,8 @@ const zhCN: StringTable = {
   },
 
   adapters: {
-    title: '适配器',
-    intro: '每个适配器是一种邮件类型 + 一段提示词。每封邮件都会带上所有启用适配器的提示词。',
+    title: '分类规则',
+    intro: '每条分类规则是一种邮件类型 + 一段提示词。每封邮件都会带上所有启用分类规则的提示词。',
     promptBudget: '提示词共 {chars} 字（约 {tokens} tokens）',
     builtinTag: '内置',
     customTag: '自定义',
@@ -349,7 +349,7 @@ const zhCN: StringTable = {
     moveUp: '上移',
     moveDown: '下移',
     deleteConfirm: '类型「{name}」将被删除，此操作无法撤销。',
-    minimalLocked: '极简模式固定启用「验证码」和「确认邮件」；适配器开关需切到「自定义」模式，验证码的自动复制可随时调整。',
+    minimalLocked: '极简模式固定启用「验证码」和「确认邮件」；分类规则开关需切到「自定义」模式，验证码的自动复制可随时调整。',
     noPrompt: '尚未填写提示词，这个类型不会生效。',
     unnamed: '未命名类型',
     code: {
@@ -422,7 +422,7 @@ const zhCN: StringTable = {
     modeMinimal: '极简模式',
     modeFull: '自定义模式',
     modeMinimalDesc: '固定启用「验证码」和「确认邮件」：验证码自动复制并弹提示；确认邮件只在卡片里给一个打开链接的按钮。其它邮件直接丢弃。',
-    modeFullDesc: '可自由启用、排序、新增邮件类型适配器；支持 AI 总结（兜底）、广告屏蔽、提示词规则与排除邮箱。',
+    modeFullDesc: '可自由启用、排序、新增分类规则；支持 AI 总结（兜底）、广告屏蔽、提示词规则与排除邮箱。',
     storageTitle: '数据存在哪',
     storageDesc: '账号、规则、邮件全部存在本机 IndexedDB，不会上传到任何服务器。',
     aiTitle: '邮件正文会发给谁',

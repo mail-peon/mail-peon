@@ -100,7 +100,7 @@ export async function summarize(
     return fallbackResult(
       mail,
       adapters,
-      '适配器提示词过长，超出当前模型的上下文预算；请减少启用的适配器或缩短提示词',
+      '分类规则提示词过长，超出当前模型的上下文预算；请减少启用的分类规则或缩短提示词',
     )
   }
 
