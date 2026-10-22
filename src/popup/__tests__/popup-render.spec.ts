@@ -1,5 +1,5 @@
 import type { Mail, MailTypeAdapter } from '~/logic/types'
-import { mount } from '@vue/test-utils'
+import { flushPromises, mount } from '@vue/test-utils'
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 import { ref } from 'vue'
 import MailListItem from '~/components/MailListItem.vue'
@@ -67,6 +67,9 @@ const mocks = vi.hoisted(() => ({
   loading: null as unknown as { value: boolean },
   loadFailed: null as unknown as { value: boolean },
   reloadMails: null as unknown as () => Promise<void>,
+  syncNow: vi.fn(async () => ({ started: true, startedAt: Date.now() })),
+  syncStatus: vi.fn(async () => null),
+  syncDoneListeners: [] as Array<() => void>,
 }))
 
 vi.mock('~/logic/bridge', () => ({
@@ -95,6 +98,14 @@ vi.mock('~/logic/bridge', () => ({
     ai: mocks.ai,
     reload: vi.fn(async () => {}),
   }),
+  useAccounts: () => ({
+    syncNow: mocks.syncNow,
+    syncStatus: mocks.syncStatus,
+  }),
+  onSyncDone: (listener: () => void) => {
+    mocks.syncDoneListeners.push(listener)
+    return () => {}
+  },
   useMailTypes: () => ({
     adapters: mocks.adapters,
     reload: vi.fn(async () => {}),
@@ -174,6 +185,25 @@ function codeMail(patch: Partial<Mail> = {}): Mail {
 }
 
 describe('极简模式渲染', () => {
+  it('打开 Popup 时主动检查一次新邮件，刷新图标默认旋转', async () => {
+    mocks.app.value = { minimalMode: true, excludeAds: true, popupDefaultTab: 'important' }
+    mocks.mails.value = []
+
+    const wrapper = mount(Popup)
+    await flushPromises()
+
+    expect(mocks.syncNow).toHaveBeenCalled()
+    expect(wrapper.find('.refresh-btn').exists()).toBe(true)
+    expect(wrapper.find('.refresh-icon').classes()).toContain('spinning')
+
+    // 同步结束（广播）后停止旋转
+    mocks.syncDoneListeners.at(-1)?.()
+    await flushPromises()
+    expect(wrapper.find('.refresh-icon').classes()).not.toContain('spinning')
+
+    wrapper.unmount()
+  })
+
   /*
    * ⚠ 这一条防的是「打开弹窗就自带一个空弹窗」。
    *

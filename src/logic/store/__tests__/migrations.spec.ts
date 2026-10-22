@@ -290,9 +290,18 @@ describe('normalizeAppSettings', () => {
     expect(app.autoCopyCode).toBe(true)
     expect(app.blockedEnabled).toBe(true)
     expect(app.notifyOnNew).toBe(true)
+    expect(app.checkIntervalMinutes).toBe(5)
     expect(app.popupDefaultTab).toBe('important')
     expect(app.mailRetention).toBe(100)
     expect(app.schemaVersion).toBe(1)
+  })
+
+  it('自动检查间隔夹到 1–60 分钟，非法值落回默认 5', () => {
+    expect(normalizeAppSettings({ checkIntervalMinutes: 0 }).checkIntervalMinutes).toBe(1)
+    expect(normalizeAppSettings({ checkIntervalMinutes: -3 }).checkIntervalMinutes).toBe(1)
+    expect(normalizeAppSettings({ checkIntervalMinutes: 999 }).checkIntervalMinutes).toBe(60)
+    expect(normalizeAppSettings({ checkIntervalMinutes: 'bogus' }).checkIntervalMinutes).toBe(5)
+    expect(normalizeAppSettings({ checkIntervalMinutes: 7.6 }).checkIntervalMinutes).toBe(8)
   })
 
   it('非法 popupDefaultTab 退回 important（否则 Popup 打开时四个 tab 都不选中）', () => {

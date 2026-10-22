@@ -133,7 +133,7 @@
 ```
 
 - 用户**点击 icon = 打开 Popup**（Chrome 默认行为；不需要 `chrome.action.onClicked`）
-- 打开 Popup → 当前 tab 的 badge 归零；用户"标记已读"也算清零
+- 打开 Popup → 当前 tab 的 badge 归零；用户"标记已读"也算清零；同时立即检查一次新邮件
 
 ### 3.2 页面顶部 Toast（content script 渲染）
 

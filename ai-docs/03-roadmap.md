@@ -41,7 +41,7 @@ M1 ✅   M2 ✅   M3 ✅   M4 ✅   M5 ✅
 - **MailProvider 适配器** + MVP 实现 IMAP + 用户名密码（`src/adapters/mail/providers/imap/`）
 - 账号 CRUD（host / port / user / password / TLS）
 - **本机中继**：常驻 IMAP `IDLE` 发现新邮件 + WebSocket↔TCP 字节透传
-- **中继推送 → 插件抓增量**；另有一个低频 `chrome.alarms` 兜底
+- **中继推送 → 插件抓增量**；另有可配置的 `chrome.alarms` 自动检查（默认 5 分钟，打开 Popup 立即检查）
 - **首次连上只记游标**（IMAP 是 `UIDNEXT - 1`），不拉任何历史；之后 `fetchSince(cursor)` 拉增量，一轮一批
 - **UIDVALIDITY 检测**（邮箱重建时把游标重置到最新 + 提示用户）
 - **IndexedDB 持久化**：`accounts` / `rules` / `mails` / `settings` / `meta` 仓库（`src/logic/store/`）

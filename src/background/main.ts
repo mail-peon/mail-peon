@@ -99,34 +99,27 @@ let lastSync: SyncDonePayload | null = null
  */
 
 /**
- * 兜底定时器。
+ * 自动检查新邮件的定时器。
  *
- * ⚠ 它**不是**主要收信手段 —— 正常路径是中继常驻 `IDLE`、有新邮件立刻推过来
- *   （见 `ai-docs/design/sync-flow.md`）。这个定时器的唯一职责是「推送失效时的保险丝」：
+ * ⚠ 它不是「推送」：MV3 的 Service Worker 有硬性生命周期，watch WebSocket 只能
+ *   活在 SW 里，QQ 这类服务器又未必会在 IDLE 上推 `EXISTS`。所以真正能保证
+ *   「过一会儿就能收到」的是这个 alarm。
  *
- *   推送依赖两个前提 —— 「中继在跑」与「watch 连接活着」—— 而两个都可能不成立：
- *   用户没起中继、电脑睡眠后连接没恢复、网络切换导致 WebSocket 半死。
- *   没有兜底的话，那些情况下用户会**永远收不到邮件**，而且界面没有任何异常。
+ *   间隔由用户在「设置 · 通用 · 自动检查新邮件」里配置（默认 5 分钟，1–60）。
+ *   打开 Popup 时会立即检查一次，所以日常使用不需要等满一个周期。
  *
- *   周期给得长（10 分钟）是刻意的：推送正常时它每次都拉 0 封，不该为此频繁打扰邮箱。
- *   `chrome.alarms` 的最小间隔由 Chrome 限制（约 30 秒 / 1 分钟），所以
- *   「更低频」是免费的，「更高频」做不到。
+ *   ⚠ 不要写死成 10 分钟：QQ 的 IDLE 实测不推送，10 分钟对等验证码来说太长；
+ *     现在由 `app.checkIntervalMinutes` 决定（默认 5，范围 1–60）。
  */
 const SYNC_ALARM = 'mail-peon:sync'
-const SYNC_PERIOD_MINUTES = 10
 
 /**
- * 失效验证码清理的定时器。
+ * 旧版本遗留的「失效验证码清理」独立定时器。
  *
- * ⚠ 为什么必须是 alarm 而不是 `setTimeout`：
- *   MV3 的 Service Worker 空闲约 30 秒就被回收，`setTimeout` **不会**在回收后触发 ——
- *   用它做「失效后 30 秒删除」在真机上基本永远不执行，而代码看起来完全正确。
- *
- *   `chrome.alarms` 的最小间隔是 1 分钟，所以实际精度落在「失效 + 30 秒 ~ +90 秒」。
- *   对本功能完全可以接受。
+ * 现在清理已经并入 `SYNC_ALARM`（见 onAlarm），这里只负责把老用户的旧 alarm
+ * 清掉，避免同一分钟被唤醒两次。
  */
-const PURGE_ALARM = 'mail-peon:purge-expired'
-const PURGE_PERIOD_MINUTES = 1
+const LEGACY_PURGE_ALARM = 'mail-peon:purge-expired'
 
 // ---------------------------------------------------------------------------
 // 心跳与流水线
@@ -170,18 +163,21 @@ function hooksFor(account: MailAccount): MailConnectionHooks {
 
 async function ensureAlarm(): Promise<void> {
   try {
-    /*
-     * ⚠ 两个定时器**各自判断各自创建**，不能因为「同步定时器已存在」就一起跳过。
-     *
-     *   它们可能在不同的版本里被引入：老用户已经有 `SYNC_ALARM`，
-     *   而 `PURGE_ALARM` 是新加的 —— 用前者的存在性短路整个函数，
-     *   会让新定时器**永远建不起来**，而代码看起来完全正确。
-     */
-    if (!await browser.alarms.get(SYNC_ALARM))
-      await browser.alarms.create(SYNC_ALARM, { periodInMinutes: SYNC_PERIOD_MINUTES })
+    await ensureStoreReady()
+    const app = await readAppSettings()
+    const minutes = app.checkIntervalMinutes
 
-    if (!await browser.alarms.get(PURGE_ALARM))
-      await browser.alarms.create(PURGE_ALARM, { periodInMinutes: PURGE_PERIOD_MINUTES })
+    /*
+     * ⚠ 不能只在「不存在」时创建：用户改了间隔，或者老版本留下的是别的周期，
+     *   只判断存在性的话周期**永远不会变**。`alarms.create` 对同名 alarm 是替换语义，
+     *   所以周期不一致时直接重建。
+     */
+    const existing = await browser.alarms.get(SYNC_ALARM)
+    if (!existing || existing.periodInMinutes !== minutes)
+      await browser.alarms.create(SYNC_ALARM, { periodInMinutes: minutes })
+
+    // 清理旧版本遗留的独立 purge alarm（已并入 SYNC_ALARM）
+    await browser.alarms.clear(LEGACY_PURGE_ALARM)
   }
   catch (error) {
     console.warn('[mail-peon] 创建定时器失败', error)
@@ -192,7 +188,7 @@ async function ensureAlarm(): Promise<void> {
  * 同步周期的**单飞闸门**（见 `platform/single-flight.ts`）。
  *
  * ⚠ 为什么必须有它：同步周期有三个**互不协调**的入口 —— watch 推送（`openWatchChannel`
- *   的回调）、兜底 `alarm`、手动「立即同步」—— 而 `runSyncCycle` 每轮都会**重新从库里
+ *   的回调）、自动检查 `alarm`、手动「立即同步」—— 而 `runSyncCycle` 每轮都会**重新从库里
  *   读游标**（`adapters/mail/mailbox.ts`），整条链路上也没有「这封已经处理过」的判据。
  *   两轮重叠的后果是具体的：
  *
@@ -231,13 +227,13 @@ async function syncOnce() {
 /**
  * 跑一轮同步，并且保证**至少有一轮是在「现在」之后开始的**。
  *
- * 只给兜底 `alarm` 用：它是周期性的保险丝，语义是「每一跳都必须真的去问一次邮箱」，
+ * 只给自动检查 `alarm` 用：它按用户配置的周期跑，语义是「每一跳都必须真的去问一次邮箱」，
  * 于是它排到在途那一轮**之后**按顺序执行。
  *
  * ⚠ 刻意**不**给 watch 推送用：推送的诉求（游标之后的邮件）已经被在途那一轮覆盖，
  *   再排一轮只是白连一次邮箱（腾讯对同账号的并发 / 频率连接数有限制，见
  *   `ai-docs/decisions/imap-testing.md § 11`）。真在那一瞬间到的邮件由下一跳兜底 ——
- *   而它本来就是这个定时器存在的意义（推送失效时的保险丝）。
+ *   而它本来就是这个定时器存在的意义（推送失效时的兜底）。
  *
  * ⚠ 也不给手动「立即同步」用：那会让 `sendMessage` 的 promise 挂上两整轮同步的时间，
  *   而「一条未完成的 `sendMessage` 不算事件」会让 MV3 的 SW 在 30 秒后被回收 ——
@@ -999,6 +995,10 @@ onMessage('settings:set-app', async ({ data }) => {
   if (data.patch.minimalMode !== undefined)
     broadcastToExtension('data:changed', { reason: 'mail-types' })
 
+  // 自动检查间隔变了 ⇒ 立刻按新周期重建 alarm，不用等下一次 SW 重启
+  if (data.patch.checkIntervalMinutes !== undefined)
+    await ensureAlarm()
+
   return { app }
 })
 
@@ -1139,10 +1139,6 @@ if (browser.alarms?.onAlarm) {
        *   验证码已经失效了，早删晚删几十秒不影响用户。
        */
       void purgeExpiredCodes()
-      return
     }
-
-    if (alarm.name === PURGE_ALARM)
-      void purgeExpiredCodes()
   })
 }

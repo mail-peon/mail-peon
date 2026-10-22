@@ -757,6 +757,13 @@ export interface AppSettings {
   blockedEnabled: boolean
   /** master switch；关掉后不动 badge */
   notifyOnNew: boolean
+  /**
+   * 后台自动检查新邮件的间隔（分钟）。
+   *
+   * 不是「推送」：MV3 的 SW 无法常驻，打开 Popup 会立即检查一次，这里是
+   * 后台最长隔多久主动检查一次。默认 5 分钟，允许 1–60。
+   */
+  checkIntervalMinutes: number
   /** 仅自定义模式生效；值见 `MailFilterId` */
   popupDefaultTab: MailFilterId
   mailRetention: MailRetention
@@ -781,6 +788,11 @@ export interface AppSettings {
   schemaVersion: number
 }
 
+/** 自动检查间隔的允许范围（分钟） */
+export const CHECK_INTERVAL_MIN_MINUTES = 1
+export const CHECK_INTERVAL_MAX_MINUTES = 60
+export const DEFAULT_CHECK_INTERVAL_MINUTES = 5
+
 export function createDefaultAppSettings(): AppSettings {
   return {
     minimalMode: true,
@@ -788,6 +800,7 @@ export function createDefaultAppSettings(): AppSettings {
     autoCopyCode: true,
     blockedEnabled: true,
     notifyOnNew: true,
+    checkIntervalMinutes: DEFAULT_CHECK_INTERVAL_MINUTES,
     popupDefaultTab: 'important',
     mailRetention: 100,
     mailRetentionDays: 0,

@@ -5,7 +5,12 @@ import ConfirmDialog from '~/components/ConfirmDialog.vue'
 import { onDataChanged, onSyncDone, send, useAccounts, useMailTypes, useSettings } from '~/logic/bridge'
 import { useConfirmAction } from '~/logic/confirm-action'
 import { t } from '~/logic/strings'
-import { MAIL_RETENTION_OPTIONS } from '~/logic/types'
+import {
+  CHECK_INTERVAL_MAX_MINUTES,
+  CHECK_INTERVAL_MIN_MINUTES,
+  DEFAULT_CHECK_INTERVAL_MINUTES,
+  MAIL_RETENTION_OPTIONS,
+} from '~/logic/types'
 import { ERROR_DURATION, useAppMessage, WARNING_DURATION } from '~/logic/ui-message'
 
 /**
@@ -325,6 +330,13 @@ function onRetentionChange(value: unknown) {
   patch({ mailRetention: value as MailRetention })
 }
 
+function onCheckIntervalChange(value: unknown) {
+  const minutes = typeof value === 'number' ? value : Number(value)
+  if (!Number.isFinite(minutes))
+    return
+  patch({ checkIntervalMinutes: Math.round(minutes) })
+}
+
 /**
  * 点「立即同步增量」。
  *
@@ -581,6 +593,25 @@ async function onImportFile(event: Event) {
 
         <a-divider class="divider" />
 
+        <div class="field">
+          <span class="field-label">{{ t('general.autoCheck') }}</span>
+          <div class="field-control interval-control">
+            <a-input-number
+              :value="app?.checkIntervalMinutes ?? DEFAULT_CHECK_INTERVAL_MINUTES"
+              :min="CHECK_INTERVAL_MIN_MINUTES"
+              :max="CHECK_INTERVAL_MAX_MINUTES"
+              :precision="0"
+              @update:value="onCheckIntervalChange"
+            />
+            <span class="interval-unit">{{ t('general.autoCheckUnit') }}</span>
+          </div>
+        </div>
+        <p class="mp-hint auto-check-hint">
+          {{ t('general.autoCheckHint') }}
+        </p>
+
+        <a-divider class="divider" />
+
         <a-descriptions :column="1" size="small" class="stats">
           <a-descriptions-item :label="t('general.accountCount', { n: accounts.length })">
             {{ accounts.map(item => item.email).join('、') || '—' }}
@@ -650,6 +681,25 @@ async function onImportFile(event: Event) {
             @update:value="(value: unknown) => patch({ popupDefaultTab: value as MailFilterId })"
           />
         </div>
+
+        <a-divider class="divider" />
+
+        <div class="field">
+          <span class="field-label">{{ t('general.autoCheck') }}</span>
+          <div class="field-control interval-control">
+            <a-input-number
+              :value="app?.checkIntervalMinutes ?? DEFAULT_CHECK_INTERVAL_MINUTES"
+              :min="CHECK_INTERVAL_MIN_MINUTES"
+              :max="CHECK_INTERVAL_MAX_MINUTES"
+              :precision="0"
+              @update:value="onCheckIntervalChange"
+            />
+            <span class="interval-unit">{{ t('general.autoCheckUnit') }}</span>
+          </div>
+        </div>
+        <p class="mp-hint auto-check-hint">
+          {{ t('general.autoCheckHint') }}
+        </p>
       </a-card>
 
       <a-card size="small" :title="t('general.retention')">
@@ -753,6 +803,11 @@ async function onImportFile(event: Event) {
   margin: 2px 0 0 24px;
 }
 
+/* 「自动检查」的说明跟着 field 标签左对齐，不缩进 */
+.auto-check-hint {
+  margin: 2px 0 0;
+}
+
 /*
  * 模式切换：`极简模式 (开关) 自定义`，**靠左**一行。
  *
@@ -833,6 +888,21 @@ async function onImportFile(event: Event) {
 /* 宽度交给内容自己算，但别撑满整张卡片（下拉框太宽看起来像输入框） */
 .field-control {
   max-width: 200px;
+}
+
+.interval-control {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.interval-control :deep(.ant-input-number) {
+  width: 110px;
+}
+
+.interval-unit {
+  font-size: 12px;
+  color: var(--mp-text-dim);
 }
 
 .vertical :deep(.ant-radio-wrapper) {

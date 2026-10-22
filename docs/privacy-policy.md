@@ -317,7 +317,7 @@ Mail Peon（下称"本扩展"）是一个开源的浏览器扩展，用于读取
 | 四个平台与默认地址、模型 | `src/adapters/ai/platforms/`（每个平台一个目录） |
 | HTML 正文一律丢弃、正文入库截断 5 万字符 | `src/adapters/mail/parser.ts`（`bodyHtml: undefined`、`MAX_BODY_CHARS`）、`src/logic/store/migrations.ts` |
 | 首次同步只记游标、不拉历史；每批最多 50 封 | `src/adapters/mail/mailbox.ts`、`src/adapters/mail/types.ts`（`MAX_MESSAGES_PER_SYNC = 50`）、`src/logic/types.ts`（`cursor`） |
-| 兜底定时任务 10 分钟 | `src/background/main.ts`（`SYNC_PERIOD_MINUTES = 10`） |
+| 自动检查任务默认 5 分钟，用户可配 1–60 分钟 | `src/background/main.ts`（`checkIntervalMinutes`）、`src/logic/types.ts` |
 | 中继推送里**只有「有几封」**，一律走普通同步 | `src/adapters/mail/transport/watch.ts` |
 | Gmail 走 OAuth + REST（`launchWebAuthFlow`） | `src/background/gmail-oauth.ts`、`src/adapters/mail/providers/gmail/api.ts` |
 | 中继默认只绑 `127.0.0.1`、不落盘、可要求 token | `scripts/imap-relay.ts`（`HOST`、`ALLOWED_HOSTS`、`RELAY_TOKEN`） |

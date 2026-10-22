@@ -101,7 +101,7 @@ src/
 ├── manifest.ts                    ✅ MV3 manifest 生成器
 │
 ├── background/                    ✅ Background SW 入口（main.ts）
-│   ├── main.ts                    ✅ 收信主循环（接中继推送 / 兜底定时器 / 消息处理）
+│   ├── main.ts                    ✅ 收信主循环（接中继推送 / 自动检查 / 消息处理）
 │   └── contentScriptHMR.ts        ✅ 开发期注入
 │
 ├── popup/                         ✅ Popup 入口
@@ -305,9 +305,10 @@ src/
 
 - **MV3 Service Worker 会休眠**（空闲约 30 秒被回收）：所以**不把长连接放在插件里**。
   常驻 IMAP `IDLE` 由中继持有（§ 1.1），插件只在被推醒时做「单次连接抓增量」。
-- **插件保留一个低频 `alarms` 兜底**：推送依赖「中继在跑 + 连接活着」，两个前提都可能
-  不成立（中继没起、睡眠后连接没恢复）。它是保险丝，不是主要手段。
-- **冷启动**：监听 `runtime.onInstalled` / `runtime.onStartup`，恢复中继 watch 连接与兜底定时器。
+- **插件保留可配置的 `alarms` 自动检查**：MV3 的 SW 有硬性生命周期，watch WebSocket
+  只能活在 SW 里，推送无法保证「永远在线」。用户在「通用」里配置检查间隔
+  （默认 5 分钟，1–60），打开 Popup 会立即检查一次。
+- **冷启动**：监听 `runtime.onInstalled` / `runtime.onStartup`，恢复中继 watch 连接与自动检查定时器。
 - **onMessage**：每个 handler 的第一步都是 `await ensureStoreReady()` ——
   SW 冷启动时 IDB 迁移可能还没跑完。**不要**写 `dataReady`（那是
   `useWebExtensionStorage` 时代的东西，已不再使用）。

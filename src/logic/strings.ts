@@ -68,6 +68,8 @@ const zhCN: StringTable = {
     openSidepanel: '打开完整面板',
     codeHistory: '验证码 / 确认记录',
     codeEmpty: '还没有收到验证码或确认邮件',
+    refresh: '刷新',
+    refreshing: '正在检查新邮件',
   },
 
   mail: {
@@ -223,6 +225,9 @@ const zhCN: StringTable = {
     excludeAdsHint: '被判为广告的邮件仍会被 AI 处理，可在弹窗「营销」分区查看。',
     blockedEnabled: '启用排除邮箱',
     notifyOnNew: 'Badge 提示新邮件',
+    autoCheck: '自动检查新邮件',
+    autoCheckHint: '打开弹窗时会立即检查一次；后台按这个间隔自动检查。间隔越短越及时，但连接邮箱越频繁。',
+    autoCheckUnit: '分钟',
     popupDefaultTab: '弹窗默认筛选',
     retention: '邮件保留数量',
     retentionUnlimited: '无限',

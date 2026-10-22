@@ -58,7 +58,7 @@ export async function getManifest() {
     permissions: [
       'tabs', // 查激活 tab（toast 投递）
       'activeTab', // 当前 tab 短时访问
-      'alarms', // 兜底定时抓取（推送失效时的保险丝，见 design/sync-flow.md § 7）
+      'alarms', // 自动检查新邮件（周期由用户配置，见 design/sync-flow.md § 7）
       'sidePanel', // Chrome 侧边栏
       'identity', // Gmail OAuth（launchWebAuthFlow）
       'storage', // 仅用于一次性迁移的兼容读取（迁移完成后摘除）

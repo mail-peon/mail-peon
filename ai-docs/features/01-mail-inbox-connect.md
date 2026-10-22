@@ -192,7 +192,7 @@ UID FETCH <首>:<尾>       → 只传这一批的正文
 ```
 触发者（三者走同一条路）
   • 中继推送「有新邮件」
-  • 兜底定时器（chrome.alarms，10 分钟）
+  • 自动检查定时器（chrome.alarms，默认 5 分钟，可配置）
   • 用户点「立即同步增量」
         │
         ▼
@@ -348,35 +348,31 @@ export async function readRecentMails(limit: number): Promise<Mail[]> {
 
 | 触发者 | 时机 | 作用 |
 | --- | --- | --- |
-| **中继推送** | 新邮件到达时（中继常驻 `IDLE`） | 主要手段。见 [`../design/sync-flow.md`](../design/sync-flow.md) |
+| **中继推送** | 新邮件到达时（中继常驻 `IDLE`） | 尽力而为的加速；QQ 实测可能不推 `EXISTS` |
+| **打开 Popup** | 用户点工具栏图标 | 立即检查一次，不用等下一个周期 |
+| **自动检查** | 用户配置的间隔（默认 5 分钟） | 保证最终会收到；设置项叫「自动检查新邮件」 |
 
 ```ts
 // src/background/main.ts
-// 兜底定时器：推送失效时的保险丝（中继没起 / 连接没恢复）
-chrome.alarms.create('mail-peon:sync', { periodInMinutes: 10 })
+// 自动检查：周期来自 app.checkIntervalMinutes（默认 5，范围 1–60）
+const app = await readAppSettings()
+await chrome.alarms.create('mail-peon:sync', {
+  periodInMinutes: app.checkIntervalMinutes,
+})
 
 chrome.alarms.onAlarm.addListener(async (alarm) => {
   if (alarm.name !== 'mail-peon:sync')
     return
-  await ensureStoreReady()
-  const accounts = await listEnabledAccounts()
-  for (const acc of accounts) {
-    try {
-      await syncAccount(acc)
-    }
-    catch (e) {
-      await markAccountError(acc.id, errorText(e))
-    }
-  }
+  await syncAfterCurrent()
 })
 ```
 
-> **为什么兜底也要用 alarms**：MV3 Service Worker 空闲约 30 秒被回收，
+> **为什么自动检查也要用 alarms**：MV3 Service Worker 空闲约 30 秒被回收，
 > `setInterval` 不靠谱。`alarms` 是 Chrome 提供的定时机制（最小间隔由 Chrome 限制，
 > 约 30 秒 / 1 分钟）。
 >
-> **为什么周期给到 10 分钟**：正常情况推送会立刻触发，这个定时器每次都拉 0 封 ——
-> 给短了只是白白打扰邮箱。它的职责是「保证最终一定会收到」，不是「保证及时」。
+> **为什么默认是 5 分钟**：QQ 的 IDLE 实测不推送，只能主动检查；1 分钟对邮箱连接
+> 太频繁，10 分钟又太久。用户可以在设置里改成 1–60 分钟。
 
 ---
 

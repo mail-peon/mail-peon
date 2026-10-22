@@ -32,6 +32,8 @@ import { safeHttpUrl } from '~/logic/mail-types/url'
 import {
   BUILTIN_CODE_ID,
   BUILTIN_SUMMARY_ID,
+  CHECK_INTERVAL_MAX_MINUTES,
+  CHECK_INTERVAL_MIN_MINUTES,
   createDefaultAiSettings,
   createDefaultAppSettings,
   DEFAULT_RULE_ID,
@@ -751,6 +753,23 @@ export function normalizeRetention(raw: unknown, fallback: MailRetention): MailR
   return fallback
 }
 
+/**
+ * 自动检查间隔归一：只接受 1–60 的整数分钟。
+ *
+ * 用户可能手改导出文件 / 旧版本没有这个字段；0、负数、NaN、小数都要落回一个
+ * **能真的建 alarm** 的值。`chrome.alarms` 不接受 0；大于 60 分钟没必要限制，
+ * 但 UI 只有 1–60，保持同一范围。
+ */
+export function clampCheckInterval(raw: unknown, fallback: number): number {
+  const value = num(raw, fallback)
+  if (!Number.isFinite(value))
+    return fallback
+  return Math.min(
+    CHECK_INTERVAL_MAX_MINUTES,
+    Math.max(CHECK_INTERVAL_MIN_MINUTES, Math.round(value)),
+  )
+}
+
 export function normalizeAppSettings(raw: unknown): AppSettings {
   const defaults = createDefaultAppSettings()
   const merged = mergeDefaults(raw, defaults)
@@ -761,6 +780,7 @@ export function normalizeAppSettings(raw: unknown): AppSettings {
     autoCopyCode: bool(merged.autoCopyCode, defaults.autoCopyCode),
     blockedEnabled: bool(merged.blockedEnabled, defaults.blockedEnabled),
     notifyOnNew: bool(merged.notifyOnNew, defaults.notifyOnNew),
+    checkIntervalMinutes: clampCheckInterval(merged.checkIntervalMinutes, defaults.checkIntervalMinutes),
     popupDefaultTab: normalizePopupFilterId(merged.popupDefaultTab),
     mailRetention: normalizeRetention(merged.mailRetention, defaults.mailRetention),
     mailRetentionDays: Math.max(0, num(merged.mailRetentionDays, 0)),

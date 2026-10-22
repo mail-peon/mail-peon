@@ -1,10 +1,10 @@
 <script setup lang="ts">
 import type { ConfirmMatch, Mail, MailFilterId } from '~/logic/types'
-import { computed, ref, watch } from 'vue'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import ConfirmDialog from '~/components/ConfirmDialog.vue'
 import EmptyState from '~/components/EmptyState.vue'
 import MailListItem from '~/components/MailListItem.vue'
-import { useMails, useMailTypes, useSettings } from '~/logic/bridge'
+import { onSyncDone, useAccounts, useMails, useMailTypes, useSettings } from '~/logic/bridge'
 import { useMailFocus } from '~/logic/mail-focus'
 import { parseSafeHttpUrl } from '~/logic/mail-types/url'
 import { t } from '~/logic/strings'
@@ -31,8 +31,72 @@ import {
  */
 const { mails, loading, loadFailed, justCopied, copyCode, setRead, dismiss, trash, markAllRead, reload } = useMails(200)
 const { app, ai, reload: reloadSettings } = useSettings()
+const { syncNow, syncStatus } = useAccounts()
 const { adapters } = useMailTypes()
 const uiMessage = useAppMessage()
+
+/**
+ * 刷新按钮的旋转态。
+ *
+ * 打开 Popup 会自动检查一次，所以它**默认就是转的**；用户手动点按钮也会转。
+ * 结束条件有两个（广播 / 轮询），理由见 `refresh()` 的说明。
+ */
+const refreshing = ref(false)
+let refreshPoll: number | null = null
+
+function stopRefreshPoll() {
+  if (refreshPoll !== null) {
+    window.clearInterval(refreshPoll)
+    refreshPoll = null
+  }
+}
+
+/**
+ * 等这一轮同步结束。
+ *
+ * ⚠ 不能只等 `sync:done` 广播：broadcast 的送达依赖 background 的连接表，
+ *   丢一次时按钮会永远转下去。这里同时按 1.5 秒问 `sync-status`，并用
+ *   `finishedAt >= startedAt` 排除「上一轮的结果」。
+ */
+function watchRefreshDone(startedAt: number) {
+  stopRefreshPoll()
+  const deadline = Date.now() + 90_000
+  refreshPoll = window.setInterval(async () => {
+    if (!refreshing.value) {
+      stopRefreshPoll()
+      return
+    }
+    if (Date.now() > deadline) {
+      refreshing.value = false
+      stopRefreshPoll()
+      return
+    }
+    const result = await syncStatus()
+    if (result && (result.finishedAt ?? 0) >= startedAt) {
+      refreshing.value = false
+      stopRefreshPoll()
+    }
+  }, 1500)
+}
+
+/**
+ * 立即检查一次新邮件（打开 Popup / 点刷新按钮共用）。
+ *
+ * ⚠ 这里的 `syncNow()` 只负责启动；不能 await 整轮同步，否则同步超过 30 秒时
+ *   这条 `sendMessage` 会被 MV3 回收，按钮会永远转。
+ */
+async function refresh() {
+  if (refreshing.value)
+    return
+
+  refreshing.value = true
+  const result = await syncNow()
+  if (!result.started) {
+    refreshing.value = false
+    return
+  }
+  watchRefreshDone(result.startedAt)
+}
 
 /**
  * 「点 toast → 把这封滚到眼前」（见 `logic/mail-focus.ts`）。
@@ -117,17 +181,41 @@ function openOptions() {
 }
 
 /**
- * 打开 Popup 即把 badge 归零。
+ * 打开 Popup 即把 badge 归零，并**立即检查一次新邮件**。
  *
  * 设计文档 `ui-flows.md § 3.1`：「打开 Popup → 当前 tab 的 badge 归零」。
  * 极简模式没有 badge，但标已读本身仍然有意义（用户看过列表了）。
+ *
+ * ⚠ 为什么这里要主动检查：QQ 的 IMAP IDLE 实测不推 `EXISTS`，后台只能按
+ *   「自动检查间隔」定时拉。用户点开 Popup 是「我现在就想看」，不应该再等
+ *   几分钟后的下一次 alarm —— 这里先标已读，再让后台跑一轮增量。
+ *
+ * ⚠ 不等结果：`syncNow()` 只负责启动，结果由 `mail:updated` 广播刷新列表。
+ *   如果等它跑完，Popup 的 `sendMessage` 会在同步超过 30 秒时被 MV3 回收。
  */
 async function onOpened() {
   await reloadSettings()
   await markAllRead()
+  await refresh()
 }
 
-void onOpened()
+let stopSyncDone: (() => void) | null = null
+
+onMounted(() => {
+  // 先挂广播，再启动自动检查，避免第一轮结束得太快时漏掉
+  stopSyncDone = onSyncDone(() => {
+    refreshing.value = false
+    stopRefreshPoll()
+  })
+  void onOpened()
+})
+
+onUnmounted(() => {
+  stopSyncDone?.()
+  stopSyncDone = null
+  refreshing.value = false
+  stopRefreshPoll()
+})
 
 function onCopy(mail: Mail) {
   void copyCode(mail)
@@ -243,6 +331,21 @@ function onOpen(mail: Mail) {
         <a-tag class="mode-tag" :bordered="false">
           {{ t('app.minimalSuffix') }}
         </a-tag>
+        <a-button
+          class="refresh-btn"
+          type="text"
+          size="small"
+          :title="refreshing ? t('popup.refreshing') : t('popup.refresh')"
+          :aria-label="refreshing ? t('popup.refreshing') : t('popup.refresh')"
+          :aria-busy="refreshing"
+          @click="refresh"
+        >
+          <span
+            class="i-pixelarticons-reload refresh-icon"
+            :class="{ spinning: refreshing }"
+            aria-hidden="true"
+          />
+        </a-button>
       </header>
 
       <!-- 缺 AI Key 时的行动号召：antd 的 Alert 自带图标与配色，比手写一个黄框稳 -->
@@ -425,6 +528,36 @@ function onOpen(mail: Mail) {
   margin: 0;
   font-size: 11px;
   line-height: 18px;
+}
+
+/* 刷新按钮贴最右：header 不整体 space-between，否则品牌和标签也会被拉开 */
+.refresh-btn {
+  flex: 0 0 auto;
+  width: 24px;
+  height: 24px;
+  margin-left: auto;
+  padding: 0;
+  color: var(--mp-text-faint);
+}
+
+.refresh-btn:hover {
+  color: var(--mp-text);
+}
+
+.refresh-icon {
+  display: block;
+  width: 16px;
+  height: 16px;
+}
+
+.refresh-icon.spinning {
+  animation: mp-refresh-spin 0.9s linear infinite;
+}
+
+@keyframes mp-refresh-spin {
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 .cta {
