@@ -533,10 +533,14 @@ function onOpen(mail: Mail) {
 /* 刷新按钮贴最右：header 不整体 space-between，否则品牌和标签也会被拉开 */
 .refresh-btn {
   flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   width: 24px;
   height: 24px;
   margin-left: auto;
   padding: 0;
+  line-height: 1;
   color: var(--mp-text-faint);
 }
 
@@ -544,10 +548,16 @@ function onOpen(mail: Mail) {
   color: var(--mp-text);
 }
 
-.refresh-icon {
+.refresh-btn > .refresh-icon {
   display: block;
   width: 16px;
   height: 16px;
+  /*
+   * ⚠ 必须归零。`styles/shared.css` 给所有 `.ant-btn > [class^='i-']` 加了
+   *   6px 的 `margin-inline-end`（为了图标 + 文字的按钮），只有图标的按钮要自己
+   *   清掉 —— 否则 16px 图标 + 6px 右边距会在 24px 按钮里被推到偏左。
+   */
+  margin-inline-end: 0;
 }
 
 .refresh-icon.spinning {
