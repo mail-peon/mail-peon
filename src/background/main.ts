@@ -1,6 +1,7 @@
 import type { MailConnectionHooks } from '~/adapters/mail/types'
 import type { MailPipeline } from '~/logic/ai/pipeline'
-import type { MailAccount, MailTypeRecord } from '~/logic/types'
+import type { MailAccount, MailTypeRecord, SyncDonePayload } from '~/logic/types'
+
 import { nanoid } from 'nanoid'
 import { onMessage } from 'webext-bridge/background'
 import { AI_PLATFORM_OPTIONS } from '~/adapters/ai/platforms'
@@ -51,22 +52,6 @@ import { fireAndForget } from './deferred-task'
 import { authorizeGmail } from './gmail-oauth'
 import { createBrowserNotifier } from './notifier'
 import { runSyncCycle } from './sync'
-
-/**
- * 一轮同步的结果。
- *
- * ⚠ 刻意**不**从 `logic/bridge.ts` 导入它的同名类型：那个模块 import 了
- *   `webext-bridge/popup` 与 Vue 的组合式 API（它是 UI 侧的层）。
- *   只为借一个类型而把 UI 层的依赖拉进 background，是那种「以后某天突然
- *   发现 background 产物里多了半个 Vue」的隐患。
- */
-interface SyncDonePayload {
-  ok: boolean
-  results: import('~/logic/types').SyncSummary[]
-  error?: string
-  /** 完成时刻（`Date.now()`）—— UI 用它判断「这是不是我这次点击的结果」 */
-  finishedAt?: number
-}
 
 /**
  * 最近一轮同步的结果（UI 的**轮询兜底**）。

@@ -21,6 +21,14 @@ export interface SyncSummary {
   warning?: string
 }
 
+/** Shared background sync result without UI or browser dependencies. */
+export interface SyncDonePayload {
+  ok: boolean
+  results: SyncSummary[]
+  error?: string
+  finishedAt?: number
+}
+
 /** AI 连通性测试结果 */
 export interface AiTestResult {
   ok: boolean

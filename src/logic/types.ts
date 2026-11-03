@@ -15,3 +15,5 @@ export type { AiPlatformName, AiSettings, AppSettings, MailFilterId, MailRetenti
 export { CHECK_INTERVAL_MAX_MINUTES, CHECK_INTERVAL_MIN_MINUTES, createDefaultAiSettings, createDefaultAppSettings, DEFAULT_CHECK_INTERVAL_MINUTES, MAIL_RETENTION_OPTIONS, MINIMAL_RETENTION } from './models/settings'
 export type { StorageUsage } from './models/settings'
 export type { AiTestResult, MailTestResult, SyncSummary } from './models/sync'
+
+export type { SyncDonePayload } from './models/sync'

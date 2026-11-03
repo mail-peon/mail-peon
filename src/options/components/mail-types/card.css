@@ -1,0 +1,63 @@
+.card-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.name {
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.tag {
+  margin: 0;
+  font-weight: 400;
+}
+
+.builtin {
+  background: var(--mp-surface-2);
+  border-style: dashed;
+}
+
+.desc {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--mp-text-dim);
+  white-space: pre-wrap;
+  word-break: break-word;
+  /* 长提示词只露 4 行；完整内容在编辑弹窗里 */
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-line-clamp: 4;
+  -webkit-box-orient: vertical;
+}
+
+.desc.empty {
+  color: var(--mp-text-faint);
+  font-style: italic;
+}
+
+.meta {
+  margin: 6px 0 0;
+  font-size: 11px;
+  color: var(--mp-text-faint);
+}
+
+.prompt-collapse {
+  margin-top: 8px;
+}
+
+.prompt-collapse :deep(.ant-collapse-header) {
+  padding: 4px 0;
+  font-size: 12px;
+  color: var(--mp-text-dim);
+}
+
+.prompt-collapse :deep(.ant-collapse-content-box) {
+  padding: 0;
+}
+
+.prompt-actions {
+  margin-top: 8px;
+}

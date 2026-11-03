@@ -1,5 +1,5 @@
 import type { MailTypeAdapter, MailTypeRecord } from '~/logic/types'
-import { mount } from '@vue/test-utils'
+import { flushPromises, mount } from '@vue/test-utils'
 import { beforeAll, describe, expect, it, vi } from 'vitest'
 import { ref } from 'vue'
 import { resolveMailTypeAdapters } from '~/logic/mail-types/resolve'
@@ -39,6 +39,10 @@ vi.mock('~/logic/bridge', () => ({
   useSettings: () => ({ app: mocks.app }),
 }))
 
+vi.mock('~/logic/ui-message', () => ({
+  useAppMessage: () => ({ success: vi.fn() }),
+}))
+
 const customRecord: MailTypeRecord = {
   id: 'custom:budget',
   kind: 'custom',
@@ -66,6 +70,37 @@ function setMode(minimalMode: boolean) {
 }
 
 describe('mailTypesPage 的模式锁定', () => {
+  it('新增表单将名称提示词和兜底开关传给保存操作', async () => {
+    setMode(false)
+    mocks.create.mockClear()
+    const wrapper = mount(MailTypesPage)
+    const add = wrapper.findAll('button').find(node => node.text().includes('新增自定义类型'))!
+    await add.trigger('click')
+    const editor = wrapper.find('.editor')
+    await editor.find('input.ant-input').setValue('  测试类型  ')
+    await editor.find('textarea').setValue('  提取订单号  ')
+    await editor.find('input[type="checkbox"]').setValue(true)
+    await editor.find('button.ant-btn-primary').trigger('click')
+    await flushPromises()
+    expect(mocks.create).toHaveBeenCalledWith({ name: '测试类型', prompt: '提取订单号', fallback: true })
+    expect(wrapper.find('.editor').exists()).toBe(false)
+    wrapper.unmount()
+  })
+
+  it('内置卡片保存当前输入的专属提示词', async () => {
+    setMode(false)
+    mocks.setUserPrompt.mockClear()
+    const wrapper = mount(MailTypesPage)
+    const card = wrapper.find('.builtin')
+    await card.find('.ant-collapse-header').trigger('click')
+    await flushPromises()
+    await card.find('textarea').setValue('额外的提取要求')
+    await card.find('button.ant-btn-primary').trigger('click')
+    await flushPromises()
+    expect(mocks.setUserPrompt).toHaveBeenCalledWith('builtin:code', '额外的提取要求')
+    wrapper.unmount()
+  })
+
   it('极简模式：开关全部禁用、新增按钮禁用', async () => {
     setMode(true)
     const wrapper = mount(MailTypesPage, { attachTo: document.body })

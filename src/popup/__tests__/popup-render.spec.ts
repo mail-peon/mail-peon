@@ -69,7 +69,7 @@ const mocks = vi.hoisted(() => ({
   reloadMails: null as unknown as () => Promise<void>,
   syncNow: vi.fn(async () => ({ started: true, startedAt: Date.now() })),
   syncStatus: vi.fn(async () => null),
-  syncDoneListeners: [] as Array<() => void>,
+  syncDoneListeners: [] as Array<(result: import('~/logic/types').SyncDonePayload) => void>,
 }))
 
 vi.mock('~/logic/bridge', () => ({
@@ -102,7 +102,7 @@ vi.mock('~/logic/bridge', () => ({
     syncNow: mocks.syncNow,
     syncStatus: mocks.syncStatus,
   }),
-  onSyncDone: (listener: () => void) => {
+  onSyncDone: (listener: (result: import('~/logic/types').SyncDonePayload) => void) => {
     mocks.syncDoneListeners.push(listener)
     return () => {}
   },
@@ -197,7 +197,7 @@ describe('极简模式渲染', () => {
     expect(wrapper.find('.refresh-icon').classes()).toContain('spinning')
 
     // 同步结束（广播）后停止旋转
-    mocks.syncDoneListeners.at(-1)?.()
+    mocks.syncDoneListeners.at(-1)?.({ ok: true, results: [], finishedAt: Date.now() })
     await flushPromises()
     expect(wrapper.find('.refresh-icon').classes()).not.toContain('spinning')
 

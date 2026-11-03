@@ -1,22 +1,13 @@
 <script setup lang="ts">
-import type { ConfirmMatch, Mail, MailFilterId } from '~/logic/types'
-import { computed, ref, watch } from 'vue'
+import type { Mail } from '~/logic/types'
 import ConfirmDialog from '~/components/ConfirmDialog.vue'
 import EmptyState from '~/components/EmptyState.vue'
 import MailListItem from '~/components/MailListItem.vue'
+import { useMailActions } from '~/composables/useMailActions'
+import { useMailView } from '~/composables/useMailView'
 import { useMails, useMailTypes, useSettings } from '~/logic/bridge'
 import { useMailFocus } from '~/logic/mail-focus'
-import { parseSafeHttpUrl } from '~/logic/mail-types/url'
 import { t } from '~/logic/strings'
-import { useTrashConfirm } from '~/logic/trash-confirm'
-import { ERROR_DURATION, useAppMessage } from '~/logic/ui-message'
-import {
-  buildMailFilters,
-  filterMails,
-  minimalModeMails,
-  resolveFilterId,
-  sortMails,
-} from '~/popup/list-filter'
 
 /**
  * Sidepanel —— 「展开后的完整视图」（`design/ui-flows.md § 2`）。
@@ -36,100 +27,15 @@ import {
 const { mails, loading, loadFailed, justCopied, copyCode, setRead, dismiss, trash, reload: reloadMails } = useMails(300)
 const { app, reload } = useSettings()
 const { adapters } = useMailTypes()
-const uiMessage = useAppMessage()
+const { activeFilter, minimalMode, filters, visibleMails, codeMails, emptyText } = useMailView(mails, app, adapters)
+const { trashPending, trashDialog, askTrashConfirm, cancelTrashConfirm, onConfirmTrash, onConfirm } = useMailActions({
+  trash,
+  setRead,
+  openUrl: url => browser.tabs.create({ url }),
+})
 
 /** 「点 toast → 把这封滚到眼前」，与 Popup 共用同一套（见 `logic/mail-focus.ts`） */
 const { focusedId } = useMailFocus()
-
-/**
- * 删除确认（与 Popup 共用同一套交互）。
- *
- * ⚠ 必须**解构**：Vue 的模板自动解包只对 setup 直接暴露的 ref 生效，
- *   不会递归进普通对象。写成 `tc.pending` 会拿到 ref 对象本身（恒为真值）
- *   ⇒ 弹窗一打开就铺满界面且没有内容。详见 `popup/Popup.vue` 里的同处说明。
- */
-const {
-  pending: trashPending,
-  dialog: trashDialog,
-  ask: askTrashConfirm,
-  cancel: cancelTrashConfirm,
-  confirm: confirmTrashConfirm,
-} = useTrashConfirm(trash)
-
-/**
- * 确认删除。
- *
- * ⚠ 必须看返回值：`confirm()` 删除失败时给 `false`（例如邮件已经不在库里）。
- *   不处理的话弹窗照关、邮件还在列表里，用户只会觉得「点了没反应」。
- */
-async function onConfirmTrash() {
-  const ok = await confirmTrashConfirm()
-  if (!ok)
-    uiMessage.error(t('mail.trashFailed'), ERROR_DURATION)
-}
-
-const activeFilter = ref<MailFilterId>('important')
-const minimalMode = computed(() => app.value?.minimalMode ?? true)
-const excludeAds = computed(() => app.value?.excludeAds ?? true)
-
-const filters = computed(() =>
-  buildMailFilters(mails.value, adapters.value, { excludeAds: excludeAds.value }),
-)
-const visibleMails = computed(() =>
-  sortMails(filterMails(mails.value, activeFilter.value, { excludeAds: excludeAds.value })),
-)
-
-/*
- * 筛选标签会随适配器开关 / 删除变化。如果当前选中的适配器被关掉 / 删掉，
- * antd 的 tab 会一个都不选中 —— 这里把 activeFilter 拉回「重要」。
- */
-watch(filters, (list) => {
-  if (!list.some(filter => filter.id === activeFilter.value))
-    activeFilter.value = resolveFilterId(list, 'important')
-})
-const codeMails = computed(() => minimalModeMails(mails.value))
-
-/** 默认筛选：与 Popup 同一套（等适配器加载完再套用） */
-const appliedDefault = ref(false)
-watch([app, adapters], () => {
-  if (!app.value || appliedDefault.value || !adapters.value.length)
-    return
-  activeFilter.value = resolveFilterId(filters.value, app.value.popupDefaultTab)
-  appliedDefault.value = true
-}, { immediate: true })
-
-/**
- * 打开确认链接（逻辑与 Popup 相同：校验 → 新标签 → 标已读）。
- * 侧边栏不自动标已读，但用户**主动点了确认**之后应该标。
- */
-async function onConfirm(mail: Mail, match: ConfirmMatch) {
-  const url = parseSafeHttpUrl(match.url)
-  if (!url) {
-    uiMessage.error(t('mail.confirmInvalid'), ERROR_DURATION)
-    return
-  }
-
-  try {
-    await browser.tabs.create({ url: url.toString() })
-    if (!mail.read)
-      await setRead(mail, true)
-  }
-  catch (error) {
-    console.warn('[mail-peon] 打开确认链接失败', error)
-    uiMessage.error(t('mail.confirmFailed'), ERROR_DURATION)
-  }
-}
-
-/** 空态文案：状态筛选用固定文案，适配器筛选带上类型名 */
-function emptyText(filterId: MailFilterId, label: string): string {
-  if (filterId === 'important')
-    return t('popup.emptyImportant')
-  if (filterId === 'all')
-    return t('popup.emptyAll')
-  if (filterId === 'ad')
-    return t('popup.emptyAd')
-  return t('popup.emptyAdapter', { name: label })
-}
 
 void reload()
 

@@ -1,22 +1,15 @@
 <script setup lang="ts">
-import type { ConfirmMatch, Mail, MailFilterId } from '~/logic/types'
-import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
+import type { Mail } from '~/logic/types'
+import { computed, onMounted, watch } from 'vue'
 import ConfirmDialog from '~/components/ConfirmDialog.vue'
 import EmptyState from '~/components/EmptyState.vue'
 import MailListItem from '~/components/MailListItem.vue'
-import { onSyncDone, useAccounts, useMails, useMailTypes, useSettings } from '~/logic/bridge'
+import { useMailActions } from '~/composables/useMailActions'
+import { useMailView } from '~/composables/useMailView'
+import { useSyncRequest } from '~/composables/useSyncRequest'
+import { useAccounts, useMails, useMailTypes, useSettings } from '~/logic/bridge'
 import { useMailFocus } from '~/logic/mail-focus'
-import { parseSafeHttpUrl } from '~/logic/mail-types/url'
 import { t } from '~/logic/strings'
-import { useTrashConfirm } from '~/logic/trash-confirm'
-import { ERROR_DURATION, useAppMessage } from '~/logic/ui-message'
-import {
-  buildMailFilters,
-  filterMails,
-  minimalModeMails,
-  resolveFilterId,
-  sortMails,
-} from './list-filter'
 
 /**
  * Popup（点工具栏图标）—— 两种模式两套布局（`design/ui-flows.md § 1`）。
@@ -33,70 +26,17 @@ const { mails, loading, loadFailed, justCopied, copyCode, setRead, dismiss, tras
 const { app, ai, reload: reloadSettings } = useSettings()
 const { syncNow, syncStatus } = useAccounts()
 const { adapters } = useMailTypes()
-const uiMessage = useAppMessage()
-
-/**
- * 刷新按钮的旋转态。
- *
- * 打开 Popup 会自动检查一次，所以它**默认就是转的**；用户手动点按钮也会转。
- * 结束条件有两个（广播 / 轮询），理由见 `refresh()` 的说明。
- */
-const refreshing = ref(false)
-let refreshPoll: number | null = null
-
-function stopRefreshPoll() {
-  if (refreshPoll !== null) {
-    window.clearInterval(refreshPoll)
-    refreshPoll = null
-  }
-}
-
-/**
- * 等这一轮同步结束。
- *
- * ⚠ 不能只等 `sync:done` 广播：broadcast 的送达依赖 background 的连接表，
- *   丢一次时按钮会永远转下去。这里同时按 1.5 秒问 `sync-status`，并用
- *   `finishedAt >= startedAt` 排除「上一轮的结果」。
- */
-function watchRefreshDone(startedAt: number) {
-  stopRefreshPoll()
-  const deadline = Date.now() + 90_000
-  refreshPoll = window.setInterval(async () => {
-    if (!refreshing.value) {
-      stopRefreshPoll()
-      return
-    }
-    if (Date.now() > deadline) {
-      refreshing.value = false
-      stopRefreshPoll()
-      return
-    }
-    const result = await syncStatus()
-    if (result && (result.finishedAt ?? 0) >= startedAt) {
-      refreshing.value = false
-      stopRefreshPoll()
-    }
-  }, 1500)
-}
-
-/**
- * 立即检查一次新邮件（打开 Popup / 点刷新按钮共用）。
- *
- * ⚠ 这里的 `syncNow()` 只负责启动；不能 await 整轮同步，否则同步超过 30 秒时
- *   这条 `sendMessage` 会被 MV3 回收，按钮会永远转。
- */
-async function refresh() {
-  if (refreshing.value)
-    return
-
-  refreshing.value = true
-  const result = await syncNow()
-  if (!result.started) {
-    refreshing.value = false
-    return
-  }
-  watchRefreshDone(result.startedAt)
-}
+const { activeFilter, minimalMode, filters, visibleMails, codeMails, emptyText } = useMailView(mails, app, adapters)
+const { trashPending, trashDialog, askTrashConfirm, cancelTrashConfirm, onConfirmTrash, onConfirm } = useMailActions({
+  trash,
+  setRead,
+  openUrl: url => browser.tabs.create({ url }),
+})
+const { syncing: refreshing, start: refresh } = useSyncRequest({
+  start: syncNow,
+  status: syncStatus,
+  timeoutMs: 90_000,
+})
 
 /**
  * 「点 toast → 把这封滚到眼前」（见 `logic/mail-focus.ts`）。
@@ -106,55 +46,7 @@ async function refresh() {
  *   （极简列表与完整列表都用 `MailListItem`）。
  */
 const { focusedId } = useMailFocus()
-
-/**
- * 当前筛选。
- *
- * Feature 08 起不再是四个硬编码 tab：`buildMailFilters` 会按「状态 + 启用的适配器」
- * 动态生成，`resolveFilterId` 负责把设置里那个可能已失效的 id 回退到「重要」。
- */
-const activeFilter = ref<MailFilterId>('important')
-
-const minimalMode = computed(() => app.value?.minimalMode ?? true)
-const excludeAds = computed(() => app.value?.excludeAds ?? true)
 const hasAiKey = computed(() => !!ai.value?.apiKey)
-
-const filters = computed(() =>
-  buildMailFilters(mails.value, adapters.value, { excludeAds: excludeAds.value }),
-)
-
-/**
- * 默认筛选由设置决定（`popupDefaultTab`）。
- *
- * ⚠ 只在**首次**加载时套用：用户手动切到「全部」之后，background 广播一封新邮件
- *   会触发重载，如果每次都重置成默认筛选，用户会看到「刚切过去又被弹回来」。
- *
- * ⚠ 要等适配器加载完再套用：默认值可能指向 `adapter:builtin:code`，
- *   而适配器列表一开始是空的；那时套用会被回退成「重要」，永远轮不到真正的默认。
- */
-const appliedDefault = ref(false)
-watch([app, adapters], () => {
-  if (!app.value || appliedDefault.value || !adapters.value.length)
-    return
-  activeFilter.value = resolveFilterId(filters.value, app.value.popupDefaultTab)
-  appliedDefault.value = true
-}, { immediate: true })
-
-const visibleMails = computed(() =>
-  sortMails(filterMails(mails.value, activeFilter.value, { excludeAds: excludeAds.value })),
-)
-
-/*
- * 筛选标签会随适配器开关 / 删除变化。如果当前选中的适配器被关掉 / 删掉，
- * antd 的 tab 会一个都不选中 —— 这里把 activeFilter 拉回「重要」。
- */
-watch(filters, (list) => {
-  if (!list.some(filter => filter.id === activeFilter.value))
-    activeFilter.value = resolveFilterId(list, 'important')
-})
-
-/** 极简模式：只挑含验证码 / 确认的（`design/minimal-mode.md § 5.2`） */
-const codeMails = computed(() => minimalModeMails(mails.value))
 
 /**
  * 诊断输出：**库里有记录，当前视图却一条都没有**。
@@ -198,66 +90,12 @@ async function onOpened() {
   await markAllRead()
   await refresh()
 }
-
-let stopSyncDone: (() => void) | null = null
-
 onMounted(() => {
-  // 先挂广播，再启动自动检查，避免第一轮结束得太快时漏掉
-  stopSyncDone = onSyncDone(() => {
-    refreshing.value = false
-    stopRefreshPoll()
-  })
   void onOpened()
-})
-
-onUnmounted(() => {
-  stopSyncDone?.()
-  stopSyncDone = null
-  refreshing.value = false
-  stopRefreshPoll()
 })
 
 function onCopy(mail: Mail) {
   void copyCode(mail)
-}
-
-/**
- * 打开确认链接。
- *
- * ⚠ 这里是**唯一**把确认 URL 变成动作的地方：
- *   - 存储 / 展示时已经校验过一次，打开前再校验一次（纵深防御）；
- *   - 新标签打开，不在当前页导航；
- *   - 点完把邮件标已读（用户已经处理了它）。
- *
- * 不做 toast、不自动打开、不做链接预览 —— 链接来自不可信邮件。
- */
-async function onConfirm(mail: Mail, match: ConfirmMatch) {
-  const url = parseSafeHttpUrl(match.url)
-  if (!url) {
-    uiMessage.error(t('mail.confirmInvalid'), ERROR_DURATION)
-    return
-  }
-
-  try {
-    await browser.tabs.create({ url: url.toString() })
-    if (!mail.read)
-      await setRead(mail, true)
-  }
-  catch (error) {
-    console.warn('[mail-peon] 打开确认链接失败', error)
-    uiMessage.error(t('mail.confirmFailed'), ERROR_DURATION)
-  }
-}
-
-/** 空态文案：状态筛选用固定文案，适配器筛选带上类型名 */
-function emptyText(filterId: MailFilterId, label: string): string {
-  if (filterId === 'important')
-    return t('popup.emptyImportant')
-  if (filterId === 'all')
-    return t('popup.emptyAll')
-  if (filterId === 'ad')
-    return t('popup.emptyAd')
-  return t('popup.emptyAdapter', { name: label })
 }
 
 function onRead(mail: Mail, read: boolean) {
@@ -268,50 +106,8 @@ function onDismiss(mail: Mail) {
   void dismiss(mail)
 }
 
-/**
- * 删除确认（卡片右上角的垃圾桶）。
- *
- * ⚠ 要**确认一次**。虽然这个操作可撤销，但用户未必知道去哪儿恢复 ——
- *   确认弹窗正是把「可在『设置 · 回收站』里恢复」这句话说出来的地方。
- *   （只弹「确定吗」不说后果，等于白添一次点击。）
- *
- *   「标记已读」那种可逆且无后果的动作就不确认 —— 弹窗只会让人烦。
- *
- * ⚠⚠ 这里**必须解构**，不能写成 `const tc = useTrashConfirm(trash)` 然后用
- *     `tc.pending` / `tc.dialog` —— Vue 的模板自动解包**只对 setup 直接暴露的
- *     ref 生效**，不会递归进一个普通对象。那样写的话：
- *
- *       - `tc.pending` 拿到的是 **ref 对象本身**，而对象恒为真值
- *         ⇒ `:open` 永远为真 ⇒ **弹窗一打开就铺满整个界面**；
- *       - `tc.dialog` 同样是 ref 对象 ⇒ `.title` 是 `undefined`
- *         ⇒ 于是它看起来是个**没有内容的空弹窗**。
- *
- *     真机上就是这样被发现的（「popup 一打开就自带一个弹窗，没有内容」）。
- *     解构出来之后它们是 setup 的顶层绑定，Vue 才会自动解包。
- */
-const {
-  pending: trashPending,
-  dialog: trashDialog,
-  ask: askTrashConfirm,
-  cancel: cancelTrashConfirm,
-  confirm: confirmTrashConfirm,
-} = useTrashConfirm(trash)
-
 function onTrash(mail: Mail) {
   askTrashConfirm(mail)
-}
-
-/**
- * 确认删除。
- *
- * ⚠ 必须看返回值：`confirm()` 在删除失败时给 `false`（例如邮件已经不在库里，
- *   `trash:trash` 返回 `{ ok: false, error }`）。不处理的话，
- *   弹窗照关、邮件还在列表里 —— 用户只会觉得「点了没反应」。
- */
-async function onConfirmTrash() {
-  const ok = await confirmTrashConfirm()
-  if (!ok)
-    uiMessage.error(t('mail.trashFailed'), ERROR_DURATION)
 }
 
 function onOpen(mail: Mail) {

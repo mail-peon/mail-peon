@@ -2,7 +2,8 @@
 import type { AppSettings, MailFilterId, MailRetention, StorageUsage, SyncSummary } from '~/logic/types'
 import { computed, onMounted, onUnmounted, ref } from 'vue'
 import ConfirmDialog from '~/components/ConfirmDialog.vue'
-import { onDataChanged, onSyncDone, send, useAccounts, useMailTypes, useSettings } from '~/logic/bridge'
+import { useSyncRequest } from '~/composables/useSyncRequest'
+import { onDataChanged, send, useAccounts, useMailTypes, useSettings } from '~/logic/bridge'
 import { useConfirmAction } from '~/logic/confirm-action'
 import { t } from '~/logic/strings'
 import {
@@ -33,22 +34,6 @@ const { accounts, syncNow, syncStatus, reload: reloadAccounts } = useAccounts()
 const { adapters } = useMailTypes()
 
 /**
- * 「正在跑一轮同步」。
- *
- * ⚠ 它**只**表示同步，不要拿它当通用的「页面忙」用。
- *
- *   原来这里只有一个 `busy`，被同步 / 清空邮件列表 / 清空所有数据**共用**，
- *   而同步按钮写的是 `:loading="busy"` + `busy ? '同步中…' : '立即同步增量'` ——
- *   于是点「清空所有数据」时，**同步按钮会开始转圈并显示「同步中…」**。
- *   用户看到的是「我在删数据，它却告诉我正在同步」。
- *
- *   这跟账号页修过的那个 bug 是同一类（`busyOps` / `probeState` 分开，见
- *   `AccountsPage.vue`）：「哪个操作在忙」必须是**每个操作各自**的状态，
- *   塞进一个布尔量就一定会在某个按钮上显示成别人的状态。
- */
-const syncing = ref(false)
-
-/**
  * 「正在跑一个会改数据的操作」（清空邮件列表 / 清空所有数据）。
  *
  * 与 `syncing` 分开的理由见上。它只用来**禁用**这些按钮，不驱动任何 loading ——
@@ -56,6 +41,18 @@ const syncing = ref(false)
  */
 const clearing = ref(false)
 const uiMessage = useAppMessage()
+const { syncing, start: onSyncNow } = useSyncRequest({
+  start: syncNow,
+  status: syncStatus,
+  timeoutMs: 6 * 60 * 1000,
+  onDone: applySyncResult,
+  onTimeout() {
+    uiMessage.error('同步超过 6 分钟仍未返回。请检查中继是否在运行，然后重试。', ERROR_DURATION)
+  },
+  onStartFailed() {
+    uiMessage.error('无法启动同步：与后台通信失败，请重试', ERROR_DURATION)
+  },
+})
 
 /**
  * 把一轮同步的结果呈现出来（成功与失败都走这里）。
@@ -133,60 +130,6 @@ function applySyncResult(result: { ok: boolean, results: SyncSummary[], error?: 
   void reloadAccounts()
 }
 
-/**
- * 轮询兜底：等后台给出「比本次点击更晚完成」的结果。
- *
- * ⚠ 为什么必须有它 —— 广播**不能**当成唯一通路：
- *
- *   `sync:done` 的送达依赖 background 侧 `connMap` 里有没有对应端点，而它只在
- *   对方握手完成后才有条目。于是「页面在 background 重载之前就连上了」
- *   「同一 context 有多个连接」「端点名对不上」这三种情况都会让消息**静默消失**。
- *   真机上就这样卡过：点同步 → `syncing = true` → 消息没到 → 永远转圈，
- *   而且**没有任何错误**可查（中继日志显示同步根本就是成功的）。
- *
- *   所以点击之后一边等广播、一边按间隔问 `accounts:sync-status`；
- *   谁先拿到算谁的（`applySyncResult` 里会先判断 `syncing`）。
- *
- * @param startedAt 本次点击的时刻
- * @returns 清理函数（组件卸载时必须调用，否则会一直轮询下去）
- */
-function startSyncWatchdog(startedAt: number): () => void {
-  const POLL_INTERVAL_MS = 1500
-  /** 上限 6 分钟：比「一轮同步最长可能多久」宽松，同时保证不会无限轮询 */
-  const DEADLINE_MS = 6 * 60 * 1000
-
-  const timer = window.setInterval(async () => {
-    // 广播先到了 —— 停掉轮询
-    if (!syncing.value) {
-      stop()
-      return
-    }
-
-    if (Date.now() - startedAt > DEADLINE_MS) {
-      stop()
-      syncing.value = false
-      uiMessage.error('同步超过 6 分钟仍未返回。请检查中继是否在运行，然后重试。', ERROR_DURATION)
-      return
-    }
-
-    const result = await syncStatus()
-    // `finishedAt` 必须晚于本次点击 —— 否则是**上一轮**的结果，
-    // 拿它来结束本次会让界面显示过期的数字
-    if (result && (result.finishedAt ?? 0) >= startedAt) {
-      stop()
-      applySyncResult(result)
-    }
-  }, POLL_INTERVAL_MS)
-
-  function stop() {
-    window.clearInterval(timer)
-  }
-
-  return stop
-}
-
-let stopWatchdog: (() => void) | null = null
-
 const minimalMode = computed(() => app.value?.minimalMode ?? true)
 
 /**
@@ -228,7 +171,6 @@ const POPUP_TABS = computed<Array<{ value: MailFilterId, label: string }>>(() =>
  *   （真机上就是这么表现过一次：账号页有账号、测试连接通过，通用页坚持说没有。）
  */
 let stopDataListener: (() => void) | null = null
-let stopSyncListener: (() => void) | null = null
 
 onMounted(async () => {
   await reload()
@@ -238,31 +180,11 @@ onMounted(async () => {
     void reloadAccounts()
     void reloadUsage()
   })
-
-  /*
-   * ⚠ 同步结果走**广播**而不是 `syncNow()` 的返回值。
-   *
-   *   MV3 的 worker 在没有事件 30 秒后被回收，而挂着一条未完成的 `sendMessage`
-   *   不算事件 —— 「等同步跑完再返回」在同步超过 30 秒时必然失败，UI 会永远停在
-   *   「同步中」（真机上就这样卡过一次，一轮跑了 32 秒）。
-   */
-  stopSyncListener = onSyncDone((result) => {
-    // 广播可能重复到达（后台与轮询各给一次），只认第一次
-    if (!syncing.value)
-      return
-    stopWatchdog?.()
-    stopWatchdog = null
-    applySyncResult(result)
-  })
 })
 
 onUnmounted(() => {
   stopDataListener?.()
   stopDataListener = null
-  stopSyncListener?.()
-  stopSyncListener = null
-  stopWatchdog?.()
-  stopWatchdog = null
 })
 
 async function reloadUsage() {
@@ -327,40 +249,6 @@ function onCheckIntervalChange(value: unknown) {
   if (!Number.isFinite(minutes))
     return
   patch({ checkIntervalMinutes: Math.round(minutes) })
-}
-
-/**
- * 点「立即同步增量」。
- *
- * ⚠ 这里**不等结果**：只负责转成「进行中」，结果由上面的 `onSyncDone` 订阅填。
- *
- *   一个真实的坑（真机上卡过）：MV3 的 worker 在**没有事件** 30 秒后被回收，
- *   而一条**正在进行中**的 `sendMessage` **不算事件**。所以「点一下 → 等它跑完
- *   → 拿返回值」这个写法在同步超过 30 秒时必然失败 —— worker 被杀，
- *   promise 永远不 settle，界面停在「同步中」不动（用户的邮箱 3 万多封，
- *   一轮同步正好跑了 32 秒）。
- */
-async function onSyncNow() {
-  syncing.value = true
-
-  const result = await syncNow()
-
-  if (!result?.started) {
-    // 连「开始」都没成功 —— 这时才需要自己收尾（正常路径由广播/轮询收尾）
-    syncing.value = false
-    uiMessage.error('无法启动同步：与后台通信失败，请重试', ERROR_DURATION)
-    return
-  }
-
-  /*
-   * ⚠ 这里**必须**开看门狗，而不是只等 `sync:done` 广播。
-   *
-   *   广播的送达依赖 background 侧 `connMap`，任何一环没接上它就静默消失 ——
-   *   那时 `syncing` 会永远停在 true，用户看到「同步中」不动，而且没有任何错误可查
-   *   （真机上就这样卡过，而中继日志显示同步根本是成功的）。
-   */
-  stopWatchdog?.()
-  stopWatchdog = startSyncWatchdog(result.startedAt)
 }
 
 /**

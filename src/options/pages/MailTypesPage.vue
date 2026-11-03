@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import type { MailTypeAdapter } from '~/logic/types'
 import { computed, reactive, ref, watch } from 'vue'
+
 import ConfirmDialog from '~/components/ConfirmDialog.vue'
 import { useMailTypes, useSettings } from '~/logic/bridge'
 import { useConfirmAction } from '~/logic/confirm-action'
@@ -8,6 +9,8 @@ import { adapterPromptChars, estimatePromptTokens } from '~/logic/mail-types/res
 import { t } from '~/logic/strings'
 import { BUILTIN_CODE_ID } from '~/logic/types'
 import { useAppMessage } from '~/logic/ui-message'
+import BuiltinMailTypeCard from '../components/mail-types/BuiltinMailTypeCard.vue'
+import CustomMailTypeEditor from '../components/mail-types/CustomMailTypeEditor.vue'
 
 /**
  * 适配器配置页（Feature 08）。
@@ -205,85 +208,48 @@ function onDelete(adapter: MailTypeAdapter) {
     </p>
 
     <!-- ============ 内置（验证码 / 确认） ============ -->
-    <a-card v-for="adapter in primaryBuiltins" :key="adapter.id" size="small" class="builtin">
-      <template #title>
-        <div class="card-title">
-          <span class="name">{{ adapter.name }}</span>
-          <a-tag :bordered="false" class="tag">
-            {{ t('adapters.builtinTag') }}
-          </a-tag>
-          <a-tag v-if="adapter.fallback" :bordered="false" class="tag">
-            {{ t('adapters.fallbackTag') }}
-          </a-tag>
-        </div>
-      </template>
-
-      <template #extra>
-        <a-switch
-          :checked="adapter.enabled"
-          :disabled="minimalMode"
-          :aria-label="t('adapters.enabled')"
-          @update:checked="(value: boolean | string | number) => onToggle(adapter, Boolean(value))"
-        />
-      </template>
-
-      <p class="desc">
-        {{ adapter.description }}
-      </p>
-      <p class="meta">
-        #{{ adapter.priority }} · {{ adapter.fallback ? t('adapters.fallback') : t('adapters.stackable') }}
-      </p>
-
-      <!--
+    <BuiltinMailTypeCard
+      v-for="adapter in primaryBuiltins"
+      :key="adapter.id"
+      v-model:user-prompt="userPromptDraft[adapter.id]"
+      :adapter="adapter"
+      :disabled="minimalMode"
+      @toggle="value => onToggle(adapter, value)"
+      @save="saveUserPrompt(adapter)"
+      @reset="resetBuiltin(adapter)"
+    >
+      <template #params>
+        <!--
         验证码自己的参数。极简模式下适配器开关锁定，但这两个是行为开关，
         不是「类型生不生效」，所以不跟着禁用。
       -->
-      <div v-if="adapter.id === BUILTIN_CODE_ID" class="adapter-param">
-        <div class="param-row">
-          <a-checkbox
-            :checked="autoCopyCode(adapter)"
-            @update:checked="(value: boolean | string | number) => onAutoCopyToggle(adapter, value)"
-          >
-            {{ t('adapters.code.autoCopyCode') }}
-          </a-checkbox>
-          <p class="mp-hint">
-            {{ t('adapters.code.autoCopyCodeHint') }}
-          </p>
-        </div>
+        <div v-if="adapter.id === BUILTIN_CODE_ID" class="adapter-param">
+          <div class="param-row">
+            <a-checkbox
+              :checked="autoCopyCode(adapter)"
+              @update:checked="(value: boolean | string | number) => onAutoCopyToggle(adapter, value)"
+            >
+              {{ t('adapters.code.autoCopyCode') }}
+            </a-checkbox>
+            <p class="mp-hint">
+              {{ t('adapters.code.autoCopyCodeHint') }}
+            </p>
+          </div>
 
-        <div class="param-row">
-          <a-checkbox
-            :checked="autoDeleteExpiredCode(adapter)"
-            @update:checked="(value: boolean | string | number) => onAutoDeleteToggle(adapter, value)"
-          >
-            {{ t('adapters.code.autoDeleteExpiredCode') }}
-          </a-checkbox>
-          <p class="mp-hint">
-            {{ t('adapters.code.autoDeleteExpiredCodeHint') }}
-          </p>
+          <div class="param-row">
+            <a-checkbox
+              :checked="autoDeleteExpiredCode(adapter)"
+              @update:checked="(value: boolean | string | number) => onAutoDeleteToggle(adapter, value)"
+            >
+              {{ t('adapters.code.autoDeleteExpiredCode') }}
+            </a-checkbox>
+            <p class="mp-hint">
+              {{ t('adapters.code.autoDeleteExpiredCodeHint') }}
+            </p>
+          </div>
         </div>
-      </div>
-
-      <a-collapse ghost class="prompt-collapse">
-        <a-collapse-panel key="prompt" :header="t('adapters.userPrompt')">
-          <a-textarea
-            v-model:value="userPromptDraft[adapter.id]"
-            :rows="4"
-            :placeholder="t('adapters.userPromptPlaceholder')"
-            :disabled="minimalMode"
-            spellcheck="false"
-          />
-          <a-space class="prompt-actions" :size="8">
-            <a-button size="small" type="primary" :disabled="minimalMode" @click="saveUserPrompt(adapter)">
-              {{ t('common.save') }}
-            </a-button>
-            <a-button size="small" :disabled="minimalMode" @click="resetBuiltin(adapter)">
-              {{ t('adapters.reset') }}
-            </a-button>
-          </a-space>
-        </a-collapse-panel>
-      </a-collapse>
-    </a-card>
+      </template>
+    </BuiltinMailTypeCard>
 
     <!-- ============ 自定义 ============ -->
     <a-card v-for="(adapter, index) in customAdapters" :key="adapter.id" size="small">
@@ -336,106 +302,27 @@ function onDelete(adapter: MailTypeAdapter) {
     </a-card>
 
     <!-- ============ 兜底：总结永远最后 ============ -->
-    <a-card v-if="summaryAdapter" size="small" class="builtin">
-      <template #title>
-        <div class="card-title">
-          <span class="name">{{ summaryAdapter.name }}</span>
-          <a-tag :bordered="false" class="tag">
-            {{ t('adapters.builtinTag') }}
-          </a-tag>
-          <a-tag :bordered="false" class="tag">
-            {{ t('adapters.fallbackTag') }}
-          </a-tag>
-        </div>
-      </template>
-
-      <template #extra>
-        <a-switch
-          :checked="summaryAdapter.enabled"
-          :disabled="minimalMode"
-          :aria-label="t('adapters.enabled')"
-          @update:checked="(value: boolean | string | number) => onToggle(summaryAdapter!, Boolean(value))"
-        />
-      </template>
-
-      <p class="desc">
-        {{ summaryAdapter.description }}
-      </p>
-      <p class="meta">
-        #{{ summaryAdapter.priority }} · {{ t('adapters.fallback') }}
-      </p>
-
-      <a-collapse ghost class="prompt-collapse">
-        <a-collapse-panel key="prompt" :header="t('adapters.userPrompt')">
-          <a-textarea
-            v-model:value="userPromptDraft[summaryAdapter.id]"
-            :rows="4"
-            :placeholder="t('adapters.userPromptPlaceholder')"
-            :disabled="minimalMode"
-            spellcheck="false"
-          />
-          <a-space class="prompt-actions" :size="8">
-            <a-button size="small" type="primary" :disabled="minimalMode" @click="saveUserPrompt(summaryAdapter!)">
-              {{ t('common.save') }}
-            </a-button>
-            <a-button size="small" :disabled="minimalMode" @click="resetBuiltin(summaryAdapter!)">
-              {{ t('adapters.reset') }}
-            </a-button>
-          </a-space>
-        </a-collapse-panel>
-      </a-collapse>
-    </a-card>
+    <BuiltinMailTypeCard
+      v-if="summaryAdapter"
+      v-model:user-prompt="userPromptDraft[summaryAdapter.id]"
+      :adapter="summaryAdapter"
+      :disabled="minimalMode"
+      @toggle="value => onToggle(summaryAdapter!, value)"
+      @save="saveUserPrompt(summaryAdapter!)"
+      @reset="resetBuiltin(summaryAdapter!)"
+    />
 
     <!-- ============ 新增 / 编辑自定义类型 ============ -->
-    <a-modal
+    <CustomMailTypeEditor
       v-if="editing"
-      class="editor"
-      :open="true"
-      :width="640"
-      :get-container="false"
-      :mask-closable="false"
-      :body-style="{ maxHeight: '62vh', overflowY: 'auto' }"
-      centered
+      v-model:name="draft.name"
+      v-model:prompt="draft.prompt"
+      v-model:fallback="draft.fallback"
+      :existing="editingExisting"
+      :error="formError"
+      @save="saveCustom"
       @cancel="closeEditor"
-    >
-      <template #title>
-        {{ editingExisting ? t('common.edit') : t('adapters.add') }}
-      </template>
-
-      <a-alert v-if="formError" class="editor-error" type="error" show-icon :message="formError" />
-
-      <a-form layout="vertical" class="form">
-        <a-form-item :label="t('adapters.name')" required>
-          <a-input v-model:value="draft.name" :placeholder="t('adapters.namePlaceholder')" />
-        </a-form-item>
-
-        <a-form-item :label="t('adapters.prompt')" required :help="t('adapters.promptHint')">
-          <a-textarea
-            v-model:value="draft.prompt"
-            :rows="10"
-            :placeholder="t('adapters.promptPlaceholder')"
-            spellcheck="false"
-          />
-        </a-form-item>
-
-        <a-form-item>
-          <a-checkbox v-model:checked="draft.fallback">
-            {{ t('adapters.fallback') }}
-          </a-checkbox>
-        </a-form-item>
-      </a-form>
-
-      <template #footer>
-        <a-space :size="8">
-          <a-button @click="closeEditor">
-            {{ t('common.cancel') }}
-          </a-button>
-          <a-button type="primary" @click="saveCustom">
-            {{ t('common.save') }}
-          </a-button>
-        </a-space>
-      </template>
-    </a-modal>
+    />
 
     <ConfirmDialog
       :open="pending !== null"
@@ -448,6 +335,8 @@ function onDelete(adapter: MailTypeAdapter) {
     />
   </section>
 </template>
+
+<style scoped src="../components/mail-types/card.css" />
 
 <style scoped>
 .page {
@@ -475,53 +364,6 @@ function onDelete(adapter: MailTypeAdapter) {
   color: var(--mp-text-faint);
 }
 
-.card-title {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-}
-
-.name {
-  font-size: 13px;
-  font-weight: 600;
-}
-
-.tag {
-  margin: 0;
-  font-weight: 400;
-}
-
-/* 内置卡片用虚线边 + 灰底：它是「参考项」，不是可以随便编辑的对象 */
-.builtin {
-  background: var(--mp-surface-2);
-  border-style: dashed;
-}
-
-.desc {
-  margin: 0;
-  font-size: 12px;
-  line-height: 1.6;
-  color: var(--mp-text-dim);
-  white-space: pre-wrap;
-  word-break: break-word;
-  /* 长提示词只露 4 行；完整内容在编辑弹窗里 */
-  overflow: hidden;
-  display: -webkit-box;
-  -webkit-line-clamp: 4;
-  -webkit-box-orient: vertical;
-}
-
-.desc.empty {
-  color: var(--mp-text-faint);
-  font-style: italic;
-}
-
-.meta {
-  margin: 6px 0 0;
-  font-size: 11px;
-  color: var(--mp-text-faint);
-}
-
 .adapter-param {
   margin-top: 10px;
   padding-top: 10px;
@@ -536,33 +378,7 @@ function onDelete(adapter: MailTypeAdapter) {
   margin-top: 8px;
 }
 
-.prompt-collapse {
-  margin-top: 8px;
-}
-
-.prompt-collapse :deep(.ant-collapse-header) {
-  padding: 4px 0;
-  font-size: 12px;
-  color: var(--mp-text-dim);
-}
-
-.prompt-collapse :deep(.ant-collapse-content-box) {
-  padding: 0;
-}
-
-.prompt-actions {
-  margin-top: 8px;
-}
-
 .actions {
   margin-top: 8px;
-}
-
-.form {
-  width: 100%;
-}
-
-.editor-error {
-  margin-bottom: 12px;
 }
 </style>
