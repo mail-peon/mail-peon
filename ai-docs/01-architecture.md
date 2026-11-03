@@ -344,3 +344,5 @@ src/
 UI 数据访问仍统一经过 `logic/bridge.ts`，实现分散到 `bridge/` 的传输、单例事件注册、设置及各领域 composable。`SyncDonePayload` 位于领域模型，后台与 UI 共用类型。`useSyncRequest` 合并广播与串行状态查询，拥有独立的截止时间和卸载清理，Popup 保留 90 秒等待上限，通用设置保留 6 分钟。
 
 Popup 与 Sidepanel 共用 `useMailView` 的筛选状态和 `useMailActions` 的确认操作，各自保留打开时的已读策略。邮件类型页的内置卡片与自定义编辑器位于 `options/components/mail-types/`。
+
+通用设置的同步回执、数据清理与备份 IO 分别在 `options/composables/`，备份格式校验在 `options/settings-backup.ts`，完整校验通过后才开始写入。账号页保留草稿与操作编排，列表、编辑弹窗和 provider 字段在 `options/components/accounts/`；字段状态与校验分别在 `useAccountFields` 和 `account-validation.ts`。

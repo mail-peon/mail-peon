@@ -1,15 +1,19 @@
 <script setup lang="ts">
 import type { AccountBusyKind, AccountProbeResult, AccountStatus } from './accounts-status'
-import type { MailProviderFieldPayload, MailProviderOptionPayload } from '~/adapters/mail/registry'
-import type { MailAccount, SyncCursor } from '~/logic/types'
-import { computed, nextTick, onMounted, ref } from 'vue'
+import type { MailProviderOptionPayload } from '~/adapters/mail/registry'
+import type { MailAccount } from '~/logic/types'
+import { computed, onMounted, ref } from 'vue'
 import ConfirmDialog from '~/components/ConfirmDialog.vue'
-import SecretInput from '~/components/SecretInput.vue'
 import { send, useAccounts } from '~/logic/bridge'
 import { looksLikeClipboardRelayUrl, readClipboardText } from '~/logic/clipboard-relay'
 import { useConfirmAction } from '~/logic/confirm-action'
 import { t } from '~/logic/strings'
 import { ERROR_DURATION, useAppMessage } from '~/logic/ui-message'
+import { describeCursor, relativeTime } from '../account-format'
+import { validateAccount } from '../account-validation'
+import AccountCard from '../components/accounts/AccountCard.vue'
+import AccountEditor from '../components/accounts/AccountEditor.vue'
+import { useAccountFields } from '../composables/useAccountFields'
 import { accountStatus } from './accounts-status'
 
 /**
@@ -37,54 +41,17 @@ import { accountStatus } from './accounts-status'
  *   让它从「第三份拷贝」变回「同一个类型」。
  */
 type ProviderOption = MailProviderOptionPayload
-type ProviderField = MailProviderFieldPayload
-
-/**
- * 校验失败的结果。
- *
- * ⚠ 带上 `key` 而不是只给一句话：界面要拿它把**出错的那个字段**滚到眼前
- *   （弹窗的字段区是可滚动的，出错字段很可能不在视口里）。
- */
-interface ValidationFailure {
-  /** 字段 key（与 `a-form-item` 的 `name` 对应） */
-  key: string
-  message: string
-}
-
-/*
- * `ProviderOption.downloadHint`（IMAP → 下载 peon-hall）为什么不拼进
- * `availabilityNote`：那一串是 `a-alert` 的 `:message`，antd 当**纯文本**渲染，
- * 链接点不开。分开传，模板里用 `<a target="_blank" rel="noopener noreferrer">` 渲染。
- */
 
 const { accounts, reload, save, remove, test, resetCursor, authorizeGmail } = useAccounts()
 
 const providers = ref<ProviderOption[]>([])
 const editing = ref<MailAccount | null>(null)
-
-/**
- * `a-form` 的实例。
- *
- * ⚠ 只用来拿它的根元素（`$el`）——`revealField` 在这个范围里找字段，
- *   而不是满页 `document.querySelector`。理由有两个：
- *
- *   1. **只会有一个编辑弹窗**，但「页面级查询」这种写法会在将来出现第二个
- *      同名字段时静默指向错的那个；
- *   2. 组件不一定挂在 `document` 上（单测就是**游离挂载**的），
- *      全局查询会直接找不到 —— 于是那条逻辑在测试里永远走不到，
- *      测试也就守不住它。
- */
-const formRef = ref<{ $el?: HTMLElement } | null>(null)
-
-/**
- * 哪些「带预设的 host 字段」当前处于**自定义模式**（下拉选中了「自定义…」）。
- *
- * 为什么需要这个显式的状态、而不是从 `config[key]` 推：
- *   选「自定义」时 host 还是空的，而「还没选」时 host 也是空的 ——
- *   两者在数据上一模一样，推不出来。没有它的话，用户一点「自定义」，
- *   输入框会立刻又消失（因为 host 仍为空，看着就像没选）。
- */
-const customHostFields = ref<Record<string, boolean>>({})
+const fields = useAccountFields(editing, providers)
+const { setField, defaultConfigFor, syncCustomHostFields, fieldValue } = fields
+const editorRef = ref<{ revealField: (key: string) => void } | null>(null)
+function revealField(key: string) {
+  editorRef.value?.revealField(key)
+}
 
 /**
  * 最近一次「测试连接」的结果（**只有这一个操作会写它**）。
@@ -158,15 +125,6 @@ function applyClipboardFromClipboard(): void {
   clipboardCandidate.value = null
 }
 
-const currentProvider = computed(() =>
-  providers.value.find(item => item.value === editing.value?.provider) ?? null,
-)
-
-/** 协议下拉的选项（antd 的 `Select` 要的是 `{ label, value }` 数据） */
-const providerOptions = computed(() =>
-  providers.value.map(item => ({ value: item.value, label: item.label })),
-)
-
 /**
  * 每个账号的连接状态（颜色 / 状态词 / 悬停详情）。
  *
@@ -195,19 +153,6 @@ function statusOf(account: MailAccount): AccountStatus {
       cursorText: describeCursor(account.cursor),
     },
   })
-}
-
-/**
- * 这个账号上有没有耗时操作在跑（`kind` 给了就只问那一种）。
- *
- * ⚠ 按钮的 loading 与 disabled 都从这里取，**不要**再看别的状态量 ——
- *   「转错按钮」那个 bug 就是因为在别处推断「谁在忙」。
- */
-function isBusy(account: MailAccount | null | undefined, kind?: AccountBusyKind): boolean {
-  if (!account)
-    return false
-  const busy = busyOps.value[account.id]
-  return kind ? busy === kind : !!busy
 }
 
 /**
@@ -280,278 +225,6 @@ function newAccount() {
   void probeClipboard()
 }
 
-function defaultConfigFor(provider: ProviderOption | null | undefined): MailAccount['config'] {
-  const config: MailAccount['config'] = {}
-  for (const field of provider?.fields ?? []) {
-    if (field.default !== undefined)
-      (config as Record<string, unknown>)[field.key] = field.default
-  }
-  return config
-}
-
-function onProviderChange(value: unknown) {
-  if (!editing.value)
-    return
-  const provider = providers.value.find(item => item.value === value) ?? null
-  /*
-   * 切协议时**保留用户已填的通用字段**（如 user / email 里复用的地址），
-   * 但把新协议专属字段补上默认值。
-   *
-   * 不能整个重置成 `defaultConfigFor()`：用户填了一半再切协议时，
-   * 那些填过的值会全部消失 —— 而「切错了再切回来」是很常见的操作。
-   */
-  editing.value.provider = String(value)
-  editing.value.config = { ...defaultConfigFor(provider), ...editing.value.config }
-  // 换了协议就换了一批字段（预设也可能不同），自定义模式要重新判定
-  syncCustomHostFields(editing.value)
-}
-
-function setField(key: string, value: unknown) {
-  if (!editing.value)
-    return
-  const config = editing.value.config as Record<string, unknown>
-  config[key] = value
-}
-
-/**
- * 「自定义…」在下拉里的哨兵值。
- *
- * host 是域名/地址，不可能等于这个值，所以用它当哨兵是安全的。
- */
-const CUSTOM_HOST = '__custom__'
-
-/** 这个带预设的 host 字段现在是不是「自己填」模式 */
-function isCustomHost(key: string): boolean {
-  return customHostFields.value[key] === true
-}
-
-/** 下拉当前应显示的值：预设值 / 「自定义…」 / undefined（还没选） */
-function hostSelectValue(key: string): string | undefined {
-  if (isCustomHost(key))
-    return CUSTOM_HOST
-  const value = fieldValue(key)
-  return value === '' ? undefined : value
-}
-
-/**
- * 下拉选项 = 各家预设 + 末尾一条「自定义…」。
- *
- * ⚠ 这里只放 `value` / `label`，**不放 `note`**。antd 会把 option 对象上的额外字段
- *   原样铺到选项 DOM 上，`note` 会变成一个 `note="需用授权码"` 属性漏在页面上
- *   （之前放过 `payload` 对象，渲染出 `payload="[object Object]"`）。
- *   `note` 由 `presetNote()` 按 value 反查 —— 反查一次很便宜，DOM 干净。
- */
-function hostSelectOptions(field: ProviderField) {
-  return [
-    ...(field.presets ?? []).map(preset => ({ value: preset.value, label: preset.label })),
-    { value: CUSTOM_HOST, label: '自定义…' },
-  ]
-}
-
-/** 选项副标题：按 value 回预设里查 —— 见 `hostSelectOptions` 里为什么不直接塞进 option */
-function presetNote(field: ProviderField, value: string): string | undefined {
-  return field.presets?.find(preset => preset.value === value)?.note
-}
-
-/**
- * 选下拉时：挑预设就回填 host / port / tls（三件一起改，见下）；
- * 挑「自定义…」就切到输入框。
- *
- * ⚠️ 为什么 host / port / tls **一起**改：只写 host 的话，用户从 993 的邮箱切到
- *    另一家非 993 的，端口还留着旧值，点「测试连接」报一个看不懂的错。
- *    `preset.port` / `preset.tls` 缺失时**不动**对应字段（预设可以只想覆盖 host）。
- */
-function onHostSelect(key: string, value: string): void {
-  if (!editing.value)
-    return
-  const config = editing.value.config as Record<string, unknown>
-
-  if (value === CUSTOM_HOST) {
-    customHostFields.value[key] = true
-    // 清掉上一家的地址，让输入框空着等用户填 —— 留着一个不相干的域名更容易误提交
-    config[key] = ''
-    return
-  }
-
-  customHostFields.value[key] = false
-  config[key] = value
-
-  const field = currentProvider.value?.fields.find(item => String(item.key) === key)
-  const preset = field?.presets?.find(item => item.value === value)
-  if (!preset)
-    return
-
-  if (typeof preset.port === 'number')
-    config.port = preset.port
-  if (typeof preset.tls === 'boolean')
-    config.tls = preset.tls
-}
-
-/**
- * 按账号当前配置，重新判定每个带预设的 host 字段是不是「自定义」。
- *
- * 打开已有账号时用：比如用户之前手填了 `mail.corporate.internal`，
- * 那不匹配任何预设，下拉就该显示「自定义…」并且把输入框亮出来，
- * 而不是显示成「没选」让用户以为配置丢了。
- */
-function syncCustomHostFields(account: MailAccount | null): void {
-  const provider = providers.value.find(item => item.value === account?.provider)
-  const next: Record<string, boolean> = {}
-
-  for (const field of provider?.fields ?? []) {
-    if (!field.presets?.length)
-      continue
-    const current = String((account?.config as Record<string, unknown> | undefined)?.[field.key] ?? '')
-    next[field.key] = current !== '' && !field.presets.some(preset => preset.value === current)
-  }
-
-  customHostFields.value = next
-}
-
-function fieldValue(key: string): string {
-  const raw = (editing.value?.config as Record<string, unknown> | undefined)?.[key]
-  return raw === undefined || raw === null ? '' : String(raw)
-}
-
-/**
- * 数字字段的当前值。
- *
- * ⚠ 单独一个函数而不是复用 `fieldValue()` 再 `Number(...)`：
- *   `a-input-number` 要的是**数字或 null**，而「清空输入框」拿到的是 null。
- *   传一个字符串 "NaN" 进去会让那个输入框显示成乱七八糟的东西。
- */
-function fieldNumber(key: string): number | null {
-  const raw = (editing.value?.config as Record<string, unknown> | undefined)?.[key]
-  return typeof raw === 'number' && Number.isFinite(raw) ? raw : null
-}
-
-function fieldBool(key: string): boolean {
-  return (editing.value?.config as Record<string, unknown> | undefined)?.[key] === true
-}
-
-/*
- * antd 把几个表单控件的值和回调声明得比我们实际处理的**宽**：
- *
- *   - `a-switch` 的 `update:checked` 给的是 `CheckedType`（`boolean | string`）；
- *   - `a-input-number` 的 `value` / `update:value` 是 `ValueType`（`string | number`）；
- *   - `a-select` 的 `change` 给的是 `SelectValue`（含 `undefined`）。
- *
- * 下面三个包装把它们收窄回真实的类型。写在脚本里而不是在模板上内联断言：
- * 模板里一行塞不下注释，而且 `as` 在模板表达式里很容易被当成别的东西。
- */
-function onToggleUpdate(key: string, checked: unknown): void {
-  // antd 的 `CheckedType` 实际是 `boolean | string | number`，而且会随版本变宽，
-  // 所以形参收成 `unknown` 再判等 —— 比照抄它的联合类型耐改
-  setField(key, checked === true)
-}
-
-function onNumberUpdate(key: string, value: string | number | null | undefined): void {
-  // 清空输入框时 antd 给 `null`：那代表「没有值」，不是 0
-  setField(key, typeof value === 'number' && Number.isFinite(value) ? value : undefined)
-}
-
-function onFieldSelectUpdate(key: string, value: unknown): void {
-  onHostSelect(key, String(value ?? ''))
-}
-
-/**
- * 按 provider 声明校验必填字段。
- *
- * ⚠ 之前 `required: true` **只用来渲染一个 `*`**，保存与「测试连接」都不检查 ——
- *   于是漏填中继地址、或把地址填成 `127.0.0.1:41316` / `https://…`，
- *   都会一路存下去，直到建立 WebSocket 时才失败。而那时的报错是
- *   「无法连接中继：…」，用户根本不会联想到是「地址少写了协议头」。
- *
- * 校验规则来自 `definition.fields`（单一信源），所以加一个 provider 字段就会自动
- * 被校验，不需要在这里补 `if`。
- *
- * @returns 错误信息；通过时返回空串
- */
-function validateAccount(account: MailAccount): ValidationFailure | null {
-  const provider = providers.value.find(item => item.value === account.provider)
-
-  for (const field of provider?.fields ?? []) {
-    if (!field.required)
-      continue
-
-    const value = (account.config as Record<string, unknown>)[field.key]
-    const missing = field.type === 'number'
-      // 数字字段：`0` 与空串都算没填（端口 0 不是有效值）
-      ? typeof value !== 'number' || !Number.isFinite(value) || value <= 0
-      : typeof value !== 'string' || !value.trim()
-
-    if (missing)
-      return { key: String(field.key), message: `请填写「${field.label}」` }
-  }
-
-  return validateRelayUrl(account)
-}
-
-/**
- * 中继地址的格式校验。
- *
- * 单独一条而不是塞进上面的通用循环：这里能给出**可操作**的提示
- * （「要写 `ws://` 开头」），而通用循环只能说「请填写」。
- */
-function validateRelayUrl(account: MailAccount): ValidationFailure | null {
-  const raw = account.config.relayUrl?.trim()
-  // 只有用得上中继的 provider 才校验（Gmail 那条路不经过中继）
-  if (account.provider !== 'imap')
-    return null
-
-  if (!raw)
-    return { key: 'relayUrl', message: '请填写「WebSocket 中继地址」（装好 peon-hall 后填 ws://127.0.0.1:41316/）' }
-
-  if (!/^wss?:\/\//i.test(raw)) {
-    return {
-      key: 'relayUrl',
-      message: `中继地址要以 ws:// 或 wss:// 开头（当前是「${raw}」）。`
-        + '本机中继写 ws://127.0.0.1:41316/',
-    }
-  }
-
-  try {
-    void new URL(raw)
-  }
-  catch {
-    return { key: 'relayUrl', message: `中继地址不是合法 URL：「${raw}」` }
-  }
-
-  return null
-}
-
-/**
- * 校验失败 → 把那个字段**滚到眼前**并聚焦。
- *
- * ⚠ 为什么需要它：弹窗的字段区是 `max-height: 60vh; overflow-y: auto`，
- *   而错误文案只出现在顶部一行 —— 「请填写『WebSocket 中继地址』」
- *   很可能指向一个**当前不在视口里**的字段，用户只能自己一栏栏找。
- *
- * ⚠ 为什么不用 antd 的 `form.scrollToField()`：那个 API 要求每个 `a-form-item`
- *   都带 `name`，而**只加 `name` 不加 `:model`** 会让 antd 启用它自己的校验 ——
- *   实测控制台会刷出一片 `async-validator: '${name}' is required`
- *   （表单没有 model，所有字段对它都是 undefined），界面上可能跟着冒红字。
- *   我们本来就是**手写校验**，没必要为此把整张表单切到 antd 的受控模型上。
- *
- *   所以用 `data-field-key` 自己定位：代价一次 `querySelector`，
- *   好处是完全不动 antd 的表单语义。
- */
-function revealField(key: string): void {
-  void nextTick(() => {
-    const host = formRef.value?.$el
-    if (!host)
-      return
-
-    const item = host.querySelector<HTMLElement>(`[data-field-key="${key}"]`)
-    if (!item)
-      return
-
-    item.scrollIntoView({ block: 'center', behavior: 'smooth' })
-    // 顺带把焦点送进去：键盘用户可以直接开始改，不用再 Tab 一圈
-    item.querySelector<HTMLElement>('input, textarea, .ant-select-selector')?.focus()
-  })
-}
-
 async function onSave() {
   if (!editing.value)
     return
@@ -563,7 +236,7 @@ async function onSave() {
     return
   }
 
-  const invalid = validateAccount(editing.value)
+  const invalid = validateAccount(editing.value, providers.value)
   if (invalid) {
     pageError.value = invalid.message
     revealField(invalid.key)
@@ -600,7 +273,7 @@ async function onSave() {
  * 而真实原因是「地址没写 ws://」。
  */
 async function onTest(account: MailAccount) {
-  const invalid = validateAccount(account)
+  const invalid = validateAccount(account, providers.value)
   if (invalid) {
     // 这里是**列表卡片**上的「测试连接」，没有可滚动的表单 —— 只报文案
     probeState.value[account.id] = { ok: false, text: invalid.message }
@@ -708,30 +381,6 @@ async function onAuthorizeGmail() {
   }
 }
 
-/** 描述同步游标（让用户知道「同步到哪了」，而不只是一个时间） */
-function describeCursor(cursor: SyncCursor | undefined): string {
-  if (!cursor)
-    return '未建立'
-  if (typeof cursor.historyId === 'string')
-    return `historyId ${cursor.historyId.slice(0, 10)}…`
-  if (typeof cursor.uid === 'number')
-    return `UID ${cursor.uid}`
-  return '已建立'
-}
-
-function relativeTime(ts: number | undefined): string {
-  if (!ts)
-    return t('accounts.never')
-  const diff = Date.now() - ts
-  if (diff < 60_000)
-    return t('common.justNow')
-  if (diff < 3_600_000)
-    return t('common.minutesAgo', { n: Math.floor(diff / 60_000) })
-  if (diff < 86_400_000)
-    return t('common.hoursAgo', { n: Math.floor(diff / 3_600_000) })
-  return new Date(ts).toLocaleString('zh-CN')
-}
-
 /** 表单标题：编辑已有账号还是新增 */
 const formTitle = computed(() =>
   editing.value && accounts.value.some(item => item.id === editing.value!.id)
@@ -754,297 +403,20 @@ const formTitle = computed(() =>
       <a-empty :description="t('accounts.empty')" />
     </a-card>
 
-    <a-card v-for="account in accounts" :key="account.id" size="small">
-      <template #title>
-        <div class="account-head">
-          <span class="account-label">{{ account.label || account.email }}</span>
-          <span class="account-email">{{ account.email }}</span>
-          <a-tag :bordered="false">
-            {{ account.provider }}
-          </a-tag>
-        </div>
-      </template>
+    <AccountCard
+      v-for="account in accounts" :key="account.id"
+      :account="account" :status="accountStatuses[account.id]" :busy="busyOps[account.id]"
+      @test="onTest(account)" @edit="openEditor(account)"
+      @reset="onResetCursor(account)" @delete="onDelete(account)"
+    />
 
-      <!--
-        连接状态放在卡片**右上角**（`#extra`），与左边的账号信息两端对齐。
-        颜色只有圆点，具体原因在悬停的 tooltip 里 —— 这样「坏消息」不再是一整条
-        红色横幅把卡片撑开（那是用户报的「突兀的提示」），但信息一点没少。
-      -->
-      <template #extra>
-        <StatusBadge v-bind="accountStatuses[account.id]" />
-      </template>
-
-      <div class="account-meta">
-        <span>{{ t('accounts.lastSync') }}：{{ relativeTime(account.lastSyncedAt) }}</span>
-        <span>同步位置：{{ describeCursor(account.cursor) }}</span>
-      </div>
-
-      <a-space class="actions" :size="8" wrap>
-        <!--
-          ⚠ 每个按钮的 loading 都问「**我这个**操作在不在跑」（`isBusy(account, 'test')`），
-            而不是问「这个账号忙不忙」—— 后者正是「点重置却让测试连接转圈」那个 bug。
-            同一时刻只允许一个操作，所以另一个按钮禁用。
-        -->
-        <a-button
-          size="small"
-          :loading="isBusy(account, 'test')"
-          :disabled="isBusy(account, 'reset')"
-          @click="onTest(account)"
-        >
-          {{ t('accounts.test') }}
-        </a-button>
-        <a-button size="small" @click="openEditor(account)">
-          {{ t('common.edit') }}
-        </a-button>
-        <a-button
-          size="small"
-          :loading="isBusy(account, 'reset')"
-          :disabled="isBusy(account, 'test')"
-          @click="onResetCursor(account)"
-        >
-          {{ t('accounts.resetCursor') }}
-        </a-button>
-        <a-button size="small" danger :disabled="isBusy(account)" @click="onDelete(account)">
-          {{ t('common.delete') }}
-        </a-button>
-      </a-space>
-    </a-card>
-
-    <!--
-      ============ 新增 / 编辑（弹窗） ============
-
-      ⚠ 原来这块是页面**下方的一张卡片**：点了「编辑」之后表单出现在列表底下，
-        用户要往下滚才知道发生了什么，而且它会一直留在页面上（像个幽灵）。
-        改成弹窗之后「在编辑哪个账号」是明确的，关掉即消失。
-
-      ⚠ `v-if` + `:open="true"` + `:get-container="false"` —— 与 `ConfirmDialog`
-        同一套（那边有详细说明）：关闭时整棵子树不存在，不会留在 Tab 顺序里。
-    -->
-    <a-modal
-      v-if="editing"
-      class="editor"
-      :open="true"
-      :width="560"
-      :get-container="false"
-      :mask-closable="false"
-      :body-style="{ maxHeight: '60vh', overflowY: 'auto' }"
-      centered
-      @cancel="closeEditor"
-    >
-      <!--
-        标题行：左边「新增 / 编辑账号」，右边这个账号的连接状态。
-        ⚠ 与列表卡片保持一致 —— 编辑一个正在报错的账号时，那一目了然的状态不该消失。
-        ⚠ `padding-right` 是给右上角的关闭按钮让位（它是绝对定位的）。
-      -->
-      <template #title>
-        <div class="editor-title">
-          <span>{{ formTitle }}</span>
-          <StatusBadge v-bind="editingStatus" />
-        </div>
-      </template>
-
-      <!--
-        ⚠ 校验/授权失败留在弹窗里（而不是弹一个全局 message）：
-          它要跟出错的那个输入框待在一起，而且用户改的时候必须还看得见 ——
-          toast 会在两三秒后消失，那时他可能还在改。
-      -->
-      <a-alert v-if="pageError" class="editor-error" type="error" show-icon :message="pageError" />
-
-      <!--
-        剪贴板里有中继地址候选 —— 用户刚才在 peon-hall 点过「复制扩展地址」。
-        见 `clipboard-relay.ts` 的说明：「提示 + 按钮」而不是「自动填入」。
-
-        只在 IMAP 协议下显示 —— Gmail 不走中继，填了反而误导。
-        只在 relayUrl 字段为空时显示 —— 已经有值的话别覆盖。
-      -->
-      <a-alert
-        v-if="clipboardCandidate && editing.provider === 'imap' && !fieldValue('relayUrl')"
-        class="clipboard-prompt"
-        type="info"
-        show-icon
-        :message="`剪贴板里有中继地址：${clipboardCandidate}`"
-      >
-        <template #description>
-          <a-space :size="8">
-            <a-button size="small" type="primary" @click="applyClipboardFromClipboard">
-              填入
-            </a-button>
-            <a-button size="small" @click="clipboardCandidate = null">
-              不用
-            </a-button>
-          </a-space>
-        </template>
-      </a-alert>
-
-      <a-form ref="formRef" layout="vertical" class="form">
-        <a-form-item data-field-key="label" :label="t('accounts.label')">
-          <a-input v-model:value="editing.label" :placeholder="t('accounts.labelPlaceholder')" />
-        </a-form-item>
-
-        <a-form-item data-field-key="email" :label="t('accounts.email')">
-          <a-input v-model:value="editing.email" :placeholder="t('accounts.emailPlaceholder')" type="email" />
-        </a-form-item>
-
-        <a-form-item data-field-key="provider" :label="t('accounts.provider')" :help="currentProvider?.hint">
-          <a-select
-            class="control"
-            :value="editing.provider"
-            :options="providerOptions"
-            @update:value="onProviderChange"
-          />
-        </a-form-item>
-
-        <!-- 协议可用性提示：走不通的路要提前说，而不是等「测试连接」报一个看不懂的错 -->
-        <a-alert
-          v-if="currentProvider && currentProvider.availability !== 'ready'"
-          class="notice"
-          type="warning"
-          show-icon
-          :message="currentProvider.availabilityNote"
-        >
-          <!--
-            「去哪儿拿中继」放在这条黄条的 description 里 —— 用户读到
-            「需要本机中继」的**下一句**就该是「点这里下载」，中间不该隔别的内容。
-
-            文字链而不是主按钮：这是个**可选安装**动作（Gmail / 已有中继的用户不需要），
-            不该跟表单底部的【保存】抢视觉重量。
-          -->
-          <template v-if="currentProvider.downloadHint" #description>
-            <a
-              :href="currentProvider.downloadHint.url"
-              target="_blank"
-              rel="noopener noreferrer"
-            >
-              {{ currentProvider.downloadHint.text }}
-            </a>
-          </template>
-        </a-alert>
-
-        <!-- 字段由 provider 声明生成 -->
-        <template v-for="field in currentProvider?.fields ?? []" :key="field.key">
-          <a-form-item v-if="field.type === 'toggle'" :data-field-key="String(field.key)" :label="field.label">
-            <a-switch
-              :checked="fieldBool(field.key)"
-              @update:checked="(value) => onToggleUpdate(field.key, value)"
-            />
-          </a-form-item>
-
-          <a-form-item
-            v-else-if="field.type === 'password'"
-            :data-field-key="String(field.key)"
-            :label="field.label"
-            :required="field.required"
-          >
-            <SecretInput
-              :model-value="fieldValue(field.key)"
-              :placeholder="field.placeholder"
-              @update:model-value="setField(field.key, $event)"
-            />
-          </a-form-item>
-
-          <a-form-item
-            v-else-if="field.type === 'number'"
-            :data-field-key="String(field.key)"
-            :label="field.label"
-            :required="field.required"
-          >
-            <a-input-number
-              class="control"
-              :value="fieldNumber(field.key) ?? undefined"
-              :min="1"
-              :placeholder="field.placeholder"
-              @update:value="(value) => onNumberUpdate(field.key, value)"
-            />
-          </a-form-item>
-
-          <a-form-item v-else-if="field.presets" :data-field-key="String(field.key)" :label="field.label" :required="field.required">
-            <!--
-              下拉挑常用服务器，最后一条「自定义…」切出输入框自己填。
-
-              ⚠ 为什么不用 `a-auto-complete`（下拉 + 自由输入是一个控件）：
-                它对用户是「看起来就是个普通输入框」，不点不知道有列表；
-                而且「已选的是预设还是自己填的」在数据上分不出来
-                （都只是 host 字符串），回显已有账号时会显示成空白。
-                拆成 select + 条件输入框，两种状态各自明确。
-
-              ⚠ 选预设时 `onHostSelect` 会把 host / port / tls **一起**回填 ——
-                用户看到 host 变了，端口与加密一并对齐，不会「改了 host 忘了改 port」。
-            -->
-            <div class="host-field">
-              <a-select
-                :value="hostSelectValue(field.key)"
-                :placeholder="field.placeholder ?? '请选择'"
-                :options="hostSelectOptions(field)"
-                @change="(value) => onFieldSelectUpdate(field.key, value)"
-              >
-                <!-- 副标题（「需用授权码」这类避坑提示）按 value 反查，见 presetNote -->
-                <template #option="item">
-                  <div class="preset-option">
-                    <span class="preset-option__label">{{ item.label }}</span>
-                    <span v-if="presetNote(field, item.value)" class="preset-option__note">
-                      {{ presetNote(field, item.value) }}
-                    </span>
-                  </div>
-                </template>
-              </a-select>
-
-              <a-input
-                v-if="isCustomHost(field.key)"
-                :value="fieldValue(field.key)"
-                placeholder="mail.example.com"
-                spellcheck="false"
-                @update:value="(value: string) => setField(field.key, value)"
-              />
-            </div>
-          </a-form-item>
-
-          <a-form-item v-else :data-field-key="String(field.key)" :label="field.label" :required="field.required">
-            <a-input
-              :value="fieldValue(field.key)"
-              :placeholder="field.placeholder"
-              spellcheck="false"
-              @update:value="(value: string) => setField(field.key, value)"
-            />
-          </a-form-item>
-
-          <!-- Gmail 专属：一键授权 -->
-          <div v-if="field.key === 'refreshToken' && editing.provider === 'gmail'" class="oauth">
-            <a-button :loading="authorizing" @click="onAuthorizeGmail">
-              {{ authorizing ? '授权中…' : '使用 Google 授权' }}
-            </a-button>
-            <span class="mp-hint">
-              需要先在 Google Cloud 建一个「Chrome 扩展」类型的 OAuth 客户端，
-              并把此扩展的授权回调地址加进重定向白名单。
-            </span>
-          </div>
-        </template>
-
-        <a-form-item>
-          <a-checkbox v-model:checked="editing.enabled">
-            {{ t('accounts.enableLabel') }}
-          </a-checkbox>
-        </a-form-item>
-      </a-form>
-
-      <!--
-        底部按钮。顺序：诊断动作（测试连接）靠左，取消 / 保存靠右 ——
-        「保存」在最右是 antd 的约定（主操作在最外侧）。
-      -->
-      <template #footer>
-        <div class="editor-footer">
-          <a-button :loading="isBusy(editing, 'test')" @click="onTestEditing">
-            {{ t('accounts.test') }}
-          </a-button>
-          <span class="editor-footer-spacer" />
-          <a-button @click="closeEditor">
-            {{ t('common.cancel') }}
-          </a-button>
-          <a-button type="primary" @click="onSave">
-            {{ t('common.save') }}
-          </a-button>
-        </div>
-      </template>
-    </a-modal>
+    <AccountEditor
+      v-if="editing" ref="editorRef" v-model:account="editing"
+      :fields="fields" :title="formTitle" :status="editingStatus" :error="pageError"
+      :clipboard-candidate="clipboardCandidate" :authorizing="authorizing" :busy="busyOps[editing.id]"
+      @close="closeEditor" @save="onSave" @test="onTestEditing" @authorize="onAuthorizeGmail"
+      @apply-clipboard="applyClipboardFromClipboard" @dismiss-clipboard="clipboardCandidate = null"
+    />
 
     <ConfirmDialog
       :open="pending !== null"
@@ -1075,134 +447,4 @@ const formTitle = computed(() =>
  * ⚠ 按钮里「图标 + 文字」的间距统一由 `shared.css` 的
  *   `.ant-btn > [class^='i-']` 负责，这里不再各写一遍。
  */
-
-.account-head {
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 6px;
-}
-
-.account-label {
-  font-size: 13px;
-  font-weight: 600;
-}
-
-.account-email {
-  font-size: 12px;
-  font-weight: 400;
-  color: var(--mp-text-dim);
-}
-
-.account-meta {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 12px;
-  font-size: 11px;
-  color: var(--mp-text-faint);
-}
-
-/*
- * 卡片右上角的状态徽标。
- *
- * ⚠ 用 `flex: 0 0 auto` 顶住宽度：`#extra` 里的内容默认可以被压缩，
- *   而「同步失败」这种稍长的状态词被压成两行会很难看（卡片头部是单行高度）。
- *   徽标本身的字号 / 配色在 `components/StatusBadge.vue` 里。
- */
-.page :deep(.ant-card-extra) {
-  flex: 0 0 auto;
-  margin-inline-start: 8px;
-}
-
-.form {
-  max-width: 520px;
-}
-
-/*
- * 弹窗标题行：左边标题、右边连接状态。
- * ⚠ `padding-right: 28px` 给右上角的关闭按钮让位（它是绝对定位的，会盖住内容）。
- */
-.editor-title {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  padding-right: 28px;
-}
-
-.editor-error {
-  margin-bottom: 12px;
-}
-
-.clipboard-prompt {
-  margin-bottom: 12px;
-}
-
-/* 底部：诊断动作用左，取消 / 保存靠右 */
-.editor-footer {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
-.editor-footer-spacer {
-  flex: 1 1 auto;
-}
-
-/* 弹窗里的状态词与列表卡片保持同样的字号 */
-.editor :deep(.ant-badge-status-text) {
-  font-size: 12px;
-  color: var(--mp-text-dim);
-}
-/* 下拉 / 数字输入不要撑满整行（撑满看起来像「随便填点什么」的文本框） */
-.control {
-  max-width: 260px;
-}
-
-.notice {
-  margin-bottom: 14px;
-}
-
-.oauth {
-  display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 6px;
-  margin-bottom: 14px;
-}
-
-/*
- * 预设下拉的选项：邮箱名 + 一行避坑提示。
- * 提示用更小更暗的字 —— 它重要但**不必**抢过邮箱名本身。
- */
-.preset-option {
-  display: flex;
-  flex-direction: column;
-  gap: 1px;
-  line-height: 1.35;
-}
-
-.preset-option__label {
-  font-size: 13px;
-}
-
-.preset-option__note {
-  color: var(--mp-text-faint);
-  font-size: 11px;
-}
-
-/*
- * 预设下拉 + 自定义输入框竖排。
- * 选了「自定义…」时输入框出现在下拉**下面** —— 而不是替换掉下拉，
- * 这样用户还能直接改主意换回某家预设，不用先清空。
- */
-.host-field {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-
-.actions {
-  margin-top: 4px;
-}
 </style>
