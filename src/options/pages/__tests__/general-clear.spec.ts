@@ -1,4 +1,4 @@
-import { mount } from '@vue/test-utils'
+import { flushPromises, mount } from '@vue/test-utils'
 import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import { ref } from 'vue'
 
@@ -112,6 +112,24 @@ beforeEach(() => {
     level.mockClear()
   mocks.send.mockClear()
   mocks.send.mockResolvedValue({ ok: true })
+})
+
+it('账号导入写入失败时停止导入并报告实际成功数', async () => {
+  const wrapper = mountPage()
+  await flushPromises()
+  mocks.send.mockResolvedValue({ ok: false })
+  const input = wrapper.find('input[type="file"]')
+  Object.defineProperty(input.element, 'files', {
+    value: [{ text: async () => JSON.stringify({
+      kind: 'mail-peon-settings',
+      accounts: [{ id: 'a', email: 'me@example.com', provider: 'imap', config: {} }],
+    }) }],
+  })
+  await input.trigger('change')
+  await flushPromises()
+  expect(messageText(mocks.message.error)).toContain('已新增 0 个账号')
+  expect(mocks.message.success).not.toHaveBeenCalled()
+  wrapper.unmount()
 })
 
 /** 侧边栏之外的那个主操作按钮（按可见文字找） */

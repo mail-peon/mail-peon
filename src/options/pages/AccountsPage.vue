@@ -251,7 +251,7 @@ function describeError(error: unknown): string {
  */
 function openEditor(account: MailAccount) {
   pageError.value = ''
-  editing.value = { ...account }
+  editing.value = { ...account, config: { ...account.config } }
   syncCustomHostFields(editing.value)
   void probeClipboard()
 }
@@ -579,7 +579,11 @@ async function onSave() {
     editing.value.config.relayUrl = editing.value.config.relayUrl.trim()
 
   try {
-    await save(editing.value)
+    const saved = await save(editing.value)
+    if (!saved) {
+      pageError.value = '保存账号失败，请重试'
+      return
+    }
     editing.value = null
     pageError.value = ''
   }

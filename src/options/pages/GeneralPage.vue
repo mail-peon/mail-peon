@@ -506,7 +506,7 @@ async function onImportFile(event: Event) {
         continue
       // 导出的记录里没有凭据，所以除了 id 之外要重新生成，避免撞上已有账号
       const id = `${account.provider}-${Math.random().toString(36).slice(2, 10)}`
-      await send('accounts:upsert', {
+      const result = await send('accounts:upsert', {
         account: {
           ...account,
           id,
@@ -516,6 +516,8 @@ async function onImportFile(event: Event) {
           cursor: null,
         },
       }, { ok: false })
+      if (!result.ok)
+        throw new Error(`导入中断：已新增 ${added} 个账号，保存「${account.label || account.email}」失败，请重试`)
       added++
     }
 

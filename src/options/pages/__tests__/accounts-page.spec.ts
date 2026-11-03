@@ -107,6 +107,7 @@ const mocks = vi.hoisted(() => {
       destroy: vi.fn(),
     },
     reload: vi.fn(async () => {}),
+    save: vi.fn(async () => true),
     test: vi.fn(),
     resetCursor: vi.fn(),
     send: vi.fn(async (): Promise<unknown> => m.providerOverride ?? DEPS),
@@ -140,7 +141,7 @@ vi.mock('~/logic/bridge', () => ({
   useAccounts: () => ({
     accounts: mocks.accounts,
     reload: mocks.reload,
-    save: vi.fn(async () => true),
+    save: mocks.save,
     remove: vi.fn(async () => {}),
     test: mocks.test,
     resetCursor: mocks.resetCursor,
@@ -160,6 +161,39 @@ vi.mock('~/logic/ui-message', () => ({
 let AccountsPage: import('vue').Component
 beforeAll(async () => {
   AccountsPage = (await import('~/options/pages/AccountsPage.vue')).default
+})
+beforeEach(() => mocks.save.mockResolvedValue(true))
+
+describe('账号编辑草稿', () => {
+  beforeEach(() => {
+    mocks.accounts = ref([account()])
+    mocks.providerOverride = null
+    mocks.clipboardText = null
+    mocks.clipboardError = false
+    mocks.save.mockClear()
+    vi.unstubAllGlobals()
+  })
+
+  it('修改协议配置后取消不会改动原账号', async () => {
+    const wrapper = await mountPage()
+    await button(wrapper, '编辑').trigger('click')
+    await wrapper.find('[data-field-key="pass"] input').setValue('new-password')
+    await button(wrapper, '取消').trigger('click')
+    expect(mocks.accounts.value[0].config.pass).toBe('test-auth-code')
+    expect(mocks.save).not.toHaveBeenCalled()
+    wrapper.unmount()
+  })
+
+  it('保存失败时保留编辑器和草稿并显示错误', async () => {
+    mocks.save.mockResolvedValue(false)
+    const wrapper = await mountPage()
+    await button(wrapper, '编辑').trigger('click')
+    await button(wrapper, '保存').trigger('click')
+    await flush()
+    expect(wrapper.find('.editor').exists()).toBe(true)
+    expect(wrapper.text()).toContain('保存账号失败')
+    wrapper.unmount()
+  })
 })
 
 /** 一个手动控制何时完成的操作 */
