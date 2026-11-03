@@ -348,3 +348,5 @@ Popup 与 Sidepanel 共用 `useMailView` 的筛选状态和 `useMailActions` 的
 通用设置的同步回执、数据清理与备份 IO 分别在 `options/composables/`，备份格式校验在 `options/settings-backup.ts`，完整校验通过后才开始写入。账号页保留草稿与操作编排，列表、编辑弹窗和 provider 字段在 `options/components/accounts/`；字段状态与校验分别在 `useAccountFields` 和 `account-validation.ts`。
 
 后台入口 `background/main.ts` 同步注册 `handlers/` 的领域消息及 `lifecycle.ts` 的浏览器事件，再异步恢复 watch 和 alarm。`runtime/` 分别持有流水线与 token 回写、同步单飞闸门、watch 连接、定时器与过期清理。手动和推送同步复用在途任务，alarm 排在在途任务之后；手动请求立即确认，结果保留广播及状态查询两条路径。
+
+Node 中继保留 `scripts/imap-relay.ts` 作为 CLI 入口，`scripts/relay/` 按配置、服务启停与分流、透传、watch 重连、单次 IDLE 会话、协议、目标策略、日志及终端交互拆分。透传与 watch 共用 `upstream.ts` 的 TCP/TLS 建连、SNI 与证书错误解释。模块导入不启动监听；CLI 显式注册信号处理后启动服务。
