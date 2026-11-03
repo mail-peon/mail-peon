@@ -337,3 +337,6 @@ src/
 - 路线图：[`03-roadmap.md`](./03-roadmap.md)
 - 数据模型：[`design/data-model.md`](./design/data-model.md)
 - 页面顶部 toast：[`design/page-toast.md`](./design/page-toast.md)
+## 领域模块入口
+
+`logic/types.ts`、`logic/store/migrations.ts` 和 `logic/ai/output-schema.ts` 保留原有导出，分别转发到 `models/`、`store/normalize/` 和 `ai/result/`。实现模块直接引用同目录依赖，避免经门面形成循环。领域模型按账号、规则、邮件状态、邮件类型、邮件、设置和同步结果划分；归一化与 AI 输出解析保持纯函数和原有兼容逻辑。
