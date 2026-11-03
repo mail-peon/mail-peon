@@ -63,11 +63,18 @@ export function useSettings() {
 
   async function setApp(patch: Partial<AppSettings>) {
     // 乐观更新：开关点下去要立刻有反应，等 background 往返会有一帧的迟滞
-    if (app.value)
-      app.value = { ...app.value, ...patch }
+    const previous = app.value
+    app.value = previous ? { ...previous, ...patch } : null
+    const optimistic = app.value
     const result = await send<{ app: AppSettings } | null>('settings:set-app', { patch }, null)
-    if (result?.app)
+    if (result?.app) {
       app.value = result.app
+      return true
+    }
+    // A later broadcast or another write owns its newer state.
+    if (app.value === optimistic)
+      app.value = previous
+    return false
   }
 
   async function setAi(patch: Partial<AiSettings>) {

@@ -1,0 +1,14 @@
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.field-label {
+  font-size: 12px;
+  color: var(--mp-text-dim);
+}
+
+.field-control {
+  max-width: 200px;
+}

@@ -132,6 +132,43 @@ it('账号导入写入失败时停止导入并报告实际成功数', async () =
   wrapper.unmount()
 })
 
+it('先校验全部账号再覆盖设置', async () => {
+  const wrapper = mountPage()
+  await flushPromises()
+  mocks.setApp.mockClear()
+  const input = wrapper.find('input[type="file"]')
+  Object.defineProperty(input.element, 'files', {
+    value: [{ text: async () => JSON.stringify({
+      kind: 'mail-peon-settings',
+      app: { minimalMode: true },
+      accounts: [{ id: 'a', email: 42 }],
+    }) }],
+  })
+  await input.trigger('change')
+  await flushPromises()
+  expect(mocks.setApp).not.toHaveBeenCalled()
+  expect(messageText(mocks.message.error)).toContain('第 1 个账号格式不正确')
+  wrapper.unmount()
+})
+
+it('部分账号导入成功后失败会报告已写入的数量', async () => {
+  const wrapper = mountPage()
+  await flushPromises()
+  mocks.send.mockResolvedValueOnce({ ok: true }).mockResolvedValueOnce({ ok: false })
+  const input = wrapper.find('input[type="file"]')
+  Object.defineProperty(input.element, 'files', {
+    value: [{ text: async () => JSON.stringify({
+      kind: 'mail-peon-settings',
+      accounts: ['a', 'b'].map(id => ({ id, email: `${id}@example.com`, provider: 'imap', config: {} })),
+    }) }],
+  })
+  await input.trigger('change')
+  await flushPromises()
+  expect(messageText(mocks.message.error)).toContain('已新增 1 个账号')
+  expect(mocks.message.success).not.toHaveBeenCalled()
+  wrapper.unmount()
+})
+
 /** 侧边栏之外的那个主操作按钮（按可见文字找） */
 function syncButton(wrapper: ReturnType<typeof mountPage>) {
   return wrapper.findAll('button').find(node => /立即同步|同步中/.test(node.text().replace(/\s+/g, '')))

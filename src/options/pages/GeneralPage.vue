@@ -1,18 +1,20 @@
 <script setup lang="ts">
-import type { AppSettings, MailFilterId, MailRetention, StorageUsage, SyncSummary } from '~/logic/types'
-import { computed, onMounted, onUnmounted, ref } from 'vue'
+import type { AppSettings, MailFilterId, MailRetention } from '~/logic/types'
+import { computed, onMounted, onUnmounted } from 'vue'
 import ConfirmDialog from '~/components/ConfirmDialog.vue'
-import { useSyncRequest } from '~/composables/useSyncRequest'
-import { onDataChanged, send, useAccounts, useMailTypes, useSettings } from '~/logic/bridge'
-import { useConfirmAction } from '~/logic/confirm-action'
+
+import { onDataChanged, useAccounts, useMailTypes, useSettings } from '~/logic/bridge'
 import { t } from '~/logic/strings'
 import {
-  CHECK_INTERVAL_MAX_MINUTES,
-  CHECK_INTERVAL_MIN_MINUTES,
-  DEFAULT_CHECK_INTERVAL_MINUTES,
   MAIL_RETENTION_OPTIONS,
 } from '~/logic/types'
-import { ERROR_DURATION, useAppMessage, WARNING_DURATION } from '~/logic/ui-message'
+import { ERROR_DURATION, useAppMessage } from '~/logic/ui-message'
+import AutoCheckField from '../components/general/AutoCheckField.vue'
+import GeneralDataCard from '../components/general/GeneralDataCard.vue'
+import GeneralModeCard from '../components/general/GeneralModeCard.vue'
+import { useGeneralData } from '../composables/useGeneralData'
+import { useGeneralSync } from '../composables/useGeneralSync'
+import { useSettingsBackup } from '../composables/useSettingsBackup'
 
 /**
  * 通用设置（`design/ui-flows.md § 4.6a` 极简 / `§ 4.6b` 完整）。
@@ -32,120 +34,18 @@ import { ERROR_DURATION, useAppMessage, WARNING_DURATION } from '~/logic/ui-mess
 const { app, ai, setApp, reload } = useSettings()
 const { accounts, syncNow, syncStatus, reload: reloadAccounts } = useAccounts()
 const { adapters } = useMailTypes()
-
-/**
- * 「正在跑一个会改数据的操作」（清空邮件列表 / 清空所有数据）。
- *
- * 与 `syncing` 分开的理由见上。它只用来**禁用**这些按钮，不驱动任何 loading ——
- * 因为它们的进度没有可展示的东西，禁用 + 结果提示就够了。
- */
-const clearing = ref(false)
-const uiMessage = useAppMessage()
-const { syncing, start: onSyncNow } = useSyncRequest({
-  start: syncNow,
-  status: syncStatus,
-  timeoutMs: 6 * 60 * 1000,
-  onDone: applySyncResult,
-  onTimeout() {
-    uiMessage.error('同步超过 6 分钟仍未返回。请检查中继是否在运行，然后重试。', ERROR_DURATION)
-  },
-  onStartFailed() {
-    uiMessage.error('无法启动同步：与后台通信失败，请重试', ERROR_DURATION)
-  },
+const { clearing, usageText, reloadUsage, pending, cancelConfirm, runPending, onClearMails, onClearAll } = useGeneralData({ app, reloadSettings: reload, reloadAccounts })
+const { syncing, onSyncNow } = useGeneralSync({ syncNow, syncStatus, reloadUsage, reloadAccounts })
+const { importing, onExport, onImportFile } = useSettingsBackup({
+  app,
+  ai,
+  accounts,
+  setApp,
+  reload: () => Promise.all([reload(), reloadAccounts(), reloadUsage()]),
 })
-
-/**
- * 把一轮同步的结果呈现出来（成功与失败都走这里）。
- *
- * ⚠ 抽成函数是因为它有**两个**调用方（广播与轮询兜底），而两边必须给出
- *   完全一致的结果 —— 分成两份实现的话，差别会表现为「有时显示拉取 N 封、
- *   有时什么都不显示」，这种不一致极难排查。
- *
- * ⚠⚠ 这里按**性质**分成四种提示，不能合并成一条：
- *
- *   - 整体失败（`ok: false`）⇒ `error`（红）
- *   - 有账号级故障 / 有邮件失败 ⇒ `warning`（黄）
- *   - 正常拉取 ⇒ `success`（绿）
- *   - 「首次同步只记位置」⇒ `info`（蓝，它不是结果而是说明）
- *
- *   合并成一条 `success` 正是用户报过的问题：「无法连接中继」曾经以绿色出现。
- *
- * @param result 后台给出的一轮同步结果
- */
-function applySyncResult(result: { ok: boolean, results: SyncSummary[], error?: string }) {
-  syncing.value = false
-
-  if (!result.ok) {
-    // 失败如实说。不要用「没有启用的账号」这种猜测 —— 那是另一个原因，
-    // 会把用户引去反复检查一个本来就正常的账号页
-    uiMessage.error(`同步失败：${result.error ?? '未知原因'}`, ERROR_DURATION)
-    void reloadUsage()
-    return
-  }
-
-  const summaries = result.results
-  if (!summaries.length) {
-    uiMessage.warning('没有启用的账号；请先在「账号」页添加（并确认「启用（参与后台同步）」是勾上的）')
-    return
-  }
-
-  /*
-   * 首次同步单独说清楚：用户看到「拉取 0 封」会以为坏了，而实际上这正是
-   * 设计文档要求的「首次只记同步位置，不拉历史」。
-   */
-  const firstSync = summaries.filter(item => item.firstSync)
-  const fetched = summaries.reduce((sum, item) => sum + item.fetched, 0)
-  const blocked = summaries.reduce((sum, item) => sum + item.blocked, 0)
-  const failed = summaries.reduce((sum, item) => sum + item.failed, 0)
-
-  // 「首次同步只记位置」是**说明**，不是结果 —— 用 info（蓝）而不是 success
-  if (firstSync.length)
-    uiMessage.info(`${firstSync.map(item => item.label).join('、')}：${t('general.syncFirstTime')}`)
-
-  /*
-   * ⚠ 有失败就**不能是绿色**：`同步完成：拉取 3 封，失败 1 封` 用绿底显示，
-   *   用户会读成「一切正常」，而实际上有个账号根本没拉到信。
-   */
-  if (fetched || blocked || failed) {
-    const text = t('general.syncDone', { fetched, blocked, failed })
-    if (failed)
-      uiMessage.warning(text, WARNING_DURATION)
-    else
-      uiMessage.success(text)
-  }
-
-  /*
-   * 账号级的「这一轮出了事」，例如
-   * `无法连接中继：ws://127.0.0.1:41316/imap.qq.com:993?tls=1`。
-   *
-   * ⚠ 这类文案走的是 `SyncSummary.warning` 字段（见 `adapters/mail/mailbox.ts`：
-   *   连接抛错时会把它塞进 `warning`），所以**字段名看着像警告、内容可能是故障**。
-   *   之前它跟成功文案拼成一整段、整体按 success 渲染 ⇒ 故障是绿色的。
-   *   现在按**警告色**单独提示，并且带上账号名（多账号时才知道该去修哪个）。
-   */
-  for (const item of summaries.filter(entry => entry.warning))
-    uiMessage.warning(`${item.label}：${item.warning}`, WARNING_DURATION)
-
-  void reloadUsage()
-  void reloadAccounts()
-}
+const uiMessage = useAppMessage()
 
 const minimalMode = computed(() => app.value?.minimalMode ?? true)
-
-/**
- * 用量文字里要显示的**实际上限**，由后台给（`settings:usage` 的 `retention`）。
- *
- * ⚠ 以前这里是本地算的：`minimalMode ? 50 : app.mailRetention` ——
- *   而「极简模式的实际上限是写死的 50」这条规则**后台也写了一遍**
- *   （见 `background/main.ts` 的 `settings:usage`，它还特意注释说
- *   「UI 要显示真实值而不是用户配置里的那个」）。
- *
- *   同一件事写在两处就会漂：改一处忘另一处，界面显示的上限和实际生效的对不上，
- *   而用户唯一的判断依据就是这个数字。所以以**后台给的为准**。
- */
-const retentionLimit = ref<number | 'unlimited'>(100)
-
-const usage = ref<{ count: number, bytesApprox: number } | null>(null)
 
 /**
  * 「默认打开哪个筛选」的下拉选项。
@@ -173,13 +73,12 @@ const POPUP_TABS = computed<Array<{ value: MailFilterId, label: string }>>(() =>
 let stopDataListener: (() => void) | null = null
 
 onMounted(async () => {
-  await reload()
-  await Promise.all([reloadAccounts(), reloadUsage()])
-
   stopDataListener = onDataChanged(() => {
     void reloadAccounts()
     void reloadUsage()
   })
+  await reload()
+  await Promise.all([reloadAccounts(), reloadUsage()])
 })
 
 onUnmounted(() => {
@@ -187,47 +86,13 @@ onUnmounted(() => {
   stopDataListener = null
 })
 
-async function reloadUsage() {
-  /*
-   * ⚠ 显式写出真正会读的字段。
-   *
-   *   这里以前写的是 `send<{ usage: StorageUsage } | null>(…)` —— 一个**比实际载荷窄**
-   *   的类型。后果是编译器（以及读代码的人）都不会提醒你「后台还给了 retention」，
-   *   于是那个字段被白白算出来、送过来、然后丢掉。
-   */
-  const result = await send<{ usage: StorageUsage, retention: number | 'unlimited' } | null>(
-    'settings:usage',
-    undefined,
-    null,
-  )
-  if (!result?.usage)
-    return
-
-  usage.value = { count: result.usage.count, bytesApprox: result.usage.bytesApprox }
-  // 上限以**后台**为准 —— 理由见 `retentionLimit` 的说明
-  if (result.retention !== undefined)
-    retentionLimit.value = result.retention
-}
-
 function patch(patchValue: Partial<AppSettings>) {
-  void setApp(patchValue).then(reloadUsage)
+  void setApp(patchValue).then((saved) => {
+    if (saved === false)
+      uiMessage.error('保存设置失败，请重试', ERROR_DURATION)
+    return reloadUsage()
+  })
 }
-
-function formatBytes(bytes: number): string {
-  if (bytes < 1024)
-    return `${bytes} B`
-  if (bytes < 1024 * 1024)
-    return `${(bytes / 1024).toFixed(1)} KB`
-  return `${(bytes / 1024 / 1024).toFixed(1)} MB`
-}
-
-const usageText = computed(() => {
-  const count = usage.value?.count ?? 0
-  const size = formatBytes(usage.value?.bytesApprox ?? 0)
-  if (minimalMode.value)
-    return t('general.usageUnlimitedText', { count, size })
-  return t('general.usageText', { count, limit: retentionLimit.value, size })
-})
 
 /**
  * 模式切换（开关在中间，左边「极简模式」、右边「自定义」）。
@@ -250,232 +115,17 @@ function onCheckIntervalChange(value: unknown) {
     return
   patch({ checkIntervalMinutes: Math.round(minutes) })
 }
-
-/**
- * 待确认的破坏性操作（三个动作共用）。
- *
- * ⚠ 从「`window.confirm` + `if (!confirm()) return`」改成**弹窗组件 + 待办动作**
- *   之后，流程变成两段：点击只登记「想做什么」，真正的动作在弹窗的确认回调里跑。
- *   这么改是因为原生 `confirm` 的样式与产品完全脱节（深色主题下尤其突兀），
- *   而这里的三个动作（清空邮件列表 / 清空所有数据）都不可撤销，
- *   正需要弹窗把后果写清楚。
- *
- * ⚠ 必须**解构**（理由见 `confirm-action.ts` 的文件头）。
- */
-const { pending, ask: askConfirm, cancel: cancelConfirm, confirm: runPending } = useConfirmAction()
-
-/**
- * 清空邮件列表（不可撤销）。
- *
- * ⚠ 必须看返回值。`send` 在消息失败 / 超时时返回的是**兜底值**（这里 `{ ok: false }`），
- *   它不会抛错（见 `logic/bridge.ts` 的 `send`）—— 所以「不看返回值就报成功」
- *   会让「一封都没删掉」和「已清空」在界面上完全一样。
- */
-function onClearMails() {
-  askConfirm({
-    title: t('general.clearMails'),
-    message: t('general.confirmClearMails'),
-    confirmText: t('general.clearMails'),
-    run: async () => {
-      clearing.value = true
-      try {
-        const result = await send<{ ok: boolean }>('settings:clear-mails', undefined, { ok: false })
-        if (!result.ok) {
-          uiMessage.error(t('general.clearMailsFailed'), ERROR_DURATION)
-          return
-        }
-        uiMessage.success(t('general.clearMailsDone'))
-        await reloadUsage()
-      }
-      finally {
-        clearing.value = false
-      }
-    },
-  })
-}
-
-/** 清空所有数据（不可撤销）—— 返回值处理同 `onClearMails` */
-function onClearAll() {
-  askConfirm({
-    title: t('general.clearAll'),
-    message: t('general.confirmClearAll'),
-    confirmText: t('general.clearAll'),
-    run: async () => {
-      clearing.value = true
-      try {
-        const result = await send<{ ok: boolean }>('settings:clear-all', undefined, { ok: false })
-        if (!result.ok) {
-          uiMessage.error(t('general.clearAllFailed'), ERROR_DURATION)
-          return
-        }
-        uiMessage.success(t('general.clearAllDone'))
-        await Promise.all([reload(), reloadUsage(), reloadAccounts()])
-      }
-      finally {
-        clearing.value = false
-      }
-    },
-  })
-}
-
-/** 导出 / 导入设置（`design/data-model.md § 9`） */
-function onExport() {
-  if (!app.value || !ai.value)
-    return
-
-  /*
-   * ⚠ 不导出凭据（账号密码 / OAuth token / AI Key）与邮件正文 —— 设计文档明确要求。
-   *   导出的文件会被用户随手丢进云盘 / 聊天窗口，而明文凭据一旦离开本机就不再可控。
-   */
-  const payload = {
-    kind: 'mail-peon-settings',
-    version: 1,
-    exportedAt: new Date().toISOString(),
-    app: app.value,
-    ai: { ...ai.value, apiKey: '' },
-    accounts: accounts.value.map(account => ({
-      ...account,
-      config: stripSecrets(account.config),
-      // 同步游标也不导出：换台机器时那个游标指的是**另一台机器的**同步位置
-      cursor: null,
-      lastSyncedAt: undefined,
-      lastError: undefined,
-    })),
-  }
-
-  const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' })
-  const url = URL.createObjectURL(blob)
-  const link = document.createElement('a')
-  link.href = url
-  link.download = `mail-peon-settings-${new Date().toISOString().slice(0, 10)}.json`
-  link.click()
-  URL.revokeObjectURL(url)
-  uiMessage.success('已导出（不含密码与 AI Key）')
-}
-
-function stripSecrets(config: Record<string, unknown>): Record<string, unknown> {
-  const clone = { ...config }
-  for (const key of ['pass', 'refreshToken', 'accessToken', 'apiKey'])
-    delete clone[key]
-  return clone
-}
-
-const importInput = ref<HTMLInputElement | null>(null)
-
-async function onImportFile(event: Event) {
-  const file = (event.target as HTMLInputElement).files?.[0]
-  if (!file)
-    return
-
-  try {
-    const text = await file.text()
-    const parsed = JSON.parse(text) as {
-      kind?: string
-      app?: Partial<AppSettings>
-      accounts?: Array<Record<string, unknown>>
-    }
-
-    if (parsed.kind !== 'mail-peon-settings')
-      throw new Error('这个文件不是 mail-peon 导出的设置')
-
-    // 设置：覆盖除凭据外的项（凭据本来就没导出）
-    if (parsed.app)
-      await setApp(parsed.app)
-
-    /*
-     * 账号：**追加**而不是覆盖（设计文档 § 9）。覆盖的话，用户在两台机器上各配了
-     * 一半账号时会互相清掉对方 —— 而追加出来的重复账号用户自己删得掉，
-     * 被清掉的账号却找不回来。
-     */
-    let added = 0
-    for (const raw of parsed.accounts ?? []) {
-      const account = raw as unknown as import('~/logic/types').MailAccount
-      if (!account?.id || !account.email)
-        continue
-      // 导出的记录里没有凭据，所以除了 id 之外要重新生成，避免撞上已有账号
-      const id = `${account.provider}-${Math.random().toString(36).slice(2, 10)}`
-      const result = await send('accounts:upsert', {
-        account: {
-          ...account,
-          id,
-          label: `${account.label || account.email}（导入）`,
-          // 没有密码的账号同步必然失败，先停用，等用户补完凭据再开
-          enabled: false,
-          cursor: null,
-        },
-      }, { ok: false })
-      if (!result.ok)
-        throw new Error(`导入中断：已新增 ${added} 个账号，保存「${account.label || account.email}」失败，请重试`)
-      added++
-    }
-
-    uiMessage.success(`导入完成：设置已覆盖，新增 ${added} 个账号（已停用，请补填凭据后再启用）`)
-    await Promise.all([reload(), reloadAccounts()])
-  }
-  catch (importError) {
-    uiMessage.error(importError instanceof Error ? importError.message : String(importError), ERROR_DURATION)
-  }
-  finally {
-    // 清掉 input 的值，否则连续导入同一个文件不会触发 change
-    if (importInput.value)
-      importInput.value.value = ''
-  }
-}
 </script>
 
 <template>
   <section class="page">
     <!-- ============ 模式切换（两套布局共用） ============ -->
-    <a-card size="small" :title="t('general.mode')">
-      <!--
-        一行靠左：`极简模式 (开关) 自定义`。
-        两个标签是**短标签**（括号里的解释在下面两行）——
-        长标签挤在开关两边会把它推歪。
-      -->
-      <div class="mode-row">
-        <span class="mode-label" :class="{ active: minimalMode }">
-          {{ t('general.modeMinimal') }}
-        </span>
-        <a-switch
-          class="mode-switch"
-          :checked="!minimalMode"
-          @update:checked="onModeToggle"
-        />
-        <span class="mode-label" :class="{ active: !minimalMode }">
-          {{ t('general.modeFull') }}
-        </span>
-      </div>
-
-      <!-- 两个模式各一行说明（共两行），每行前面是自己的名字 -->
-      <div class="mode-desc">
-        <p>
-          <span class="mode-desc-title">{{ t('general.modeMinimal') }}</span>：{{ t('general.modeMinimalDesc') }}
-        </p>
-        <p>
-          <span class="mode-desc-title">{{ t('general.modeFull') }}</span>：{{ t('general.modeFullDesc') }}
-        </p>
-      </div>
-    </a-card>
+    <GeneralModeCard :minimal-mode="minimalMode" @toggle="onModeToggle" />
 
     <!-- ============ 极简模式的通用页 ============ -->
     <template v-if="minimalMode">
       <a-card size="small">
-        <div class="field">
-          <span class="field-label">{{ t('general.autoCheck') }}</span>
-          <div class="field-control interval-control">
-            <a-input-number
-              :value="app?.checkIntervalMinutes ?? DEFAULT_CHECK_INTERVAL_MINUTES"
-              :min="CHECK_INTERVAL_MIN_MINUTES"
-              :max="CHECK_INTERVAL_MAX_MINUTES"
-              :precision="0"
-              @update:value="onCheckIntervalChange"
-            />
-            <span class="interval-unit">{{ t('general.autoCheckUnit') }}</span>
-          </div>
-        </div>
-        <p class="mp-hint auto-check-hint">
-          {{ t('general.autoCheckHint') }}
-        </p>
+        <AutoCheckField :minutes="app?.checkIntervalMinutes" @change="onCheckIntervalChange" />
 
         <a-divider class="divider" />
 
@@ -489,10 +139,10 @@ async function onImportFile(event: Event) {
         </a-descriptions>
 
         <div class="actions">
-          <a-button type="primary" :loading="syncing" :disabled="clearing" @click="onSyncNow">
+          <a-button type="primary" :loading="syncing" :disabled="clearing || importing" @click="onSyncNow">
             {{ syncing ? t('general.syncing') : t('general.syncNow') }}
           </a-button>
-          <a-button danger :disabled="syncing || clearing" @click="onClearAll">
+          <a-button danger :disabled="syncing || clearing || importing" @click="onClearAll">
             {{ t('general.clearAll') }}
           </a-button>
         </div>
@@ -544,22 +194,7 @@ async function onImportFile(event: Event) {
 
         <a-divider class="divider" />
 
-        <div class="field">
-          <span class="field-label">{{ t('general.autoCheck') }}</span>
-          <div class="field-control interval-control">
-            <a-input-number
-              :value="app?.checkIntervalMinutes ?? DEFAULT_CHECK_INTERVAL_MINUTES"
-              :min="CHECK_INTERVAL_MIN_MINUTES"
-              :max="CHECK_INTERVAL_MAX_MINUTES"
-              :precision="0"
-              @update:value="onCheckIntervalChange"
-            />
-            <span class="interval-unit">{{ t('general.autoCheckUnit') }}</span>
-          </div>
-        </div>
-        <p class="mp-hint auto-check-hint">
-          {{ t('general.autoCheckHint') }}
-        </p>
+        <AutoCheckField :minutes="app?.checkIntervalMinutes" @change="onCheckIntervalChange" />
       </a-card>
 
       <a-card size="small" :title="t('general.retention')">
@@ -582,42 +217,25 @@ async function onImportFile(event: Event) {
         </a-descriptions>
 
         <div class="actions">
-          <a-button type="primary" :loading="syncing" :disabled="clearing" @click="onSyncNow">
+          <a-button type="primary" :loading="syncing" :disabled="clearing || importing" @click="onSyncNow">
             {{ syncing ? t('general.syncing') : t('general.syncNow') }}
           </a-button>
         </div>
       </a-card>
 
-      <a-card size="small" :title="t('general.data')">
-        <div class="actions actions-tight">
-          <a-button :disabled="syncing || clearing" @click="onExport">
-            {{ t('general.exportSettings') }}
-          </a-button>
-          <a-button :disabled="syncing || clearing" @click="importInput?.click()">
-            {{ t('general.importSettings') }}
-          </a-button>
-          <a-button :disabled="syncing || clearing" @click="onClearMails">
-            {{ t('general.clearMails') }}
-          </a-button>
-        </div>
-        <input
-          ref="importInput"
-          type="file"
-          accept="application/json,.json"
-          class="hidden-input"
-          @change="onImportFile"
-        >
-        <p class="mp-hint">
-          导出不含密码 / OAuth token / AI Key，也不含邮件正文。
-        </p>
-      </a-card>
+      <GeneralDataCard
+        :disabled="syncing || clearing || importing"
+        @export="onExport"
+        @import="onImportFile"
+        @clear="onClearMails"
+      />
 
       <a-card size="small" class="privacy" :title="t('general.privacyTitle')">
         <p class="mp-hint">
           {{ t('general.privacyBody') }}
         </p>
         <div class="actions">
-          <a-button danger :disabled="syncing || clearing" @click="onClearAll">
+          <a-button danger :disabled="syncing || clearing || importing" @click="onClearAll">
             {{ t('general.clearAll') }}
           </a-button>
         </div>
@@ -644,6 +262,8 @@ async function onImportFile(event: Event) {
   </section>
 </template>
 
+<style scoped src="../components/general/fields.css" />
+
 <style scoped>
 .page {
   display: flex;
@@ -663,60 +283,6 @@ async function onImportFile(event: Event) {
   margin: 2px 0 0 24px;
 }
 
-/* 「自动检查」的说明跟着 field 标签左对齐，不缩进 */
-.auto-check-hint {
-  margin: 2px 0 0;
-}
-
-/*
- * 模式切换：`极简模式 (开关) 自定义`，**靠左**一行。
- *
- * ⚠ 不用 `justify-content: center` 居中：这一行下面的两段说明是左对齐的，
- *   开关居中的话整张卡片会看起来「一半居中一半靠左」。
- */
-.mode-row {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-}
-
-.mode-label {
-  font-size: 12px;
-  color: var(--mp-text-faint);
-  transition: color 0.15s;
-}
-
-/* 当前生效的那一侧亮起来（另一侧保持灰，一眼能看出现在在哪边） */
-.mode-label.active {
-  color: var(--mp-text);
-  font-weight: 600;
-}
-
-/*
- * 两个模式的说明（两行），每行以模式名开头。
- *
- * ⚠ `margin: 0` 不能省：它们挂在 `<p>` 上，而 antd 的 reset 给 `p` 留了
- *   `margin-bottom: 1em`（见 `styles/index.ts` 的说明）—— 两行之间会多出 16px。
- */
-.mode-desc {
-  margin-top: 10px;
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-}
-
-.mode-desc p {
-  margin: 0;
-  font-size: 11px;
-  line-height: 1.6;
-  color: var(--mp-text-faint);
-}
-
-.mode-desc-title {
-  color: var(--mp-text-dim);
-  font-weight: 600;
-}
-
 .divider {
   margin: 14px 0;
 }
@@ -734,37 +300,6 @@ async function onImportFile(event: Event) {
   word-break: break-all;
 }
 
-.field {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-
-.field-label {
-  font-size: 12px;
-  color: var(--mp-text-dim);
-}
-
-/* 宽度交给内容自己算，但别撑满整张卡片（下拉框太宽看起来像输入框） */
-.field-control {
-  max-width: 200px;
-}
-
-.interval-control {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-}
-
-.interval-control :deep(.ant-input-number) {
-  width: 110px;
-}
-
-.interval-unit {
-  font-size: 12px;
-  color: var(--mp-text-dim);
-}
-
 .vertical :deep(.ant-radio-wrapper) {
   display: flex;
   margin-bottom: 6px;
@@ -775,15 +310,6 @@ async function onImportFile(event: Event) {
   flex-wrap: wrap;
   gap: 8px;
   margin-top: 12px;
-}
-
-/* 「数据」那张卡片的按钮紧跟在标题下面，不需要额外的上边距 */
-.actions-tight {
-  margin-top: 0;
-}
-
-.hidden-input {
-  display: none;
 }
 
 .privacy {
