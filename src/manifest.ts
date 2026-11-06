@@ -56,7 +56,11 @@ export async function getManifest() {
       128: 'assets/icon-128.png',
     },
     permissions: [
-      'tabs', // 查激活 tab（toast 投递）
+      // ⚠️ 刻意**没有** `tabs`：`tabs.query()` / `tabs.create()` 都不需要它，
+      //    只有读 `tab.url` / `tab.title` 这类敏感字段才要。`getActiveTabId()`
+      //    只取 `tabs[0]?.id`，所以无权限下返回值完全够用。
+      //    CWS 上架时曾因「请求但不使用 tabs」被拒（违规 ID: Purple Potassium），
+      //    别再为了「以后可能要用」把它加回来 —— 那正是政策明文禁止的。
       'activeTab', // 当前 tab 短时访问
       'alarms', // 自动检查新邮件（周期由用户配置，见 design/sync-flow.md § 7）
       'sidePanel', // Chrome 侧边栏
